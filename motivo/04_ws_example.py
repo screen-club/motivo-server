@@ -24,39 +24,35 @@ buffer_data = None
 active_contexts = {}  # Store computed contexts
 current_z = None     # Current active context
 thread_pool = ThreadPoolExecutor(max_workers=1)  # Increased from 1 to 2
+is_computing_reward = False  # New flag to track reward computation status
 
 async def get_reward_context(reward_config):
     """Async wrapper for reward context computation"""
-    print("\n=== Reward Context Computation ===")
-    print("Computing... ⚙️")  # Added loading indicator
-    print(f"Input config: {json.dumps(reward_config, indent=2)}")
+    global is_computing_reward
     
-    # Show loading animation in the window
-    loading_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    cv2.putText(loading_frame, "Computing Reward Context...", (180, 200),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    cv2.putText(loading_frame, "Please wait ⚙️", (250, 250),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    cv2.imshow("Humanoid Simulation", loading_frame)
-    cv2.waitKey(1)
-    
-    loop = asyncio.get_event_loop()
-    z = await loop.run_in_executor(
-        thread_pool, 
-        compute_reward_context, 
-        reward_config, 
-        env, 
-        model, 
-        buffer_data
-    )
-    print("✅ Computation complete!")
-    print(f"Computed context shape: {z.shape}")
-    print(f"Context values (first 5): {z[:5].tolist()}")
-    return z
+    try:
+        is_computing_reward = True
+        print("\n=== Reward Context Computation ===")
+        print("Computing... ⚙️")
+        print(f"Input config: {json.dumps(reward_config, indent=2)}")
+        
+        loop = asyncio.get_event_loop()
+        z = await loop.run_in_executor(
+            thread_pool, 
+            compute_reward_context, 
+            reward_config, 
+            env, 
+            model, 
+            buffer_data
+        )
+        return z
+    finally:
+        is_computing_reward = False
+        print("✅ Computation complete!")
 
 async def handle_websocket(websocket):
     """Handle websocket connections"""
-    global current_z, active_contexts
+    global current_z, active_contexts, is_computing_reward
     
     print("\n=== New WebSocket Connection Established ===")
     
@@ -69,8 +65,11 @@ async def handle_websocket(websocket):
                 message_type = data.get("type", "")
 
                 if message_type == "debug_model_info":
-                    print("hello")
-                    await websocket.send("hello")
+                    response = {
+                        "type": "debug_model_info",
+                        "is_computing": is_computing_reward
+                    }
+                    await websocket.send(json.dumps(response))
                 
                 elif message_type == "request_reward":
                     config_key = json.dumps(data['reward'], sort_keys=True)
@@ -91,14 +90,13 @@ async def handle_websocket(websocket):
                     z = await get_reward_context(reward_config)
                     active_contexts[config_key] = z
                     current_z = z
-                    print(f"New context stored with key: {config_key[:100]}...")
                     
                     response = {
                         "type": "reward",
                         "value": 1.0,
-                        "timestamp": data.get("timestamp", "")
+                        "timestamp": data.get("timestamp", ""),
+                        "is_computing": is_computing_reward
                     }
-                    print(f"Sending response: {response}")
                     await websocket.send(json.dumps(response))
                     
                 elif message_type == "clean_rewards":
@@ -131,6 +129,28 @@ async def handle_websocket(websocket):
                     print(f"Sending response: {response}")
                     await websocket.send(json.dumps(response))
                     
+                elif message_type == "update_parameters":
+                    # Handle parameter updates - call update_parameters directly on env
+                    new_params = data.get("parameters", {})
+                    env.update_parameters(new_params)  # Changed from env.unwrapped.update_parameters
+                    
+                    # Send confirmation back to client
+                    response = {
+                        "type": "parameters_updated",
+                        "parameters": env.get_parameters(),  # Changed from env.unwrapped.get_parameters
+                        "timestamp": data.get("timestamp", "")
+                    }
+                    await websocket.send(json.dumps(response))
+
+                elif message_type == "get_parameters":
+                    # Return current parameter values
+                    response = {
+                        "type": "parameters",
+                        "parameters": env.get_parameters(),  # Changed from env.unwrapped.get_parameters
+                        "timestamp": data.get("timestamp", "")
+                    }
+                    await websocket.send(json.dumps(response))
+                
             except json.JSONDecodeError:
                 print("Error: Invalid JSON message")
                 await websocket.send(json.dumps({"error": "Invalid JSON"}))
@@ -143,7 +163,7 @@ async def handle_websocket(websocket):
 
 async def run_simulation():
     """Continuous simulation loop"""
-    global current_z
+    global current_z, is_computing_reward
     observation, _ = env.reset()
     
     frame_counter = 0
@@ -182,7 +202,20 @@ async def run_simulation():
             2
         )
         
+        # Add computing indicator text
+        if is_computing_reward:
+            cv2.putText(
+                frame,
+                "Computing rewards...",
+                (10, 60),  # Position just below Q-value
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,  # Smaller font size
+                (255, 255, 0),  # Yellow color
+                1  # Thinner line
+            )
+        
         cv2.imshow("Humanoid Simulation", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        cv2.imwrite('../output.png', frame)
         
         key = cv2.waitKey(1) & 0xFF
         if key == 27:  # ESC
@@ -190,28 +223,21 @@ async def run_simulation():
         elif key == ord('s'):  # Press 's' to save frame
             try:
                 # Get the raw observation tensor
-                obs_tensor = observation.detach().cpu().numpy()
                 
                 # Get data from environment
                 env_data = env.unwrapped.data
                 
                 # Print available data fields for debugging
-                print("\nAvailable data fields:")
-                print(dir(env_data))
                 
-                # Extract SMPL parameters from environment data
-                smpl_data = {
-                    'poses': env_data.qpos.copy(),  # Joint positions
-                    'betas': env_data.body_xpos.copy(),  # Body parameters
-                    'trans': env_data.body_xpos[0].copy()  # Root translation (first body)
-                }
                 
+              
+                print("GO")
                 # Save frame with state data
                 save_frame_data(
                     frame=frame,
                     qpos=env_data.qpos.copy(),
                     qvel=env_data.qvel.copy(),
-                    smpl_data=smpl_data
+                    env=env  # Pass the environment instance
                 )
                 print("Frame saved! 📸")
                 

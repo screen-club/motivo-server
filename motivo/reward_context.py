@@ -266,7 +266,7 @@ def compute_reward_context(reward_config, env, model, buffer_data):
         qvel=batch['next_qvel'],
         action=batch['action'],
         reward_fn=combined_reward_fn,
-        max_workers=16
+        max_workers=8
     )
     
     z = model.reward_wr_inference(

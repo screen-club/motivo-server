@@ -45,10 +45,10 @@ backend/models/
 .env.test.local
 .env.production.local
 
-backend/metamotivo-M-1-datasets/
-backend/metamotivo-S-1-datasets/
+motivo/metamotivo-M-1-datasets/
+motivo/metamotivo-S-1-datasets/
 output_videos/
 dist/
-backend/captured_frames/
+motivo/captured_frames/
 captured_frames/
 

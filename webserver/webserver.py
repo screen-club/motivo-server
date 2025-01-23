@@ -1,4 +1,4 @@
-from flask import Flask, send_from_directory, request, jsonify
+from flask import Flask, send_from_directory, request, jsonify, send_file
 from flask_cors import CORS
 import os
 from anthropic import Anthropic
@@ -40,6 +40,19 @@ def serve_index():
 def serve_static(path):
     return send_from_directory('dist', path)
 
+@app.route('/amjpeg', methods=['GET'])
+def serve_image():
+    try:
+        # Serve the output.png file
+        file_path = os.path.join(os.getcwd(), '../output.png')
+        if os.path.exists(file_path):
+            return send_file(file_path, mimetype='image/png')
+        else:
+            return jsonify({'error': 'File not found'}), 404
+    except Exception as e:
+        print(f"Error serving image: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    
 @app.route('/generate-reward', methods=['POST'])
 def generate_reward():
     print("\n=== New Request ===")
