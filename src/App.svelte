@@ -1,55 +1,32 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
+  import { Router, Link, Route } from "svelte-routing";
+  import Header from './lib/components/Header.svelte';
+  import LiveFeed from './lib/components/LiveFeed.svelte';
+  // Add new page components
+  import Home from './lib/pages/Home.svelte';
+  import About from './lib/pages/About.svelte';
   
-  let currentImageUrl = `http://localhost:5002/amjpeg?${Date.now()}`;
-  let nextImageUrl;
-  let refreshInterval;
-  let isLoading = true;
-  
-  function loadNextImage() {
-    nextImageUrl = `http://localhost:5002/amjpeg?${Date.now()}`;
-  }
-
-  function handleImageLoad() {
-    isLoading = false;
-    currentImageUrl = nextImageUrl;
-    setTimeout(loadNextImage, 100); // Adjust this delay as needed
-  }
-
-  function handleImageError() {
-    // If image fails to load, try loading the next one
-    loadNextImage();
-  }
-  
-  onMount(() => {
-    loadNextImage();
-  });
-  
-  onDestroy(() => {
-    if (refreshInterval) clearInterval(refreshInterval);
-  });
+  // Required for routing to work
+  export let url = "";
 </script>
 
-<main class="min-h-screen flex flex-col items-center justify-center p-8 bg-gradient-to-b from-gray-50 to-gray-100">
- 
-  <h1 class="text-5xl font-bold mb-16 bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-orange-600"> Live MJPEG Feed </h1>
-
- 
-    <div class="aspect-square max-w-[500px] mx-auto overflow-hidden rounded-xl shadow-md border border-gray-100">
-      <img 
-        src={currentImageUrl}
-        alt="MJPEG Feed"
-        class="w-full h-full object-cover"
-      />
-      <img 
-        src={nextImageUrl}
-        alt="MJPEG Feed"
-        class="hidden"
-        on:load={handleImageLoad}
-        on:error={handleImageError}
-      />
+<Router {url}>
+  <main class="min-h-screen flex flex-col bg-gray-50">
+    <Header />
+    
+    <div class="container mx-auto px-4 flex-grow">
+      <Route path="/" component={Home} />
+      <Route path="/about" component={About} />
+      <Route path="/live" component={LiveFeed} />
     </div>
- 
 
-</main>
+    <footer class="w-full py-4 bg-white shadow-md mt-auto">
+      <nav class="container mx-auto px-4 flex gap-4 justify-center">
+        <Link to="/" class="hover:text-blue-600">Home</Link>
+        <Link to="/live" class="hover:text-blue-600">Live Feed</Link>
+        <Link to="/about" class="hover:text-blue-600">About</Link>
+      </nav>
+    </footer>
+  </main>
+</Router>
 
