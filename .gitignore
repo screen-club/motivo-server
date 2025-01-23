@@ -1,0 +1,54 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+ENV/
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Project specific
+backend/captured_frames/
+backend/models/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+backend/metamotivo-M-1-datasets/
+backend/metamotivo-S-1-datasets/
+output_videos/
+dist/
+backend/captured_frames/
+captured_frames/
+

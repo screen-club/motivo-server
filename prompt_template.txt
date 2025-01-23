@@ -1,0 +1,134 @@
+Given this description of a humanoid behavior: "{prompt}"
+Generate a valid reward configuration JSON that would achieve this behavior.
+You can combine multiple rewards with different weights to create complex behaviors.
+
+Available reward types and their parameters:
+1. move-ego: Forward locomotion
+   - move_speed (default: 2.0)
+   - stand_height (default: 1.4)
+   - move_angle (default: 0)
+   - egocentric_target (default: true)
+   - low_height (default: 0.6)
+   - stay_low (default: false)
+
+2. raisearms: Control arm positions
+   - left: 'l' (low), 'm' (medium), 'h' (high)
+   - right: 'l' (low), 'm' (medium), 'h' (high)
+   Note: Only these three positions are valid for each arm!
+
+3. jump: Jumping motion
+   - jump_height (default: 1.6)
+   - max_velocity (default: 5.0)
+
+4. rotation: Rotational movement
+   - axis: 'x', 'y', or 'z'
+   - target_ang_velocity (default: 5.0)
+   - stand_pelvis_height (default: 0.8)
+
+5. headstand: Perform a headstand
+   - stand_pelvis_height (default: 0.95)
+
+6. crawl: Crawling motion
+   - spine_height (default: 0.3)
+   - move_speed (default: 1.0)
+   - direction: 1 (up) or -1 (down)
+
+7. liedown: Lying down
+   - direction: 'up' or 'down'
+
+8. sit: Sitting position
+   - pelvis_height_th (default: 0)
+   - constrained_knees (default: false)
+
+9. split: Perform splits
+   - distance (default: 1.5)
+
+10. move-and-raise-arms: Combined movement and arm raising
+    - move_speed (default: 5.0)
+    - move_angle (default: 0)
+    - left_pose: 'l', 'm', 'h'
+    - right_pose: 'l', 'm', 'h'
+    - stand_height (default: 1.4)
+    - low_height (default: 0.6)
+    - stay_low (default: false)
+    - egocentric_target (default: true)
+    - arm_coeff (default: 1.0)
+    - loc_coeff (default: 1.0)
+
+Example configurations:
+
+Basic Standing:
+{
+    "rewards": [{"name": "move-ego", "move_speed": 0.0, "stand_height": 1.4}],
+    "weights": [1.0]
+}
+
+Walking Forward:
+{
+    "rewards": [{
+        "name": "move-ego",
+        "move_speed": 2.0,
+        "stand_height": 1.4,
+        "move_angle": 0,
+        "egocentric_target": true
+    }],
+    "weights": [1.0]
+}
+
+Low Crawling:
+{
+    "rewards": [{
+        "name": "crawl",
+        "spine_height": 0.4,
+        "move_speed": 2.0,
+        "direction": 1
+    }],
+    "weights": [1.0]
+}
+
+Combined Movement and Arms:
+{
+    "rewards": [{
+        "name": "move-and-raise-arms",
+        "move_speed": 2.0,
+        "move_angle": 0,
+        "left_pose": "h",
+        "right_pose": "h",
+        "stand_height": 1.4,
+        "egocentric_target": true,
+        "arm_coeff": 1.0,
+        "loc_coeff": 1.0
+    }],
+    "weights": [1.0]
+}
+
+Complex Movement:
+{
+    "rewards": [
+        {
+            "name": "move-ego",
+            "move_speed": 2.0,
+            "stand_height": 1.4,
+            "move_angle": 45,
+            "egocentric_target": true
+        },
+        {
+            "name": "raisearms",
+            "left": "h",
+            "right": "m"
+        },
+        {
+            "name": "rotation",
+            "axis": "y",
+            "target_ang_velocity": 2.0,
+            "stand_pelvis_height": 0.8
+        }
+    ],
+    "weights": [0.5, 0.3, 0.2]
+}
+
+Generate a reward configuration for: {prompt}
+Important: Your response must be a complete, valid JSON object starting with '{' and ending with '}'.
+The JSON must contain 'rewards' array and 'weights' array.
+Use appropriate weights to balance multiple rewards when combining them.
+Only output the JSON object, nothing else - no explanations, no markdown, just the JSON. 
