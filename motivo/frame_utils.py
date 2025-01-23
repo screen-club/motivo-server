@@ -42,10 +42,36 @@ def save_frame_data(frame, qpos, qvel, env=None, smpl_data=None):
     
     # Save SMPL data as pickle if available
     if smpl_data:
+        # Get poses and ensure correct shape (frames, joints*3)
+        poses = smpl_data['poses']
+        
+        # Debug print before reshaping
+        print(f"Original poses shape: {poses.shape}")
+        
+        # If poses is 1D (72 values), reshape to (1, 72)
+        if len(poses.shape) == 1 and poses.shape[0] == 72:
+            print("Case 1: Converting 1D poses (72) to (1, 72)")
+            poses = poses.reshape(1, 72)
+        # If poses is 3D (batch, 24, 3), reshape to (batch, 72)
+        elif len(poses.shape) == 3 and poses.shape[1:] == (24, 3):
+            print("Case 2: Converting 3D poses (batch, 24, 3) to (batch, 72)")
+            poses = poses.reshape(poses.shape[0], 72)
+        # If poses is already 2D (batch, 72), keep as is
+        elif len(poses.shape) == 2 and poses.shape[1] == 72:
+            print("Case 3: Poses already in correct format (batch, 72)")
+            poses = poses
+        else:
+            print(f"ERROR: Unhandled pose shape: {poses.shape}")
+            raise ValueError(f"Unexpected poses shape: {poses.shape}")
+            
+        # Debug print after reshaping
+        print(f"Final poses shape: {poses.shape}")
+            
         pkl_data = {
-            'smpl_poses': smpl_data['poses'][np.newaxis, :],  # Add batch dimension for consistency
+            'smpl_poses': poses,  # Will be shape (frames, 72)
             'smpl_trans': smpl_data['trans'][np.newaxis, :] if isinstance(smpl_data['trans'], np.ndarray) else np.array([smpl_data['trans']])
         }
+        
         pkl_path = os.path.join(output_dir, "smpl_data.pkl")
         with open(pkl_path, 'wb') as f:
             pickle.dump(pkl_data, f)
