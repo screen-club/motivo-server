@@ -1,59 +1,55 @@
 <script>
-  import svelteLogo from './assets/svelte.svg'
-  import viteLogo from '/vite.svg'
-  import Counter from './lib/Counter.svelte'
+  import { onMount, onDestroy } from 'svelte';
+  
+  let currentImageUrl = `http://localhost:5002/amjpeg?${Date.now()}`;
+  let nextImageUrl;
+  let refreshInterval;
+  let isLoading = true;
+  
+  function loadNextImage() {
+    nextImageUrl = `http://localhost:5002/amjpeg?${Date.now()}`;
+  }
+
+  function handleImageLoad() {
+    isLoading = false;
+    currentImageUrl = nextImageUrl;
+    setTimeout(loadNextImage, 100); // Adjust this delay as needed
+  }
+
+  function handleImageError() {
+    // If image fails to load, try loading the next one
+    loadNextImage();
+  }
+  
+  onMount(() => {
+    loadNextImage();
+  });
+  
+  onDestroy(() => {
+    if (refreshInterval) clearInterval(refreshInterval);
+  });
 </script>
 
-<main>
-  <div>
-    <a href="https://vite.dev" target="_blank" rel="noreferrer">
-      <img src={viteLogo} class="logo" alt="Vite Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank" rel="noreferrer">
-      <img src={svelteLogo} class="logo svelte" alt="Svelte Logo" />
-    </a>
-  </div>
-  <h1>Vite + Svelte</h1>
+<main class="min-h-screen flex flex-col items-center justify-center p-8 bg-gradient-to-b from-gray-50 to-gray-100">
+ 
+  <h1 class="text-5xl font-bold mb-16 bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-orange-600"> Live MJPEG Feed </h1>
 
-  <div class="mjpeg-feed">
-    <h2>Live MJPEG Feed</h2>
-    <div class="mjpeg-feed" style="height: 500px; width: 500px;">
+ 
+    <div class="aspect-square max-w-[500px] mx-auto overflow-hidden rounded-xl shadow-md border border-gray-100">
       <img 
-        src="http://localhost:5002/amjpeg?{Date.now()}" 
-        on:load={(e) => {
-          e.target.src = `http://localhost:5002/amjpeg?${Date.now()}`;
-        }}
-        on:error={(e) => {
-          e.target.src = `http://localhost:5002/amjpeg?${Date.now()}`;
-        }}
+        src={currentImageUrl}
         alt="MJPEG Feed"
+        class="w-full h-full object-cover"
+      />
+      <img 
+        src={nextImageUrl}
+        alt="MJPEG Feed"
+        class="hidden"
+        on:load={handleImageLoad}
+        on:error={handleImageError}
       />
     </div>
-  </div>
+ 
 
-  <p>
-    Check out <a href="https://github.com/sveltejs/kit#readme" target="_blank" rel="noreferrer">SvelteKit</a>, the official Svelte app framework powered by Vite!
-  </p>
-
-  <p class="read-the-docs">
-    Click on the Vite and Svelte logos to learn more
-  </p>
 </main>
 
-<style>
-  .logo {
-    height: 6em;
-    padding: 1.5em;
-    will-change: filter;
-    transition: filter 300ms;
-  }
-  .logo:hover {
-    filter: drop-shadow(0 0 2em #646cffaa);
-  }
-  .logo.svelte:hover {
-    filter: drop-shadow(0 0 2em #ff3e00aa);
-  }
-  .read-the-docs {
-    color: #888;
-  }
-</style>
