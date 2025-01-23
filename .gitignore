@@ -52,3 +52,4 @@ dist/
 motivo/captured_frames/
 captured_frames/
 
+.env

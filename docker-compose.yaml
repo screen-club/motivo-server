@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  backend:
+    image: yassinsiouda/motivo-server-back:latest
+    build: 
+      context: .
+      dockerfile: Dockerfile.back
+    ports:
+      - "5002:5002"
+      - "8765:8765"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MUJOCO_GL=egl
+      - DISPLAY=:99
+    volumes:
+      - ./metamotivo-S-1-datasets:/app/metamotivo-S-1-datasets
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    image: yassinsiouda/motivo-client-front:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.front
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./src:/app/src
+      - ./public:/app/public
+    depends_on:
+      - backend
+    environment:
+      - VITE_BACKEND_URL=http://backend:5000
+      - VITE_WS_URL=ws://backend:8765
+    restart: unless-stopped
+
