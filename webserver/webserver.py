@@ -109,5 +109,18 @@ def generate_reward():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
+@app.route('/amjpeg', methods=['GET'])
+def serve_image():
+    try:
+        # Serve the output.png file
+        file_path = os.path.join(os.getcwd(), 'output.png')
+        if os.path.exists(file_path):
+            return send_file(file_path, mimetype='image/png')
+        else:
+            return jsonify({'error': 'File not found'}), 404
+    except Exception as e:
+        print(f"Error serving image: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
