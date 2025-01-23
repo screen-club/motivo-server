@@ -9,10 +9,8 @@ services:
     ports:
       - "5002:5002"
       - "8765:8765"
-    environment:
-      - PYTHONUNBUFFERED=1
-      - MUJOCO_GL=egl
-      - DISPLAY=:99
+    env_file:
+      - .env
     volumes:
       - ./metamotivo-S-1-datasets:/app/metamotivo-S-1-datasets
     restart: unless-stopped
@@ -34,8 +32,7 @@ services:
       - ./public:/app/public
     depends_on:
       - backend
-    environment:
-      - VITE_BACKEND_URL=http://backend:5000
-      - VITE_WS_URL=ws://backend:8765
+    env_file:
+      - .env
     restart: unless-stopped
 

@@ -17,6 +17,11 @@ from custom_rewards import print_model_info, list_model_body_names
 from humenv import rewards as humenv_rewards
 from typing import Dict, Any
 
+# import from env BACKEND_DOMAIN
+BACKEND_DOMAIN = os.getenv("VITE_BACKEND_DOMAIN", "localhost")
+WS_PORT = os.getenv("VITE_WS_PORT", 8765)
+API_PORT = os.getenv("VITE_API_PORT", 5000)
+
 # Global variables
 model = None
 env = None
@@ -291,8 +296,8 @@ async def main():
         current_z = await get_reward_context(default_config)
         
         print("\nStarting WebSocket server and simulation...")
-        server = await websockets.serve(handle_websocket, "localhost", 8765)
-        print("WebSocket server running on ws://localhost:8765")
+        server = await websockets.serve(handle_websocket, "localhost", WS_PORT)
+        print(f"WebSocket server started at ws://localhost:{WS_PORT}")
         
         await asyncio.gather(
             server.wait_closed(),
