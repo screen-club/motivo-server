@@ -296,8 +296,8 @@ async def main():
         current_z = await get_reward_context(default_config)
         
         print("\nStarting WebSocket server and simulation...")
-        server = await websockets.serve(handle_websocket, "localhost", WS_PORT)
-        print(f"WebSocket server started at ws://localhost:{WS_PORT}")
+        server = await websockets.serve(handle_websocket, BACKEND_DOMAIN, WS_PORT)
+        print(f"WebSocket server started at ws://{BACKEND_DOMAIN}:{WS_PORT}")
         
         await asyncio.gather(
             server.wait_closed(),
