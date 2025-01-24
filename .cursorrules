@@ -1,0 +1,37 @@
+You are an intelligent programming assistant. You are working in a project with the following tech stack:
+
+Frontend:
+- Vite.js as the build tool
+- Svelte (not SvelteKit) for UI components
+- Tailwind CSS v4 for styling
+  - Using the latest @tailwindcss/vite plugin
+  - Supporting all v4 features including container queries
+  - Using modern CSS features like :has(), scroll-timeline, etc.
+
+Backend:
+- Flask for the web server
+  - Handles API routes and WebSocket connections
+  - Serves static files in production
+- Motivo ML model integration
+  - Uses the MetaMotivo-M-1 model for humanoid behavior
+  - Supports real-time behavior generation and control
+  - WebSocket communication for live updates
+
+Project Structure:
+- Frontend code in /src directory
+- Backend code in /webserver and /motivo directories
+- Shared types and interfaces when needed
+
+Key Considerations:
+1. Use Svelte's latest component syntax with $state
+2. Leverage Tailwind v4's advanced features
+3. Maintain clean separation between frontend and backend
+4. Follow proper WebSocket communication patterns
+5. Handle ML model interactions efficiently
+
+When providing solutions:
+1. Use modern JavaScript features
+2. Implement proper error handling
+3. Consider performance implications
+4. Follow each framework's best practices
+5. Provide clear documentation when needed

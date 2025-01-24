@@ -1,0 +1,228 @@
+METAMOTIVO WEBSOCKET API DOCUMENTATION
+=====================================
+
+Base URL: ws://localhost:8765
+
+OVERVIEW
+--------
+The WebSocket API provides real-time control and monitoring of the MetaMotivo-M-1 humanoid simulation. All communication is done via JSON messages.
+
+MESSAGE FORMAT
+-------------
+All messages must be valid JSON with a "type" field specifying the operation.
+
+AVAILABLE ENDPOINTS
+-----------------
+
+1. REQUEST REWARD CONTEXT
+   Type: "request_reward"
+   Description: Sets new reward behavior for the humanoid
+   
+   Request Format:
+   {
+     "type": "request_reward",
+     "timestamp": "optional_timestamp",
+     "reward": {
+       "rewards": [
+         {
+           "name": "reward_type",
+           // reward parameters
+         }
+       ],
+       "weights": [1.0],
+       "combination_type": "additive" // Optional, defaults to additive
+     }
+   }
+
+   Response:
+   {
+     "type": "reward",
+     "value": 1.0,
+     "timestamp": "timestamp",
+     "is_computing": false
+   }
+
+2. CLEAN REWARDS
+   Type: "clean_rewards"
+   Description: Clears all active rewards and resets to default standing pose
+   
+   Request Format:
+   {
+     "type": "clean_rewards",
+     "timestamp": "optional_timestamp"
+   }
+
+   Response:
+   {
+     "type": "clean_rewards",
+     "status": "success",
+     "timestamp": "timestamp"
+   }
+
+3. UPDATE PARAMETERS
+   Type: "update_parameters" 
+   Description: Updates simulation parameters
+   
+   Request Format:
+   {
+     "type": "update_parameters",
+     "timestamp": "optional_timestamp",
+     "parameters": {
+       // parameter key-value pairs
+     }
+   }
+
+   Response:
+   {
+     "type": "parameters_updated",
+     "parameters": {}, // current parameters
+     "timestamp": "timestamp"
+   }
+
+4. GET PARAMETERS
+   Type: "get_parameters"
+   Description: Retrieves current simulation parameters
+   
+   Request Format:
+   {
+     "type": "get_parameters",
+     "timestamp": "optional_timestamp"
+   }
+
+   Response:
+   {
+     "type": "parameters",
+     "parameters": {}, // current parameters
+     "timestamp": "timestamp"
+   }
+
+5. DEBUG MODEL INFO
+   Type: "debug_model_info"
+   Description: Gets model computation status
+   
+   Request Format:
+   {
+     "type": "debug_model_info",
+     "timestamp": "optional_timestamp"
+   }
+
+   Response:
+   {
+     "type": "debug_model_info",
+     "is_computing": false
+   }
+
+SUPPORTED REWARD TYPES
+---------------------
+1. move-ego: Basic locomotion
+   Parameters:
+   - move_speed (float, default: 2.0)
+   - stand_height (float, default: 1.4)
+   - move_angle (float, default: 0)
+   - egocentric_target (bool, default: true)
+   - low_height (float, default: 0.6)
+   - stay_low (bool, default: false)
+
+2. raisearms: Arm positioning
+   Parameters:
+   - left: "l"|"m"|"h" (low/medium/high)
+   - right: "l"|"m"|"h" (low/medium/high)
+
+3. move-and-raise-arms: Combined movement
+   Parameters:
+   - move_speed (float, default: 2.0)
+   - move_angle (float, default: 0)
+   - left_pose: "l"|"m"|"h"
+   - right_pose: "l"|"m"|"h"
+   - stand_height (float, default: 1.4)
+   - arm_coeff (float, default: 1.0)
+   - loc_coeff (float, default: 1.0)
+
+4. jump: Jumping behavior
+   Parameters:
+   - jump_height (float, default: 1.6)
+   - max_velocity (float, default: 5.0)
+
+5. rotation: Rotational movement
+   Parameters:
+   - axis: "x"|"y"|"z"
+   - target_ang_velocity (float, default: 5.0)
+   - stand_pelvis_height (float, default: 0.8)
+
+6. headstand: Headstand pose
+   Parameters:
+   - stand_pelvis_height (float, default: 0.95)
+
+7. crawl: Crawling movement
+   Parameters:
+   - spine_height (float, default: 0.3)
+   - move_speed (float, default: 1.0)
+   - direction: "u"|"d" (up/down)
+
+8. liedown: Lying position
+   Parameters:
+   - direction: "up"|"down"
+
+9. sit: Sitting position
+   Parameters:
+   - pelvis_height_th (float, default: 0)
+   - constrained_knees (bool, default: false)
+
+10. split: Split position
+    Parameters:
+    - distance (float, default: 1.5)
+
+CUSTOM BODY PART CONTROLS
+------------------------
+Hand Controls:
+- left-hand-height
+- left-hand-lateral
+- left-hand-forward
+- right-hand-height
+- right-hand-lateral
+- right-hand-forward
+
+Foot Controls:
+- left-foot-height
+- right-foot-height
+- left-foot-lateral
+- right-foot-lateral
+- left-foot-forward
+- right-foot-forward
+
+Other Controls:
+- stay-upright
+- head-height
+- pelvis-height
+- hand-height
+- hand-lateral
+
+REWARD COMBINATION TYPES
+-----------------------
+- additive (default): Sum of weighted rewards
+- multiplicative: Product of weighted rewards
+- min: Minimum of weighted rewards
+- max: Maximum of weighted rewards
+- geometric: Geometric mean of weighted rewards
+
+ERROR HANDLING
+-------------
+On error, the server responds with:
+{
+  "error": "error_message"
+}
+
+Common errors:
+- Invalid JSON
+- Unknown reward type
+- Invalid parameters
+- Connection closed unexpectedly
+
+NOTES
+-----
+- All numerical parameters accept float values
+- Weights should sum to 1.0 for best results
+- Default standing behavior is automatically applied on connection
+- The simulation runs at 60 FPS
+- Q-values are displayed in real-time overlay
+- Computing status is shown during reward context calculations 
