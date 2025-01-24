@@ -9,13 +9,10 @@
   export let step = 1;
   export let options = undefined;
 
-  // Get the current value from the store
-  let value;
-  parameterStore.subscribe(params => {
-    value = params[name];
-  });
+  // Get the current value from the store using $ syntax
+  $: value = $parameterStore[name];
 
-  function handleChange(event) {
+  function handleInput(event) {
     const newValue = type === 'select' ? 
       parseInt(event.target.value) : 
       parseFloat(event.target.value);
@@ -24,24 +21,29 @@
 </script>
 
 <div class="space-y-1">
-  <label class="block text-xs font-medium text-gray-700">
-    {label}: {value}
-  </label>
+  <div class="flex justify-between items-center">
+    <label class="text-xs font-medium text-gray-700">
+      {label}
+    </label>
+    <span class="text-xs font-medium text-gray-600">
+      {value}
+    </span>
+  </div>
   
   {#if type === 'range'}
     <input 
       {type}
-      value={value}
+      bind:value={value}
       {min}
       {max}
       {step}
-      on:change={handleChange}
+      on:input={handleInput}
       class="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
     />
   {:else if type === 'select'}
     <select 
-      value={value}
-      on:change={handleChange}
+      bind:value={value}
+      on:change={handleInput}
       class="block w-full text-sm rounded border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
     >
       {#each options as option}
