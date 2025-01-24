@@ -1,5 +1,5 @@
 # Use Python 3.11 slim image as base
-FROM python:3.11-slim
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -33,10 +33,11 @@ RUN pip install uv
 COPY requirements.txt .
 RUN uv pip install -r requirements.txt --system
 RUN uv pip install python-dotenv --system
-COPY backend backend
+COPY scripts /app/scripts
+COPY webserver /app/webserver
 COPY prompt_template.txt /app/prompt_template.txt
+COPY motivo /app/motivo
 RUN mkdir -p /app/runtime
-EXPOSE 5000 8765
 COPY start.sh .
 RUN chmod +x start.sh
 ENTRYPOINT ["./start.sh"]

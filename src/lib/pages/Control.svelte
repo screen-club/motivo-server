@@ -7,11 +7,13 @@
     import { rewardStore } from '../stores/rewardStore';
   
     let socket;
+    // get vite VITE_WS_URL
+    const wsUrl = import.meta.env.VITE_WS_URL;
   
     onMount(() => {
     
-        console.log("hello")
-      socket = new WebSocket('ws://localhost:8765');
+      console.log("wsUrl", wsUrl);
+      socket = new WebSocket(wsUrl);
       
       socket.onopen = () => {
         console.log('WebSocket connected');
