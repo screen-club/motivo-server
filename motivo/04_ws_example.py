@@ -260,8 +260,11 @@ async def main():
     global model, env, buffer_data
     
     try:
-        # Modified device selection for M1 Macs
-        if torch.backends.mps.is_available():
+        # Device selection with CUDA support
+        if torch.cuda.is_available():
+            device = "cuda"
+            torch.backends.cudnn.benchmark = True  # Enable CUDA optimization
+        elif torch.backends.mps.is_available():
             device = "mps"  # Apple Silicon GPU
         else:
             device = "cpu"
@@ -271,10 +274,6 @@ async def main():
         model = FBcprModel.from_pretrained("facebook/metamotivo-M-1")
         model.to(device)
         model.eval()
-        
-        # Remove CUDA-specific optimization
-        # if device == "cuda":
-        #     torch.backends.cudnn.benchmark = True
         
         env = setup_environment(device)
         
