@@ -91,6 +91,6 @@ def qpos_to_smpl(qpos, mj_model, smpl_model="smpl"):
             quat = qpos[:, 3:7]
             pose[:, ind1, :] = sRot.from_quat(quat[:, [1, 2, 3, 0]]).as_rotvec()
         else:
-            pose[:, ind1, :] = sRot.from_euler("ZYX", qpos[:, ind2[0]:ind2[1]]).as_rotvec()
+            pose[:, ind1, :] = sRot.from_euler("XYZ", qpos[:, ind2[0]:ind2[1]]).as_rotvec()
 
     return pose, trans 

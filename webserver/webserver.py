@@ -44,9 +44,9 @@ def serve_static(path):
 def serve_image():
     try:
         # Serve the output.png file
-        file_path = os.path.join(os.getcwd(), '../output.png')
+        file_path = os.path.join(os.getcwd(), '../output.jpg')
         if os.path.exists(file_path):
-            return send_file(file_path, mimetype='image/png')
+            return send_file(file_path, mimetype='image/jpg')
         else:
             return jsonify({'error': 'File not found'}), 404
     except Exception as e:

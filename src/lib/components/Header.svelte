@@ -1,9 +1,9 @@
 <script>
-  export let title = "Live MJPEG Feed";
+  export let title = "Liminal Motivo Server";
 </script>
 
-<header class="w-full bg-white shadow-sm py-6 mb-8">
-  <h1 class="text-4xl font-bold text-center bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-orange-600">
+<header class="w-full bg-white py-6">
+  <h1 class="text-4xl font-black text-black px-8">
     {title}
   </h1>
 </header> 

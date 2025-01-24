@@ -215,8 +215,11 @@ async def run_simulation():
                 1  # Thinner line
             )
         
+        # Resize frame to 320x240 before saving
+        resized_frame = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_AREA)
+        
         cv2.imshow("Humanoid Simulation", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-        cv2.imwrite('../output.png', frame)
+        cv2.imwrite('../output.jpg', resized_frame)
         
         key = cv2.waitKey(1) & 0xFF
         if key == 27:  # ESC

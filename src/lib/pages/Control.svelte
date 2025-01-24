@@ -48,12 +48,22 @@
     });
   </script>
   
-  <div class="flex gap-4">
-    <div class="flex flex-col gap-4">
-      <ParameterPanel />
-      <RewardPanel />
-    </div>
-    <div class="flex-grow">
+  <div class="bg-gray-50 p-6 relative">
+    <!-- Live Feed - Fixed Top Right -->
+    <div class="absolute top-6 right-6 w-[320px] mt-[30px]">
       <LiveFeed />
+    </div>
+
+    <!-- Main Content - Fixed width panels with static spacing -->
+    <div class="mr-[344px]">
+      <div class="flex gap-8">
+        <div class="w-[400px] p-4">
+          <ParameterPanel />
+        </div>
+        
+        <div class="w-[400px] p-4">
+          <RewardPanel />
+        </div>
+      </div>
     </div>
   </div>

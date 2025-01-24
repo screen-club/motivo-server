@@ -1,5 +1,6 @@
 <script>
-  import { parameterStore } from '../stores/parameterStore';
+  import { createEventDispatcher } from 'svelte';
+  const dispatch = createEventDispatcher();
 
   export let name;
   export let label;
@@ -8,15 +9,20 @@
   export let max = 100;
   export let step = 1;
   export let options = undefined;
-
-  // Get the current value from the store using $ syntax
-  $: value = $parameterStore[name];
+  export let value; // Accept value from parent
 
   function handleInput(event) {
-    const newValue = type === 'select' ? 
-      parseInt(event.target.value) : 
-      parseFloat(event.target.value);
-    parameterStore.updateParameter(name, newValue);
+    let newValue;
+    if (type === 'select') {
+      newValue = event.target.value === '' ? null : parseInt(event.target.value);
+    } else {
+      newValue = parseFloat(event.target.value);
+    }
+    
+    if (!isNaN(newValue)) {
+      console.log(`ParameterControl ${name} value changed to:`, newValue);
+      dispatch('change', newValue);
+    }
   }
 </script>
 
@@ -33,7 +39,7 @@
   {#if type === 'range'}
     <input 
       {type}
-      bind:value={value}
+      {value}
       {min}
       {max}
       {step}
@@ -42,12 +48,14 @@
     />
   {:else if type === 'select'}
     <select 
-      bind:value={value}
+      bind:value
       on:change={handleInput}
       class="block w-full text-sm rounded border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
     >
       {#each options as option}
-        <option value={option.value}>{option.label}</option>
+        <option value={option.value} selected={value === option.value}>
+          {option.label}
+        </option>
       {/each}
     </select>
   {/if}

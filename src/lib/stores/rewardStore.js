@@ -159,18 +159,17 @@ function createRewardStore() {
   function sendRewardRequest(rewards, weights, combinationType) {
     console.log("try reward request");
     if (socket?.readyState === WebSocket.OPEN) {
-      console.log("Sending reward request");
-      socket.send(
-        JSON.stringify({
-          type: "request_reward",
-          timestamp: new Date().toISOString(),
-          reward: {
-            rewards,
-            weights,
-            combination_type: combinationType,
-          },
-        })
-      );
+      const rewardRequest = {
+        type: "request_reward",
+        reward: {
+          rewards,
+          weights,
+          combination_type: combinationType,
+        },
+        timestamp: new Date().toISOString(),
+      };
+      console.log("Sending reward request:", rewardRequest);
+      socket.send(JSON.stringify(rewardRequest));
     }
   }
 

@@ -24,19 +24,54 @@
 
   let selectedGroup = Object.keys(REWARD_GROUPS)[0];
   let selectedRewardType = REWARD_GROUPS[selectedGroup][0];
-  let currentParameters = {};
+  let previousRewardType = selectedRewardType;
+  let activeParameters = initializeParameters(selectedRewardType);
+
+  function initializeParameters(rewardType) {
+    console.log('=== Initializing Parameters ===');
+    console.log('Reward Type:', rewardType);
+    // Initialize all parameters from REWARD_TYPES
+    const params = {};
+    Object.entries(REWARD_TYPES[rewardType]).forEach(([key, config]) => {
+      params[key] = config.default;
+      console.log(`Setting ${key} to default:`, config.default);
+    });
+    console.log('Initialized params:', params);
+    return params;
+  }
 
   $: {
-    // Reset parameters when reward type changes
-    currentParameters = Object.fromEntries(
-      Object.entries(REWARD_TYPES[selectedRewardType]).map(
-        ([key, config]) => [key, config.default]
-      )
-    );
+    console.log('=== Reactive Update ===');
+    console.log('Selected reward type changed to:', selectedRewardType);
+    if (previousRewardType !== selectedRewardType) {
+      console.log('Reward type changed, initializing new parameters');
+      activeParameters = initializeParameters(selectedRewardType);
+      previousRewardType = selectedRewardType;
+    } else {
+      console.log('Same reward type, keeping current parameters');
+    }
+  }
+
+  function handleParameterChange(param, value) {
+    console.log('=== Parameter Change ===');
+    console.log(`Changing ${param} from ${activeParameters[param]} to ${value}`);
+    // Create a new object with all existing parameters plus the updated one
+    activeParameters = {
+      ...activeParameters,  // Keep all existing parameters
+      [param]: value       // Update the changed parameter
+    };
+    console.log('Updated activeParameters:', activeParameters);
   }
 
   function addReward() {
-    rewardStore.addReward(selectedRewardType, currentParameters);
+    console.log('=== Adding Reward ===');
+    console.log('Current activeParameters:', activeParameters);
+    const rewardParams = {
+      name: selectedRewardType,
+      ...activeParameters  // Spread all parameters
+    };
+    console.log('Final reward params to be sent:', rewardParams);
+    rewardStore.addReward(selectedRewardType, rewardParams);
   }
 
   // Update selected reward type when group changes
@@ -132,7 +167,14 @@
             max={config.max}
             step={config.step}
             options={config.options?.map(opt => ({ value: opt, label: opt }))}
-            bind:value={currentParameters[param]}
+            value={activeParameters[param]}
+            on:change={(e) => {
+              console.log(`=== ParameterControl Change Event ===`);
+              console.log(`Parameter: ${param}`);
+              console.log(`Old value:`, activeParameters[param]);
+              console.log(`New value:`, e.detail);
+              handleParameterChange(param, e.detail);
+            }}
           />
         {/each}
       </ParameterGroup>

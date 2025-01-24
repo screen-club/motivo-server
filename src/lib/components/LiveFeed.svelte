@@ -30,7 +30,7 @@
   });
 </script>
 
-<div class="max-w-3xl mx-auto">
+<div class="max-w-[320px] mx-auto">
   <!-- Image Container -->
   <div class="relative rounded-xl overflow-hidden bg-white shadow-lg border border-gray-200">
     {#if isLoading}
@@ -42,7 +42,7 @@
     <img 
       src={currentImageUrl}
       alt="MJPEG Feed"
-      class="w-full aspect-video object-cover"
+      class="w-[320px] h-[240px] object-contain"
     />
     <img 
       src={nextImageUrl}
