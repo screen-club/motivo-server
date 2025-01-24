@@ -6,9 +6,9 @@ export const REWARD_TYPES = {
     move_speed: { type: "range", default: 2.0, min: 0, max: 5, step: 0.1 },
     stand_height: { type: "range", default: 1.4, min: 0.5, max: 2, step: 0.1 },
     move_angle: { type: "range", default: 0, min: -180, max: 180, step: 1 },
-    egocentric_target: { type: "boolean", default: true },
+    egocentric_target: { type: "checkbox", default: true },
     low_height: { type: "range", default: 0.6, min: 0.2, max: 1, step: 0.1 },
-    stay_low: { type: "boolean", default: false },
+    stay_low: { type: "checkbox", default: false },
   },
   raisearms: {
     left: { type: "select", options: ["l", "m", "h"], default: "m" },
@@ -75,7 +75,7 @@ export const REWARD_TYPES = {
       max: 0.5,
       step: 0.1,
     },
-    constrained_knees: { type: "boolean", default: false },
+    constrained_knees: { type: "checkbox", default: false },
   },
   split: {
     distance: { type: "range", default: 1.5, min: 0.5, max: 2.5, step: 0.1 },
