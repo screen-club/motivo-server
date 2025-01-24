@@ -64,7 +64,7 @@ async def run_reward_tests():
             print("Connected successfully!")
 
             # Test StayUprightReward
-            '''
+         
             await test_individual_reward(
                 websocket,
                 {
@@ -99,8 +99,7 @@ async def run_reward_tests():
                         },
                         f"{reward_name} Test (height: {height}m)"
                     )
-'''
-            '''
+
             # Test distance rewards for hands and feet
             distance_tests = [
                 ("left-hand-lateral", 0.3, 0.5, 0.7),
@@ -127,7 +126,7 @@ async def run_reward_tests():
                         },
                         f"{reward_name} Test (distance: {distance}m)"
                     )
-'''
+
             # Test combinations of multiple rewards
             combinations = [
                 {

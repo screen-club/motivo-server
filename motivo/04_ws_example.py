@@ -76,20 +76,21 @@ async def handle_websocket(websocket):
                     print(f"\nProcessing reward request...")
                     print(f"Active contexts before: {len(active_contexts)}")
                     
-                    # Clear previous contexts without resetting environment
-                    active_contexts.clear()
-                    print(f"Cleared contexts. Active contexts after: {len(active_contexts)}")
-                    
-                    # Move combination_type into the reward config
-                    reward_config = data['reward']
-                    if 'combination_type' in data:
-                        reward_config['combination_type'] = data['combination_type']
-                    
-                    # Compute and set new context
-                    print("\nComputing new reward context...")
-                    z = await get_reward_context(reward_config)
-                    active_contexts[config_key] = z
-                    current_z = z
+                    # Check if we already computed this reward context
+                    if config_key in active_contexts:
+                        print("Using cached reward context")
+                        current_z = active_contexts[config_key]
+                    else:
+                        print("Computing new reward context...")
+                        # Move combination_type into the reward config
+                        reward_config = data['reward']
+                        if 'combination_type' in data:
+                            reward_config['combination_type'] = data['combination_type']
+                        
+                        # Compute and cache new context
+                        z = await get_reward_context(reward_config)
+                        active_contexts[config_key] = z
+                        current_z = z
                     
                     response = {
                         "type": "reward",
