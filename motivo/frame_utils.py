@@ -145,4 +145,149 @@ def save_frame_data(frame, qpos, qvel, env=None, smpl_data=None):
     with open(data_path, 'w') as f:
         json.dump(pose_data, f, indent=2)
     
-    print(f"Saved frame and state data to: {output_dir}") 
+    print(f"Saved frame and state data to: {output_dir}")
+
+class FrameRecorder:
+    def __init__(self):
+        self.frames = []
+        self.qpos_list = []
+        self.qvel_list = []
+        self.smpl_data_list = []
+        self.recording = False
+        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # Set timestamp at initialization
+
+    def record_frame_data(self, frame, qpos, qvel, env=None, smpl_data=None):
+        """
+        Record a single frame and its associated data
+        """
+        if not self.recording:
+            # Don't reset timestamp here anymore since it's set in __init__
+            self.recording = True
+            print(f"Started recording with timestamp: {self.timestamp}")
+            
+        # Convert to SMPL if environment is provided and smpl_data is not
+        if env is not None and smpl_data is None:
+            pose, trans = qpos_to_smpl(qpos, env.unwrapped.model)
+            smpl_data = {
+                'poses': pose,
+                'trans': trans[0],
+                'betas': None
+            }
+            
+        # Store frame data
+        self.frames.append(frame)
+        self.qpos_list.append(qpos)
+        self.qvel_list.append(qvel)
+        if smpl_data:
+            self.smpl_data_list.append(smpl_data)
+            
+    def end_record(self):
+        """
+        Save all recorded frames and data
+        """
+        if not self.recording or not self.frames:
+            print("No frames recorded")
+            return
+            
+        print(f"Ending recording with timestamp: {self.timestamp}")
+        
+        # Create output directory with timestamp
+        output_dir = os.path.join("captured_frames", self.timestamp)
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Save frames as video
+        video_path = os.path.join(output_dir, "frames.mp4")
+        height, width = self.frames[0].shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(video_path, fourcc, 30.0, (width, height))
+        
+        for frame in self.frames:
+            out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        out.release()
+        
+        # Convert lists to numpy arrays
+        qpos_array = np.stack(self.qpos_list)
+        qvel_array = np.stack(self.qvel_list)
+        
+        # Save state data as NPZ
+        npz_data = {
+            'qpos': qpos_array,
+            'qvel': qvel_array,
+            'timestamp': self.timestamp
+        }
+        
+        # Process SMPL data if available
+        if self.smpl_data_list:
+            # Stack all poses and ensure correct shape
+            all_poses = np.stack([data['poses'] for data in self.smpl_data_list])
+            all_trans = np.stack([data['trans'] for data in self.smpl_data_list])
+            
+            # Reshape poses to (frames, 72)
+            if len(all_poses.shape) == 3 and all_poses.shape[2] == 3:
+                all_poses = all_poses.reshape(all_poses.shape[0], -1)
+                
+            npz_data.update({
+                'smpl_poses': all_poses,
+                'smpl_trans': all_trans
+            })
+            
+            # Save SMPL data as pickle
+            pkl_data = {
+                'smpl_poses': all_poses,
+                'smpl_trans': all_trans
+            }
+            
+            pkl_path = os.path.join(output_dir, "smpl_data.pkl")
+            with open(pkl_path, 'wb') as f:
+                pickle.dump(pkl_data, f)
+        
+        # Save NPZ data
+        data_path = os.path.join(output_dir, "state_data.npz")
+        np.savez(data_path, **npz_data)
+        
+        # Create and save metadata
+        metadata = {
+            'metadata': {
+                'timestamp': self.timestamp,
+                'format_version': '1.0',
+                'description': 'Humanoid pose capture sequence',
+                'frame_count': len(self.frames)
+            },
+            'bone_hierarchy': {
+                'order': SMPL_BONE_ORDER_NAMES,
+                'root': 'Pelvis',
+                'description': 'Bone order for pose reconstruction'
+            },
+            'data_format': {
+                'qpos': {
+                    'description': 'MuJoCo joint positions sequence',
+                    'shape': list(qpos_array.shape),
+                    'dtype': str(qpos_array.dtype)
+                },
+                'qvel': {
+                    'description': 'MuJoCo joint velocities sequence',
+                    'shape': list(qvel_array.shape),
+                    'dtype': str(qvel_array.dtype)
+                }
+            },
+            'video': {
+                'path': 'frames.mp4',
+                'format': 'MP4',
+                'fps': 30,
+                'frame_count': len(self.frames)
+            }
+        }
+        
+        metadata_path = os.path.join(output_dir, "metadata.json")
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+            
+        # Reset recorder state
+        self.frames = []
+        self.qpos_list = []
+        self.qvel_list = []
+        self.smpl_data_list = []
+        self.recording = False
+        # Don't reset timestamp here anymore
+        
+        print(f"Saved sequence data to: {output_dir}") 

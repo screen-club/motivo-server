@@ -86,7 +86,7 @@ def qpos_to_smpl(qpos, mj_model, smpl_model="smpl"):
     
     for ind1, bone_name in enumerate(smpl_bones_to_use):
         ind2 = body_qposaddr[bone_name]
-        print(f"ind1: {ind1}, Bone: {bone_name}, Indices: {ind2}")
+       # print(f"ind1: {ind1}, Bone: {bone_name}, Indices: {ind2}")
         if ind1 == 0:
             quat = qpos[:, 3:7]
             pose[:, ind1, :] = sRot.from_quat(quat[:, [1, 2, 3, 0]]).as_rotvec()

@@ -16,6 +16,8 @@ from reward_context import compute_reward_context, compute_q_value
 from custom_rewards import print_model_info, list_model_body_names
 from humenv import rewards as humenv_rewards
 from typing import Dict, Any
+from frame_utils import FrameRecorder  # Update import to use existing file
+
 
 # import from env BACKEND_DOMAIN
 BACKEND_DOMAIN = os.getenv("VITE_BACKEND_DOMAIN", "localhost")
@@ -30,6 +32,7 @@ active_contexts = {}  # Store computed contexts
 current_z = None     # Current active context
 thread_pool = ThreadPoolExecutor(max_workers=1)  # Increased from 1 to 2
 is_computing_reward = False  # New flag to track reward computation status
+frame_recorder = None  # Add this line
 
 async def get_reward_context(reward_config):
     """Async wrapper for reward context computation"""
@@ -57,17 +60,16 @@ async def get_reward_context(reward_config):
 
 async def handle_websocket(websocket):
     """Handle websocket connections"""
-    global current_z, active_contexts, is_computing_reward
+    global current_z, active_contexts, is_computing_reward, frame_recorder
     
     print("\n=== New WebSocket Connection Established ===")
-    
-    # Update to use env.unwrapped to access model and data
     
     try:
         async for message in websocket:
             try:
                 data = json.loads(message)
                 message_type = data.get("type", "")
+                print(f"Received message type: {message_type}")
 
                 if message_type == "debug_model_info":
                     response = {
@@ -157,6 +159,41 @@ async def handle_websocket(websocket):
                     }
                     await websocket.send(json.dumps(response))
                 
+                elif message_type == "start_recording":
+                    print("Starting recording...")
+                    global frame_recorder  # Ensure we're using the global variable
+                    frame_recorder = FrameRecorder()
+                    frame_recorder.recording = True
+                    response = {
+                        "type": "recording_status",
+                        "status": "started",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    print("Starting recording, recorder state:", frame_recorder.recording)
+                    await websocket.send(json.dumps(response))
+                
+                elif message_type == "stop_recording":
+                    print("Stopping recording...")
+                    if frame_recorder and frame_recorder.recording:
+                        try:
+                            print(f"Frames recorded: {len(frame_recorder.frames)}")
+                            frame_recorder.end_record()  # Save the recording
+                            response = {
+                                "type": "recording_status",
+                                "status": "stopped",
+                                "timestamp": datetime.now().isoformat()
+                            }
+                            await websocket.send(json.dumps(response))
+                            frame_recorder = None  # Clear the recorder after saving
+                        except Exception as e:
+                            print(f"Error stopping recording: {str(e)}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        print("No active recording to stop")
+                        print("frame_recorder:", frame_recorder)
+                        print("recording state:", frame_recorder.recording if frame_recorder else None)
+                
             except json.JSONDecodeError:
                 print("Error: Invalid JSON message")
                 await websocket.send(json.dumps({"error": "Invalid JSON"}))
@@ -164,12 +201,17 @@ async def handle_websocket(websocket):
     except websockets.exceptions.ConnectionClosed:
         print("Client disconnected")
     finally:
-        if env:
-            env.close()
+        if frame_recorder and frame_recorder.recording:
+            try:
+                frame_recorder.end_record()
+            except Exception as e:
+                print(f"Error in cleanup: {str(e)}")
+                traceback.print_exc()
+        print("WebSocket connection closed")
 
 async def run_simulation():
     """Continuous simulation loop"""
-    global current_z, is_computing_reward
+    global current_z, is_computing_reward, frame_recorder
     observation, _ = env.reset()
     
     frame_counter = 0
@@ -231,16 +273,9 @@ async def run_simulation():
             break
         elif key == ord('s'):  # Press 's' to save frame
             try:
-                # Get the raw observation tensor
-                
                 # Get data from environment
                 env_data = env.unwrapped.data
                 
-                # Print available data fields for debugging
-                
-                
-              
-                print("GO")
                 # Save frame with state data
                 save_frame_data(
                     frame=frame,
@@ -255,10 +290,25 @@ async def run_simulation():
                 print("Observation shape:", observation.shape)
                 print("Data structure:", type(env.unwrapped.data))
         
+        # Update recording logic - moved after frame rendering
+        if frame_recorder and frame_recorder.recording:
+            try:
+                print("Recording frame...")  # Debug log
+                frame_recorder.record_frame_data(
+                    frame=frame.copy(),  # Make a copy of the frame
+                    qpos=env.unwrapped.data.qpos.copy(),
+                    qvel=env.unwrapped.data.qvel.copy(),
+                    env=env
+                )
+            except Exception as e:
+                print(f"Error recording frame: {str(e)}")
+                import traceback
+                traceback.print_exc()
+        
         if terminated:
             observation, _ = env.reset()
         
-        await asyncio.sleep(1/60)
+        await asyncio.sleep(1/60)  # 60 FPS target
 
 async def main():
     """Main function"""
