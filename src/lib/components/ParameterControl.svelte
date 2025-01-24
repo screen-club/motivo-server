@@ -10,18 +10,25 @@
   export let step = 1;
   export let options = undefined;
   export let value; // Accept value from parent
+  export let defaultValue = undefined; // Add default value prop
 
   function handleInput(event) {
     let newValue;
     if (type === 'select') {
       newValue = event.target.value === '' ? null : parseInt(event.target.value);
-    } else {
+    } else if (type === 'range') {
       newValue = parseFloat(event.target.value);
+      // Update the bound value immediately for range inputs
+      value = newValue;
     }
     
     if (!isNaN(newValue)) {
       console.log(`ParameterControl ${name} value changed to:`, newValue);
-      dispatch('change', newValue);
+      // Dispatch both name and value
+      dispatch('change', {
+        name,
+        value: newValue
+      });
     }
   }
 </script>
@@ -48,7 +55,7 @@
     />
   {:else if type === 'select'}
     <select 
-      bind:value
+      {value}
       on:change={handleInput}
       class="block w-full text-sm rounded border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
     >

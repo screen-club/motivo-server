@@ -100,10 +100,10 @@ export const REWARD_TYPES = {
     position: { type: "range", default: 0, min: -1, max: 1, step: 0.1 },
   },
   "left-foot-height": {
-    height: { type: "range", default: 0, min: 0, max: 1, step: 0.1 },
+    height: { type: "range", default: 0, min: 0, max: 2.0, step: 0.1 },
   },
   "right-foot-height": {
-    height: { type: "range", default: 0, min: 0, max: 1, step: 0.1 },
+    height: { type: "range", default: 0, min: 0, max: 2.0, step: 0.1 },
   },
   "left-foot-lateral": {
     position: { type: "range", default: 0, min: -1, max: 1, step: 0.1 },
@@ -112,19 +112,19 @@ export const REWARD_TYPES = {
     position: { type: "range", default: 0, min: -1, max: 1, step: 0.1 },
   },
   "left-foot-forward": {
-    position: { type: "range", default: 0, min: -1, max: 1, step: 0.1 },
+    position: { type: "range", default: 0, min: -1, max: 2.0, step: 0.1 },
   },
   "right-foot-forward": {
-    position: { type: "range", default: 0, min: -1, max: 1, step: 0.1 },
+    position: { type: "range", default: 0, min: -1, max: 2.0, step: 0.1 },
   },
   "stay-upright": {
-    strength: { type: "range", default: 1.0, min: 0, max: 2, step: 0.1 },
+    strength: { type: "range", default: 1.0, min: 0, max: 2.0, step: 0.1 },
   },
   "head-height": {
-    height: { type: "range", default: 1.6, min: 0.5, max: 2, step: 0.1 },
+    height: { type: "range", default: 1.6, min: 0.2, max: 2, step: 0.1 },
   },
   "pelvis-height": {
-    height: { type: "range", default: 1.0, min: 0.3, max: 1.5, step: 0.1 },
+    height: { type: "range", default: 1.0, min: 0.2, max: 10.0, step: 0.1 },
   },
   "hand-height": {
     height: { type: "range", default: 1.0, min: 0, max: 2, step: 0.1 },
@@ -146,7 +146,7 @@ function createRewardStore() {
   const { subscribe, set, update } = writable({
     activeRewards: [],
     weights: [],
-    combinationType: "additive",
+    combinationType: "multiplicative",
   });
 
   let socket;

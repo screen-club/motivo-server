@@ -119,7 +119,7 @@
 
         <select
           bind:value={$rewardStore.combinationType}
-          class="mt-2 block w-full text-sm rounded border-gray-300"
+          class="mt-2 block w-full text-sm rounded-md border-0 py-2 pl-3 pr-12 text-gray-900 ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-blue-600 bg-white shadow-sm appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20fill%3D%22none%22%20viewBox%3D%220%200%2020%2020%22%3E%3Cpath%20stroke%3D%22%236b7280%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20stroke-width%3D%221.5%22%20d%3D%22m6%208%204%204%204-4%22%2F%3E%3C%2Fsvg%3E')] bg-[position:right_0.5rem_center] bg-[length:1.5em_1.5em] bg-no-repeat"
         >
           {#each COMBINATION_TYPES as type}
             <option value={type}>{type}</option>
@@ -140,7 +140,7 @@
       <!-- Group Selection -->
       <select
         bind:value={selectedGroup}
-        class="block w-full text-sm rounded border-gray-300"
+        class="block w-full text-sm rounded-md border-0 py-2 pl-3 pr-12 text-gray-900 ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-blue-600 bg-white shadow-sm appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20fill%3D%22none%22%20viewBox%3D%220%200%2020%2020%22%3E%3Cpath%20stroke%3D%22%236b7280%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20stroke-width%3D%221.5%22%20d%3D%22m6%208%204%204%204-4%22%2F%3E%3C%2Fsvg%3E')] bg-[position:right_0.5rem_center] bg-[length:1.5em_1.5em] bg-no-repeat"
       >
         {#each Object.keys(REWARD_GROUPS) as group}
           <option value={group}>{group}</option>
@@ -150,7 +150,7 @@
       <!-- Reward Type Selection -->
       <select
         bind:value={selectedRewardType}
-        class="block w-full text-sm rounded border-gray-300"
+        class="block w-full text-sm rounded-md border-0 py-2 pl-3 pr-12 text-gray-900 ring-1 ring-inset ring-gray-300 focus:ring-2 focus:ring-blue-600 bg-white shadow-sm appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20fill%3D%22none%22%20viewBox%3D%220%200%2020%2020%22%3E%3Cpath%20stroke%3D%22%236b7280%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20stroke-width%3D%221.5%22%20d%3D%22m6%208%204%204%204-4%22%2F%3E%3C%2Fsvg%3E')] bg-[position:right_0.5rem_center] bg-[length:1.5em_1.5em] bg-no-repeat"
       >
         {#each REWARD_GROUPS[selectedGroup] as type}
           <option value={type}>{type}</option>
@@ -168,12 +168,12 @@
             step={config.step}
             options={config.options?.map(opt => ({ value: opt, label: opt }))}
             value={activeParameters[param]}
-            on:change={(e) => {
+            on:change={({ detail }) => {
               console.log(`=== ParameterControl Change Event ===`);
-              console.log(`Parameter: ${param}`);
+              console.log(`Parameter: ${detail.name}`);
               console.log(`Old value:`, activeParameters[param]);
-              console.log(`New value:`, e.detail);
-              handleParameterChange(param, e.detail);
+              console.log(`New value:`, detail.value);
+              handleParameterChange(detail.name, detail.value);
             }}
           />
         {/each}

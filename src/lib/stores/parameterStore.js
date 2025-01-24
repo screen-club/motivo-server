@@ -12,11 +12,26 @@ const DEFAULT_PARAMETERS = {
 };
 
 function createParameterStore() {
-  const { subscribe, set, update } = writable(DEFAULT_PARAMETERS);
+  const { subscribe, set: internalSet, update } = writable(DEFAULT_PARAMETERS);
   let socket;
 
   function setSocket(ws) {
+    console.log("Setting parameter socket");
     socket = ws;
+
+    // Handle incoming messages
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "parameters") {
+          // Update store with received parameters
+          internalSet(data.parameters);
+        }
+      } catch (error) {
+        console.error("Error handling WebSocket message:", error);
+      }
+    };
+
     // Request current parameters when socket is set
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(
@@ -38,6 +53,8 @@ function createParameterStore() {
           timestamp: new Date().toISOString(),
         })
       );
+    } else {
+      console.warn("WebSocket not ready, parameters not sent:", params);
     }
   }
 
@@ -47,15 +64,24 @@ function createParameterStore() {
     updateParameter: (key, value) => {
       update((params) => {
         const newParams = { ...params, [key]: value };
+        console.log(params);
+
+        console.log(`Updating parameter ${key} to ${value}`);
         sendParameters(newParams);
         return newParams;
       });
     },
     reset: () => {
-      set(DEFAULT_PARAMETERS);
+      console.log("Resetting parameters to default");
+      internalSet(DEFAULT_PARAMETERS);
       sendParameters(DEFAULT_PARAMETERS);
     },
-    disconnect: () => socket?.close(),
+    disconnect: () => {
+      if (socket) {
+        socket.close();
+        socket = null;
+      }
+    },
   };
 }
 

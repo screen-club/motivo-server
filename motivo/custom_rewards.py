@@ -102,21 +102,45 @@ class HeadHeightReward(humenv_rewards.RewardFunction):
 
 @dataclasses.dataclass
 class PelvisHeightReward(humenv_rewards.RewardFunction):
-    target_height: float = 0.8
+    target_height: float = 2.0
+    constrained_knees: bool = False
+    knees_not_on_ground: bool = False
 
     def compute(
         self,
         model: mujoco.MjModel,
         data: mujoco.MjData,
     ) -> float:
+        # Get all necessary positions and states
         pelvis_height = get_xpos(model, data, name="Pelvis")[-1]
-        return rewards.tolerance(
-            pelvis_height,
-            bounds=(self.target_height - 0.1, self.target_height + 0.1),
-            margin=0.2,
-            value_at_margin=0.01,
+        chest_upright = get_chest_upright(model, data)
+        center_of_mass_velocity = humenv_rewards.get_center_of_mass_linvel(model, data)
+
+        # Calculate upright reward (to maintain balance while going down)
+        upright = rewards.tolerance(
+            chest_upright,
+            bounds=(0.9, float("inf")),
             sigmoid="linear",
+            margin=1.9,
+            value_at_margin=0,
         )
+        
+        # Calculate movement and control rewards
+        dont_move = rewards.tolerance(center_of_mass_velocity, margin=0.5).mean()
+        small_control = rewards.tolerance(data.ctrl, margin=1, value_at_margin=0, sigmoid="quadratic").mean()
+        small_control = (4 + small_control) / 5
+
+        # Calculate pelvis height reward - the main focus
+        pelvis_reward = rewards.tolerance(
+            pelvis_height,
+            bounds=(0, self.target_height),  # Reward for being at or below target height
+            sigmoid="linear",
+            margin=0.2,
+            value_at_margin=0,
+        )
+
+        # Combine all rewards
+        return small_control  * dont_move * pelvis_reward
 
     @staticmethod
     def reward_from_name(name: str) -> Optional["humenv_rewards.RewardFunction"]:
@@ -124,6 +148,7 @@ class PelvisHeightReward(humenv_rewards.RewardFunction):
         match = re.search(pattern, name)
         if match:
             target_height = float(match.group(1))
+            print(f"Target height fore pelvis: {target_height}")
             return PelvisHeightReward(target_height=target_height)
         return None
 

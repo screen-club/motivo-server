@@ -2,6 +2,14 @@
   import { parameterStore } from '../stores/parameterStore';
   import ParameterControl from './ParameterControl.svelte';
   import ParameterGroup from './ParameterGroup.svelte';
+
+  // Subscribe to the store values
+  $: parameters = $parameterStore;
+
+  function handleParameterChange(event) {
+    const { name, value } = event.detail;
+    parameterStore.updateParameter(name, value);
+  }
 </script>
 
 <div class="w-96 py-4">
@@ -18,6 +26,9 @@
           min="-30"
           max="0"
           step="0.1"
+          value={parameters.gravity}
+          defaultValue={-9.81}
+          on:change={handleParameterChange}
         />
         <ParameterControl
           name="density"
@@ -26,6 +37,9 @@
           min="0"
           max="5"
           step="0.1"
+          value={parameters.density}
+          defaultValue={1.0}
+          on:change={handleParameterChange}
         />
       </ParameterGroup>
 
@@ -39,6 +53,9 @@
             min="-10"
             max="10"
             step="0.1"
+            value={parameters[`wind_${axis}`]}
+            defaultValue={0}
+            on:change={handleParameterChange}
           />
         {/each}
       </ParameterGroup>
@@ -52,29 +69,23 @@
           min="0"
           max="1"
           step="0.01"
+          value={parameters.viscosity}
+          defaultValue={0.1}
+          on:change={handleParameterChange}
         />
         <ParameterControl
           name="timestep"
           label="Timestep"
           type="range"
-          min="0.001"
-          max="0.01"
-          step="0.001"
+          min="0.0001"
+          max="0.002"
+          step="0.0001"
+          value={parameters.timestep}
+          defaultValue={0.0005}
+          on:change={handleParameterChange}
         />
       </ParameterGroup>
 
-      <!-- Integrator -->
-      <ParameterGroup layout="stack">
-        <ParameterControl
-          name="integrator"
-          label="Integrator"
-          type="select"
-          options={[
-            { value: 0, label: 'Euler' },
-            { value: 1, label: 'RK4' }
-          ]}
-        />
-      </ParameterGroup>
 
       <button 
         on:click={() => parameterStore.reset()}

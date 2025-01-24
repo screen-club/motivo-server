@@ -24,6 +24,8 @@ from custom_rewards import (
 )
 
 def create_reward_function(reward_type, weight):
+
+    print("create_reward_function")
     """Create a reward function based on config"""
     name = reward_type['name']
     
