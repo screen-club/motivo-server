@@ -19,7 +19,7 @@ from flask import Flask, send_from_directory, request, jsonify, send_file
 from flask_cors import CORS
 import json
 from dotenv import load_dotenv
-from sqliteHander import Content
+from sqliteHander import Content, initialize_database
 
 # Load environment variables
 load_dotenv()
@@ -39,6 +39,14 @@ try:
     print("Successfully initialized Anthropic client")
 except Exception as e:
     print(f"Error initializing Anthropic client: {str(e)}")
+
+
+# Add this after loading environment variables
+try:
+    initialize_database()
+    print("Database initialized successfully")
+except Exception as e:
+    print(f"Error initializing database: {e}")
 
 # Define storage paths
 STORAGE_BASE = 'storage/video'
