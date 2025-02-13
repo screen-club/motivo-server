@@ -59,3 +59,5 @@ metamotivo-S-1-datasets
 *.zip
 *.mp4
 motivo/poses_test.json
+
+storage/
