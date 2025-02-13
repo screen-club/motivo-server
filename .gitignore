@@ -57,3 +57,5 @@ metamotivo-S-1-datasets
 *.png
 *.jpg
 *.zip
+*.mp4
+motivo/poses_test.json
