@@ -14,6 +14,7 @@
   let videoBuffer;
   let saveError = '';
   let loadError = '';
+  let timelineComponent; // Reference to PresetTimeline component
   
   const apiUrl = import.meta.env.VITE_API_URL;
 
@@ -85,42 +86,190 @@
   }
 
   async function loadPresetConfig(preset) {
-    try {
-      if (preset.data?.environmentParams) {
-        // Update parameter store with saved environment parameters
-        Object.entries(preset.data.environmentParams).forEach(([key, value]) => {
-          parameterStore.updateParameter(key, value);
-        });
-
-        // Send environment parameters to backend
-        await websocketService.send({
-          type: "update_environment",
-          params: preset.data.environmentParams
-        });
+  try {
+    if (preset.type === 'timeline') {
+      if (timelineComponent) {
+        timelineComponent.loadTimeline(preset.data);
       }
+      
+      // Load each preset in the timeline sequentially
+      if (preset.data?.placedPresets) {
+        for (const placedPreset of preset.data.placedPresets) {
+          if (placedPreset.data?.environmentParams) {
+            // Update parameter store with saved environment parameters
+            Object.entries(placedPreset.data.environmentParams).forEach(([key, value]) => {
+              parameterStore.updateParameter(key, value);
+            });
 
-      if (preset.type === 'rewards' && preset.data?.rewards) {
-        // Send request_reward message
-        await websocketService.send({
-          type: "request_reward",
-          reward: {
-            rewards: preset.data.rewards,
-            weights: preset.data.weights,
-            combinationType: preset.data.combinationType
-          },
-          timestamp: new Date().toISOString()
-        });
+            // Send environment parameters to backend
+            await websocketService.send({
+              type: "update_environment",
+              params: placedPreset.data.environmentParams
+            });
+          }
 
-        // Request updated state after loading rewards
-        await websocketService.send({
-          type: "debug_model_info"
-        });
+          if (placedPreset.type === 'rewards' && placedPreset.data?.rewards) {
+            // Send request_reward message
+            await websocketService.send({
+              type: "request_reward",
+              reward: {
+                rewards: placedPreset.data.rewards,
+                weights: placedPreset.data.weights,
+                combinationType: placedPreset.data.combinationType
+              },
+              timestamp: new Date().toISOString()
+            });
+          }
+        }
       }
       
       loadError = '';
+      return;
+    }
+
+    // Original preset loading logic for non-timeline presets
+    if (preset.data?.environmentParams) {
+      Object.entries(preset.data.environmentParams).forEach(([key, value]) => {
+        parameterStore.updateParameter(key, value);
+      });
+
+      await websocketService.send({
+        type: "update_environment",
+        params: preset.data.environmentParams
+      });
+    }
+
+    if (preset.type === 'rewards' && preset.data?.rewards) {
+      await websocketService.send({
+        type: "request_reward",
+        reward: {
+          rewards: preset.data.rewards,
+          weights: preset.data.weights,
+          combinationType: preset.data.combinationType
+        },
+        timestamp: new Date().toISOString()
+      });
+
+      await websocketService.send({
+        type: "debug_model_info"
+      });
+    }
+    
+    loadError = '';
+  } catch (error) {
+    console.error('Failed to load preset configuration:', error);
+    loadError = 'Failed to load preset. Please try again.';
+  }
+}
+
+  async function saveCurrentTimeline() {
+    const title = prompt('Enter a name for this timeline:');
+    if (!title) return;
+
+    isSaving = true;
+    saveError = '';
+    
+    try {
+      const config = {
+        title,
+        type: 'timeline',
+        data: {
+          duration: timelineComponent.duration,
+          placedPresets: timelineComponent.placedPresets
+        }
+      };
+      
+      await DbService.addConfig(config);
+      await loadPresets();
+
     } catch (error) {
-      console.error('Failed to load preset configuration:', error);
-      loadError = 'Failed to load preset. Please try again.';
+      console.error('Failed to save timeline:', error);
+      saveError = 'Failed to save timeline. Please try again.';
+    } finally {
+      isSaving = false;
+    }
+  }
+
+  async function saveCurrentConfig() {
+    const title = prompt('Enter a name for this configuration:');
+    if (!title) return;
+
+    isSaving = true;
+    saveError = '';
+    
+    try {
+      videoBuffer.startRecording();
+      const videoBlob = await videoBuffer.getBuffer();
+      
+      const base64Thumbnail = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64String = reader.result.split(',')[1];
+          resolve(base64String);
+        };
+        reader.readAsDataURL(videoBlob);
+      });
+
+      let rewardsData = null;
+
+      try {
+        websocketService.send({
+          type: "debug_model_info"
+        });
+
+        const modelInfo = await new Promise((resolve, reject) => {
+          const cleanup = websocketService.addMessageHandler((data) => {
+            if (data.type === 'debug_model_info') {
+              cleanup();
+              resolve(data);
+            }
+          });
+
+          setTimeout(() => {
+            cleanup();
+            reject(new Error('Timeout waiting for model info'));
+          }, 5000);
+        });
+
+        if (modelInfo?.active_rewards) {
+          rewardsData = {
+            rewards: modelInfo.active_rewards.rewards,
+            weights: modelInfo.active_rewards.weights,
+            combinationType: modelInfo.active_rewards.combinationType,
+          };
+        }
+      } catch (error) {
+        console.log('No rewards data available:', error);
+      }
+
+      const environmentParams = {
+        gravity: $parameterStore.gravity,
+        density: $parameterStore.density,
+        wind_x: $parameterStore.wind_x,
+        wind_y: $parameterStore.wind_y,
+        wind_z: $parameterStore.wind_z,
+        viscosity: $parameterStore.viscosity,
+        timestep: $parameterStore.timestep
+      };
+      
+      const config = {
+        title,
+        type: rewardsData ? 'rewards' : 'environment',
+        thumbnail: base64Thumbnail,
+        data: {
+          ...(rewardsData && { ...rewardsData }),
+          environmentParams
+        }
+      };
+      
+      await DbService.addConfig(config);
+      await loadPresets();
+
+    } catch (error) {
+      console.error('Failed to save configuration:', error);
+      saveError = 'Failed to save configuration. Please try again.';
+    } finally {
+      isSaving = false;
     }
   }
 
@@ -165,97 +314,12 @@
       saveError = 'Failed to delete preset. Please try again.';
     }
   }
-
-  async function saveCurrentConfig() {
-    const title = prompt('Enter a name for this configuration:');
-    if (!title) return;
-
-    isSaving = true;
-    saveError = '';
-    
-    try {
-      videoBuffer.startRecording();
-      const videoBlob = await videoBuffer.getBuffer();
-      
-      const base64Thumbnail = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64String = reader.result.split(',')[1];
-          resolve(base64String);
-        };
-        reader.readAsDataURL(videoBlob);
-      });
-
-      let rewardsData = null;
-
-      try {
-        // Request current model info
-        websocketService.send({
-          type: "debug_model_info"
-        });
-
-        const modelInfo = await new Promise((resolve, reject) => {
-          const cleanup = websocketService.addMessageHandler((data) => {
-            if (data.type === 'debug_model_info') {
-              cleanup();
-              resolve(data);
-            }
-          });
-
-          setTimeout(() => {
-            cleanup();
-            reject(new Error('Timeout waiting for model info'));
-          }, 5000);
-        });
-
-        if (modelInfo?.active_rewards) {
-          rewardsData = {
-            rewards: modelInfo.active_rewards.rewards,
-            weights: modelInfo.active_rewards.weights,
-            combinationType: modelInfo.active_rewards.combinationType,
-          };
-        }
-      } catch (error) {
-        console.log('No rewards data available:', error);
-      }
-
-      // Get current environment parameters from store
-      const environmentParams = {
-        gravity: $parameterStore.gravity,
-        density: $parameterStore.density,
-        wind_x: $parameterStore.wind_x,
-        wind_y: $parameterStore.wind_y,
-        wind_z: $parameterStore.wind_z,
-        viscosity: $parameterStore.viscosity,
-        timestep: $parameterStore.timestep
-      };
-      
-      const config = {
-        title,
-        type: rewardsData ? 'rewards' : 'environment',
-        thumbnail: base64Thumbnail,
-        data: {
-          ...(rewardsData && { ...rewardsData }),
-          environmentParams
-        }
-      };
-      
-      await DbService.addConfig(config);
-      await loadPresets();
-
-    } catch (error) {
-      console.error('Failed to save configuration:', error);
-      saveError = 'Failed to save configuration. Please try again.';
-    } finally {
-      isSaving = false;
-    }
-  }
 </script>
 
 <div class="w-full bg-white rounded-lg shadow-lg p-4 mb-8">
   <div class="w-full">
     <h2 class="text-lg font-bold text-gray-800">Timeline</h2>
-    <PresetTimeline />
+    <PresetTimeline bind:this={timelineComponent} />
   </div>
   <div class="flex justify-between items-center mb-4">
     <h2 class="text-lg font-bold text-gray-800">Presets</h2>
@@ -267,7 +331,15 @@
         <option value="all">All Types</option>
         <option value="environment">Environment</option>
         <option value="rewards">Rewards</option>
+        <option value="timeline">Timeline</option>
       </select>
+      <button 
+        class="bg-purple-500 text-white px-3 py-1 text-sm font-medium rounded-md hover:bg-purple-600 transition-colors disabled:bg-gray-400"
+        on:click={saveCurrentTimeline}
+        disabled={isSaving}
+      >
+        {isSaving ? 'Saving...' : 'Save Timeline'}
+      </button>
       <button 
         class="bg-green-500 text-white px-3 py-1 text-sm font-medium rounded-md hover:bg-green-600 transition-colors disabled:bg-gray-400"
         on:click={saveCurrentConfig}
@@ -292,24 +364,31 @@
     <div class="flex gap-4 overflow-x-auto pb-4">
       {#each filterPresets(presets) as preset (preset.id)}
         <div 
-          draggable="true"
+          draggable={preset.type !== 'timeline'}
           on:dragstart={(e) => {
-            e.dataTransfer.setData('preset', JSON.stringify(preset));
+            if (preset.type !== 'timeline') {
+              e.dataTransfer.setData('preset', JSON.stringify(preset));
+            }
           }}
-          class="flex-shrink-0 w-52 border rounded-lg p-4 bg-white shadow-sm cursor-move"
+          class="flex-shrink-0 w-52 border rounded-lg p-4 bg-white shadow-sm {preset.type !== 'timeline' ? 'cursor-move' : 'cursor-pointer'}"
+          on:click={() => {
+            if (preset.type === 'timeline') {
+              loadPresetConfig(preset);
+            }
+          }}
           transition:fade
         >
-          {#if preset.thumbnail}
-            <video 
-              src={`data:video/webm;base64,${preset.thumbnail}`}
-              autoplay
-              muted
-              loop
-              playsinline
-              class="w-full mb-2 rounded"
-              height="120"
-            ></video>
-          {/if}
+        {#if preset.thumbnail && preset.type !== 'timeline'}
+          <video 
+            src={`data:video/webm;base64,${preset.thumbnail}`}
+            autoplay
+            muted
+            loop
+            playsinline
+            class="w-full mb-2 rounded"
+            height="120"
+          ></video>
+        {/if}
           
           <div class="flex justify-between items-start mb-2">
             <h3 class="font-semibold text-gray-800">{preset.title}</h3>
@@ -326,16 +405,22 @@
                 <br>
                 {preset.data.rewards.length} rewards
               {/if}
+            {:else if preset.type === 'timeline'}
+              Duration: {preset.data.duration}s
+              <br>
+              Presets: {preset.data.placedPresets.length}
             {/if}
           </div>
 
           <div class="flex justify-end gap-2">
-            <button 
-              class="text-sm text-blue-600 hover:text-blue-800"
-              on:click={() => loadPresetConfig(preset)}
-            >
-              Load
-            </button>
+            {#if preset.type !== 'timeline'}
+              <button 
+                class="text-sm text-blue-600 hover:text-blue-800"
+                on:click={() => loadPresetConfig(preset)}
+              >
+                Load
+              </button>
+            {/if}
             <button 
               class="text-sm text-red-600 hover:text-red-800"
               on:click={() => deletePreset(preset.id)}
