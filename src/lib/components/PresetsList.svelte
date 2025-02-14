@@ -112,21 +112,25 @@
 
   async function loadSinglePreset(preset) {
     if (preset.data?.environmentParams) {
+      // Update local parameter store
       Object.entries(preset.data.environmentParams).forEach(([key, value]) => {
         parameterStore.updateParameter(key, value);
       });
 
+      // Use update_parameters instead of update_environment
       await websocketService.send({
-        type: "update_environment",
-        params: preset.data.environmentParams
+        type: "update_parameters",
+        parameters: preset.data.environmentParams,
+        timestamp: new Date().toISOString()
       });
     }
 
     if (preset.type === 'rewards') {
       if (preset.cache_file_path) {
+        // Use load_npz_context instead of load_cached_reward
         await websocketService.send({
-          type: "load_cached_reward",
-          cache_file: preset.cache_file_path,
+          type: "load_npz_context",
+          npz_path: preset.cache_file_path,
           timestamp: new Date().toISOString()
         });
       } else if (preset.data?.rewards) {
