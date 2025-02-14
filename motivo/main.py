@@ -76,11 +76,16 @@ class AppState:
                 self.buffer_data
             )
             
+            # Get the cache file path for this reward configuration
+            cache_key = self.context_cache.get_cache_key(reward_config)
+            cache_file = self.context_cache._get_cache_file(cache_key)
+            
             # Notify clients that computation is complete
             await self.ws_manager.broadcast({
                 "type": "reward_computation",
                 "status": "completed",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "cache_file": str(cache_file)
             })
             
             return z
@@ -126,6 +131,13 @@ async def run_simulation():
             qpos = app_state.env.unwrapped.data.qpos
             pose, trans, positions, position_names = qpos_to_smpl(qpos, app_state.env.unwrapped.model)
             
+            # Get cache file for current z if available
+            current_z = app_state.message_handler.get_current_z()
+            cache_file = None
+            if app_state.message_handler.current_reward_config is not None:
+                cache_key = app_state.context_cache.get_cache_key(app_state.message_handler.current_reward_config)
+                cache_file = app_state.context_cache._get_cache_file(cache_key)
+            
             pose_data = {
                 "type": "smpl_update",
                 "pose": pose.tolist(),
@@ -133,7 +145,8 @@ async def run_simulation():
                 "positions": [pos.tolist() for pos in positions],
                 "qpos": qpos.tolist(),
                 "timestamp": datetime.now().isoformat(),
-                "position_names": position_names
+                "position_names": position_names,
+                "cache_file": str(cache_file) if cache_file else None
             }
             
             await app_state.ws_manager.broadcast(pose_data)
@@ -209,7 +222,7 @@ async def main():
         
         # Try to get from cache first
         cache_key = app_state.context_cache.get_cache_key(default_config)
-        default_z = app_state.context_cache._get_cached_context_impl(cache_key)
+        default_z, _ = app_state.context_cache._get_cached_context_impl(cache_key)
         
         if default_z is None:
             print("\nDefault context not found in cache, computing...")

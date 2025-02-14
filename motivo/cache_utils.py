@@ -29,7 +29,7 @@ class RewardContextCache:
         hashed_key = hashlib.sha256(cache_key.encode()).hexdigest()
         return self.cache_dir / f"{hashed_key}.npz"
     
-    def _save_to_disk(self, cache_key: str, z: torch.Tensor) -> None:
+    def _save_to_disk(self, cache_key: str, z: torch.Tensor) -> Path:
         """Save context to disk cache"""
         try:
             cache_file = self._get_cache_file(cache_key)
@@ -37,10 +37,12 @@ class RewardContextCache:
             z_np = z.cpu().numpy()
             np.savez_compressed(cache_file, z=z_np)
             print(f"\nSaved context to disk cache: {cache_file}")
+            return cache_file
         except Exception as e:
             print(f"\nWarning: Failed to save to disk cache: {e}")
+            return None
     
-    def _load_from_disk(self, cache_key: str) -> torch.Tensor:
+    def _load_from_disk(self, cache_key: str) -> tuple[torch.Tensor, Path] | tuple[None, None]:
         """Load context from disk cache"""
         try:
             cache_file = self._get_cache_file(cache_key)
@@ -58,10 +60,10 @@ class RewardContextCache:
                 # Convert to tensor and move to correct device
                 z = torch.from_numpy(data['z']).to(device=device, dtype=torch.float32)
                 print(f"\nLoaded context from disk cache: {cache_file} (device: {z.device})")
-                return z
+                return z, cache_file
         except Exception as e:
             print(f"\nWarning: Failed to load from disk cache: {e}")
-        return None
+        return None, None
     
     def get_cache_key(self, reward_config: Dict[str, Any]) -> str:
         """Generate a consistent cache key for a reward configuration"""
@@ -81,33 +83,34 @@ class RewardContextCache:
         return json.dumps(normalized_config, sort_keys=True)
     
     @lru_cache(maxsize=1000)
-    def _get_cached_context_impl(self, cache_key: str) -> torch.Tensor:
+    def _get_cached_context_impl(self, cache_key: str) -> tuple[torch.Tensor | None, Path | None]:
         """Internal implementation of context retrieval with LRU cache"""
         # Check memory cache first
         if cache_key in self.computation_cache:
             z = self.computation_cache[cache_key]
             print("\nUSING MEMORY CACHE ✓")
             print(f"Cached tensor device: {z.device}")
-            return z
+            cache_file = self._get_cache_file(cache_key)
+            return z, cache_file
         
         # Try loading from disk cache
-        z = self._load_from_disk(cache_key)
+        z, cache_file = self._load_from_disk(cache_key)
         if z is not None:
             # Store in memory cache if there's room
             if len(self.computation_cache) < self.max_memory_entries:
                 self.computation_cache[cache_key] = z
-            return z
+            return z, cache_file
         
-        return None
+        return None, None
     
-    async def get_cached_context(self, reward_config: Dict[str, Any], compute_fn) -> Any:
+    async def get_cached_context(self, reward_config: Dict[str, Any], compute_fn) -> tuple[Any, Path | None]:
         """Get context from cache or compute new one with improved caching"""
         cache_key = self.get_cache_key(reward_config)
         
         # Try to get from cache (memory or disk)
-        cached_z = self._get_cached_context_impl(cache_key)
+        cached_z, cache_file = self._get_cached_context_impl(cache_key)
         if cached_z is not None:
-            return cached_z
+            return cached_z, cache_file
         
         print("\nCOMPUTING NEW CONTEXT - Cache miss ⚙️")
         z = await compute_fn(reward_config)
@@ -117,13 +120,13 @@ class RewardContextCache:
             self.computation_cache[cache_key] = z
         
         # Always store in disk cache
-        self._save_to_disk(cache_key, z)
+        cache_file = self._save_to_disk(cache_key, z)
         
         # Update LRU cache
         self._get_cached_context_impl.cache_clear()
         self._get_cached_context_impl(cache_key)
         
-        return z
+        return z, cache_file
     
     def clear_cache(self) -> None:
         """Clear all caches"""

@@ -8,6 +8,7 @@ from typing import Dict, Any, Optional
 from frame_utils import FrameRecorder
 from reward_context import compute_reward_context
 import asyncio
+from pathlib import Path
 
 class MessageHandler:
     def __init__(self, model, env, ws_manager, context_cache):
@@ -18,6 +19,8 @@ class MessageHandler:
         self.buffer_data = None  # Will be set by AppState
         self.current_z = None
         self.active_rewards = None
+        self.active_poses = None  # Track active poses
+        self.current_reward_config = None  # Track current reward configuration
         self.is_computing_reward = False
         self.default_z = None
         self.frame_recorder = None
@@ -25,6 +28,8 @@ class MessageHandler:
         # Environment variables
         self.backend_domain = os.getenv("VITE_BACKEND_DOMAIN", "localhost")
         self.webserver_port = os.getenv("VITE_WEBSERVER_PORT", 5002)
+        self.ws_port = os.getenv("VITE_WS_PORT", 8765)
+        self.api_port = os.getenv("VITE_API_PORT", 5000)
 
     def set_buffer_data(self, buffer_data):
         """Set the buffer data needed for reward computation"""
@@ -43,7 +48,8 @@ class MessageHandler:
                     self.model,
                     self.buffer_data
                 )
-            return await self.context_cache.get_cached_context(reward_config, compute_wrapper)
+            z, _ = await self.context_cache.get_cached_context(reward_config, compute_wrapper)
+            return z
         finally:
             self.is_computing_reward = False
 
@@ -65,6 +71,8 @@ class MessageHandler:
                 "load_pose": self.handle_load_pose,
                 "clear_active_rewards": self.handle_clear_active_rewards,
                 "update_reward": self.handle_update_reward,
+                "get_current_context": self.handle_get_current_context,
+                "load_npz_context": self.handle_load_npz_context,
             }
             
             handler = handlers.get(message_type)
@@ -175,12 +183,29 @@ class MessageHandler:
             
             # Update current context
             self.current_z = z
+            
+            # Update active poses
+            self.active_poses = {
+                "type": "qpos",
+                "qpos": goal_qpos.tolist(),
+                "inference_type": inference_type
+            }
+            
             print("Context updated successfully")
+            
+            # Get cache file path if we have a current reward config
+            cache_file = None
+            if self.current_reward_config:
+                cache_key = self.context_cache.get_cache_key(self.current_reward_config)
+                cache_file = self.context_cache._get_cache_file(cache_key)
             
             response = {
                 "type": "pose_loaded",
                 "status": "success",
-                "timestamp": datetime.now().isoformat()
+                "inference_type": inference_type,
+                "active_poses": self.active_poses,
+                "timestamp": datetime.now().isoformat(),
+                "cache_file": str(cache_file) if cache_file else None
             }
             await websocket.send(json.dumps(response))
             print("Success response sent")
@@ -201,6 +226,8 @@ class MessageHandler:
     async def handle_clear_active_rewards(self, websocket, data: Dict[str, Any]) -> None:
         print("\nClearing active rewards...")
         self.active_rewards = None
+        self.current_reward_config = None  # Clear current reward config
+        self.active_poses = None  # Also clear active poses
         self.current_z = self.default_z
         print("Active rewards cleared ✅")
         
@@ -247,16 +274,17 @@ class MessageHandler:
                 
                 # Update the specific reward's parameters
                 self.active_rewards['rewards'][reward_index].update(new_parameters)
+                self.current_reward_config = self.active_rewards  # Update current reward config
                 
                 print("\nActive rewards after update:")
                 print(json.dumps(self.active_rewards, indent=2))
                 
                 print("\nRecomputing context...")
-                self.current_z = await self.context_cache.get_cached_context(
+                z, _ = await self.context_cache.get_cached_context(
                     self.active_rewards,
                     self.get_reward_context
                 )
-                print("Context recomputed ✅")
+                self.current_z = z
                 
                 response = {
                     "type": "reward_updated",
@@ -305,7 +333,7 @@ class MessageHandler:
             )
             
             pose_z = self.model.goal_inference(next_obs=goal_obs)
-            reward_z = await self.context_cache.get_cached_context(reward_config, self.get_reward_context)
+            reward_z, _ = await self.context_cache.get_cached_context(reward_config, self.get_reward_context)
             
             # Interpolate between contexts
             self.current_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
@@ -336,6 +364,7 @@ class MessageHandler:
             "type": "debug_model_info",
             "is_computing": self.is_computing_reward,
             "active_rewards": self.active_rewards,
+            "active_poses": self.active_poses,
             **stats
         }
         await self.ws_manager.broadcast(response)
@@ -355,10 +384,12 @@ class MessageHandler:
             return
         
         self.active_rewards = data['reward']
-        self.current_z = await self.context_cache.get_cached_context(
+        self.current_reward_config = data['reward']  # Update current reward config
+        z, _ = await self.context_cache.get_cached_context(
             self.active_rewards, 
             self.get_reward_context
         )
+        self.current_z = z
         
         response = {
             "type": "reward",
@@ -462,12 +493,24 @@ class MessageHandler:
                 raise ValueError(f"Unsupported inference type: {inference_type}")
             
             self.current_z = z
+            
+            # Update active poses
+            self.active_poses = {
+                "type": "smpl",
+                "pose": smpl_pose.tolist(),
+                "trans": smpl_trans.tolist(),
+                "model": model_type,
+                "inference_type": inference_type,
+                "qpos": goal_qpos.tolist()
+            }
+            
             print("Context updated successfully")
             
             response = {
                 "type": "pose_loaded",
                 "status": "success",
                 "inference_type": inference_type,
+                "active_poses": self.active_poses,
                 "timestamp": datetime.now().isoformat()
             }
             await websocket.send(json.dumps(response))
@@ -484,9 +527,113 @@ class MessageHandler:
             }
             await websocket.send(json.dumps(response))
 
+    async def handle_get_current_context(self, websocket, data: Dict[str, Any]) -> None:
+        """Handle request for current context information"""
+        try:
+            print("\nGetting current context information...")
+            
+            # Get cache file path if we have a current reward config
+            cache_file = None
+            if self.current_reward_config is not None:
+                cache_key = self.context_cache.get_cache_key(self.current_reward_config)
+                cache_file = self.context_cache._get_cache_file(cache_key)
+            
+            # Get environment parameters
+            env_params = self.env.get_parameters() if hasattr(self.env, 'get_parameters') else {}
+            
+            response = {
+                "type": "current_context",
+                "status": "success",
+                "data": {
+                    "active_rewards": self.active_rewards,
+                    "active_poses": self.active_poses,
+                    "current_reward_config": self.current_reward_config,
+                    "cache_file": str(cache_file) if cache_file else None,
+                    "is_computing": self.is_computing_reward,
+                    "environment_variables": {
+                        "backend_domain": self.backend_domain,
+                        "webserver_port": self.webserver_port,
+                        "ws_port": self.ws_port,
+                        "api_port": self.api_port
+                    },
+                    "environment_parameters": env_params
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            await websocket.send(json.dumps(response))
+            print("Current context information sent ✅")
+            
+        except Exception as e:
+            error_msg = f"Error getting current context: {str(e)}"
+            print(error_msg)
+            traceback.print_exc()
+            
+            response = {
+                "type": "current_context",
+                "status": "error",
+                "error": error_msg,
+                "timestamp": datetime.now().isoformat()
+            }
+            await websocket.send(json.dumps(response))
+
     def get_current_z(self) -> Optional[torch.Tensor]:
         return self.current_z
 
     def set_default_z(self, z: torch.Tensor) -> None:
         self.default_z = z
-        self.current_z = z 
+        self.current_z = z
+
+    async def handle_load_npz_context(self, websocket, data: Dict[str, Any]) -> None:
+        """Handle loading context directly from an NPZ file"""
+        try:
+            print("\nLoading context from NPZ file...")
+            npz_path = data.get("npz_path")
+            
+            if not npz_path:
+                raise ValueError("NPZ path not provided")
+            
+            # Load the context from NPZ
+            try:
+                npz_data = np.load(npz_path)
+                z = torch.from_numpy(npz_data['z']).to(device=self.model.cfg.device, dtype=torch.float32)
+                print(f"Loaded context tensor of shape {z.shape} from {npz_path}")
+                
+                # Update current context
+                self.current_z = z
+                
+                # Try to infer reward config from filename
+                cache_dir = Path(os.path.expanduser('~/.motivo/cache'))
+                if Path(npz_path).parent == cache_dir:
+                    # This is a cached reward config, try to find the original config
+                    hash_value = Path(npz_path).stem
+                    print(f"NPZ file is from cache, hash: {hash_value}")
+                else:
+                    print("NPZ file is not from cache directory")
+                
+                response = {
+                    "type": "npz_context_loaded",
+                    "status": "success",
+                    "timestamp": datetime.now().isoformat(),
+                    "npz_path": npz_path,
+                    "tensor_shape": list(z.shape)
+                }
+                
+            except Exception as e:
+                raise ValueError(f"Failed to load NPZ file: {str(e)}")
+            
+            await websocket.send(json.dumps(response))
+            print("Context loaded successfully ✅")
+            
+        except Exception as e:
+            error_msg = f"Error loading NPZ context: {str(e)}"
+            print(error_msg)
+            traceback.print_exc()
+            
+            response = {
+                "type": "npz_context_loaded",
+                "status": "error",
+                "error": error_msg,
+                "timestamp": datetime.now().isoformat()
+            }
+            await websocket.send(json.dumps(response)) 

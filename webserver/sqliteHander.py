@@ -33,7 +33,8 @@ class Content(BaseModel):
                 "title": row.title,
                 "thumbnail": row.thumbnail,
                 "type": row.type,
-                "data": row.get_data()
+                "data": row.get_data(),
+                
             } for row in rows]
 
     def add(self, title, thumbnail, type, data):

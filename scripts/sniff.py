@@ -56,31 +56,120 @@ async def send_fake_smpl_pose(websocket):
     response = await websocket.recv()
     print(f"Received response: {response}")
 
-async def listen_smpl():
+async def get_current_context(websocket):
+    """Request and display current context information"""
+    message = {
+        "type": "get_current_context",
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    print("\nRequesting current context...")
+    await websocket.send(json.dumps(message))
+    
+    while True:
+        # Wait for response
+        response = await websocket.recv()
+        
+        try:
+            context_data = json.loads(response)
+            
+            # Skip any SMPL updates
+            if isinstance(context_data, dict) and context_data.get("type") == "smpl_update":
+                continue
+                
+            print("\n=== Current Context Information ===")
+            print(json.dumps(context_data, indent=2))
+            break
+                
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse JSON response: {e}")
+            print(f"Raw response: {response}")
+            break
+        except Exception as e:
+            print(f"Error processing response: {e}")
+            print(f"Raw response: {response}")
+            break
+    
+    print("\n===============================")
+
+async def load_npz_context(websocket, npz_path):
+    """Load a context from an NPZ file"""
+    message = {
+        "type": "load_npz_context",
+        "npz_path": npz_path,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    print(f"\nLoading context from NPZ: {npz_path}")
+    await websocket.send(json.dumps(message))
+    
+    # Wait for response
+    response = await websocket.recv()
+    print("\nRaw response:", response)
+    
+    try:
+        response_data = json.loads(response)
+        print("\nParsed response:", json.dumps(response_data, indent=2))
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse response: {e}")
+
+async def display_menu():
+    """Display the main menu and get user choice"""
+    print("\n=== Motivo WebSocket Client Menu ===")
+    print("1. Send fake SMPL pose")
+    print("2. Get current context")
+    print("3. Load NPZ context file")
+    print("4. Exit")
+    
+    while True:
+        try:
+            choice = input("\nEnter your choice (1-4): ")
+            if choice in ['1', '2', '3', '4']:
+                return choice
+            print("Invalid choice. Please enter a number between 1 and 4.")
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+
+async def get_npz_path():
+    """Get NPZ file path from user"""
+    return input("\nEnter the path to the NPZ file: ").strip()
+
+async def interactive_client():
     uri = "ws://localhost:8765"
-    #uri = "ws://51.159.163.145:8765"
-    async with websockets.connect(uri) as websocket:
-        print("Connected!")
-        
-        # Send fake pose first
-        await send_fake_smpl_pose(websocket)
-        
-        # Then continue listening
-        while False:
-            try:
-                message = await websocket.recv()
-                data = json.loads(message)
-                if "pose" in data and "trans" in data:
-                    print(f"\nTimestamp: {data.get('timestamp', 'N/A')}")
-                    print(f"Pose: {data['pose'][:5]}...")  # Show first 5 values
-                    print(f"Trans: {data['trans']}")
-                    print(f"Positions: {data['positions'][:2]}...")  # Show first 2 positions
-                    print(f"Position Names: {data['position_names'][:5]}...")  # Show first 5 names
-            except websockets.exceptions.ConnectionClosed:
-                print("Connection closed")
-                break
-            except Exception as e:
-                print(f"Error: {e}")
+    print(f"\nConnecting to {uri}...")
+    
+    try:
+        async with websockets.connect(uri) as websocket:
+            print("Connected successfully!")
+            
+            while True:
+                choice = await display_menu()
+                
+                if choice == '1':
+                    await send_fake_smpl_pose(websocket)
+                elif choice == '2':
+                    await get_current_context(websocket)
+                elif choice == '3':
+                    npz_path = await get_npz_path()
+                    if npz_path:
+                        await load_npz_context(websocket, npz_path)
+                elif choice == '4':
+                    print("\nExiting program...")
+                    break
+                
+                # Wait for user to press enter before showing menu again
+                input("\nPress Enter to continue...")
+                
+    except websockets.exceptions.ConnectionClosed:
+        print("\nConnection closed unexpectedly")
+    except Exception as e:
+        print(f"\nError during communication: {e}")
+        raise
 
 if __name__ == "__main__":
-    asyncio.run(listen_smpl())
+    try:
+        asyncio.run(interactive_client())
+    except KeyboardInterrupt:
+        print("\nProgram terminated by user")
+    except Exception as e:
+        print(f"\nUnexpected error: {e}")
