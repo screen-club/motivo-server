@@ -14,7 +14,7 @@
   let videoBuffer;
   let saveError = '';
   let loadError = '';
-  let timelineComponent; // Reference to PresetTimeline component
+  let timelineComponent;
   
   const apiUrl = import.meta.env.VITE_API_URL;
 
@@ -86,48 +86,31 @@
   }
 
   async function loadPresetConfig(preset) {
-  try {
-    if (preset.type === 'timeline') {
-      if (timelineComponent) {
-        timelineComponent.loadTimeline(preset.data);
-      }
-      
-      // Load each preset in the timeline sequentially
-      if (preset.data?.placedPresets) {
-        for (const placedPreset of preset.data.placedPresets) {
-          if (placedPreset.data?.environmentParams) {
-            // Update parameter store with saved environment parameters
-            Object.entries(placedPreset.data.environmentParams).forEach(([key, value]) => {
-              parameterStore.updateParameter(key, value);
-            });
-
-            // Send environment parameters to backend
-            await websocketService.send({
-              type: "update_environment",
-              params: placedPreset.data.environmentParams
-            });
-          }
-
-          if (placedPreset.type === 'rewards' && placedPreset.data?.rewards) {
-            // Send request_reward message
-            await websocketService.send({
-              type: "request_reward",
-              reward: {
-                rewards: placedPreset.data.rewards,
-                weights: placedPreset.data.weights,
-                combinationType: placedPreset.data.combinationType
-              },
-              timestamp: new Date().toISOString()
-            });
+    try {
+      if (preset.type === 'timeline') {
+        if (timelineComponent) {
+          timelineComponent.loadTimeline(preset.data);
+        }
+        
+        if (preset.data?.placedPresets) {
+          for (const placedPreset of preset.data.placedPresets) {
+            await loadSinglePreset(placedPreset);
           }
         }
+        
+        loadError = '';
+        return;
       }
-      
-      loadError = '';
-      return;
-    }
 
-    // Original preset loading logic for non-timeline presets
+      await loadSinglePreset(preset);
+      loadError = '';
+    } catch (error) {
+      console.error('Failed to load preset configuration:', error);
+      loadError = 'Failed to load preset. Please try again.';
+    }
+  }
+
+  async function loadSinglePreset(preset) {
     if (preset.data?.environmentParams) {
       Object.entries(preset.data.environmentParams).forEach(([key, value]) => {
         parameterStore.updateParameter(key, value);
@@ -139,28 +122,30 @@
       });
     }
 
-    if (preset.type === 'rewards' && preset.data?.rewards) {
-      await websocketService.send({
-        type: "request_reward",
-        reward: {
-          rewards: preset.data.rewards,
-          weights: preset.data.weights,
-          combinationType: preset.data.combinationType
-        },
-        timestamp: new Date().toISOString()
-      });
+    if (preset.type === 'rewards') {
+      if (preset.cache_file_path) {
+        await websocketService.send({
+          type: "load_cached_reward",
+          cache_file: preset.cache_file_path,
+          timestamp: new Date().toISOString()
+        });
+      } else if (preset.data?.rewards) {
+        await websocketService.send({
+          type: "request_reward",
+          reward: {
+            rewards: preset.data.rewards,
+            weights: preset.data.weights,
+            combinationType: preset.data.combinationType
+          },
+          timestamp: new Date().toISOString()
+        });
+      }
 
       await websocketService.send({
         type: "debug_model_info"
       });
     }
-    
-    loadError = '';
-  } catch (error) {
-    console.error('Failed to load preset configuration:', error);
-    loadError = 'Failed to load preset. Please try again.';
   }
-}
 
   async function saveCurrentTimeline() {
     const title = prompt('Enter a name for this timeline:');
@@ -198,81 +183,110 @@
     saveError = '';
     
     try {
-      videoBuffer.startRecording();
-      const videoBlob = await videoBuffer.getBuffer();
-      
-      const base64Thumbnail = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64String = reader.result.split(',')[1];
-          resolve(base64String);
-        };
-        reader.readAsDataURL(videoBlob);
-      });
-
-      let rewardsData = null;
-
-      try {
-        websocketService.send({
-          type: "debug_model_info"
+        videoBuffer.startRecording();
+        const videoBlob = await videoBuffer.getBuffer();
+        
+        const base64Thumbnail = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const base64String = reader.result.split(',')[1];
+                resolve(base64String);
+            };
+            reader.readAsDataURL(videoBlob);
         });
 
-        const modelInfo = await new Promise((resolve, reject) => {
-          const cleanup = websocketService.addMessageHandler((data) => {
-            if (data.type === 'debug_model_info') {
-              cleanup();
-              resolve(data);
+        let rewardsData = null;
+        let cacheFilePath = null;
+
+        try {
+            // Set up message handlers first
+            const modelInfoPromise = new Promise((resolve, reject) => {
+                const cleanup = websocketService.addMessageHandler((data) => {
+                    if (data.type === 'debug_model_info') {
+                        cleanup();
+                        resolve(data);
+                    }
+                });
+                setTimeout(() => {
+                    cleanup();
+                    reject(new Error('Timeout waiting for model info'));
+                }, 5000);
+            });
+
+            const contextDataPromise = new Promise((resolve, reject) => {
+                const cleanup = websocketService.addMessageHandler((data) => {
+                    if (data.type === 'current_context' && data.status === 'success') {
+                        cleanup();
+                        resolve(data.data);
+                    }
+                });
+                setTimeout(() => {
+                    cleanup();
+                    reject(new Error('Timeout waiting for context data'));
+                }, 5000);
+            });
+
+            // Then send the requests
+            await websocketService.send({
+                type: "debug_model_info"
+            });
+            
+            await websocketService.send({
+                type: "get_current_context"
+            });
+
+            // Wait for responses
+            const [modelInfo, contextData] = await Promise.all([
+                modelInfoPromise,
+                contextDataPromise
+            ]);
+
+            if (modelInfo?.active_rewards) {
+                rewardsData = {
+                    rewards: modelInfo.active_rewards.rewards,
+                    weights: modelInfo.active_rewards.weights,
+                    combinationType: modelInfo.active_rewards.combinationType,
+                };
             }
-          });
 
-          setTimeout(() => {
-            cleanup();
-            reject(new Error('Timeout waiting for model info'));
-          }, 5000);
-        });
-
-        if (modelInfo?.active_rewards) {
-          rewardsData = {
-            rewards: modelInfo.active_rewards.rewards,
-            weights: modelInfo.active_rewards.weights,
-            combinationType: modelInfo.active_rewards.combinationType,
-          };
+            if (contextData?.cache_file) {
+                cacheFilePath = contextData.cache_file;
+            }
+        } catch (error) {
+            console.log('No rewards/cache data available:', error);
         }
-      } catch (error) {
-        console.log('No rewards data available:', error);
-      }
 
-      const environmentParams = {
-        gravity: $parameterStore.gravity,
-        density: $parameterStore.density,
-        wind_x: $parameterStore.wind_x,
-        wind_y: $parameterStore.wind_y,
-        wind_z: $parameterStore.wind_z,
-        viscosity: $parameterStore.viscosity,
-        timestep: $parameterStore.timestep
-      };
-      
-      const config = {
-        title,
-        type: rewardsData ? 'rewards' : 'environment',
-        thumbnail: base64Thumbnail,
-        data: {
-          ...(rewardsData && { ...rewardsData }),
-          environmentParams
-        }
-      };
-      
-      await DbService.addConfig(config);
-      await loadPresets();
+        const environmentParams = {
+            gravity: $parameterStore.gravity,
+            density: $parameterStore.density,
+            wind_x: $parameterStore.wind_x,
+            wind_y: $parameterStore.wind_y,
+            wind_z: $parameterStore.wind_z,
+            viscosity: $parameterStore.viscosity,
+            timestep: $parameterStore.timestep
+        };
+        
+        const config = {
+            title,
+            type: rewardsData ? 'rewards' : 'environment',
+            thumbnail: base64Thumbnail,
+            cache_file_path: cacheFilePath,
+            data: {
+                ...(rewardsData && { ...rewardsData }),
+                environmentParams
+            }
+        };
+        
+        await DbService.addConfig(config);
+        await loadPresets();
 
     } catch (error) {
-      console.error('Failed to save configuration:', error);
-      saveError = 'Failed to save configuration. Please try again.';
+        console.error('Failed to save configuration:', error);
+        saveError = 'Failed to save configuration. Please try again.';
     } finally {
-      isSaving = false;
+        isSaving = false;
     }
-  }
-
+}
   onMount(async () => {
     try {
       await loadPresets();
@@ -280,37 +294,30 @@
       videoBuffer = new VideoBuffer();
       await videoBuffer.initializeBuffer();
       
-      let retryDelay = 33; // Start with 33ms delay
-      const maxDelay = 2000; // Maximum delay of 2 seconds
-      const backoffFactor = 1.5; // Multiply delay by this factor on failure
+      let retryDelay = 33;
+      const maxDelay = 2000;
+      const backoffFactor = 1.5;
       
       const updateFrame = async () => {
         try {
           const currentUrl = `${apiUrl}/amjpeg?${Date.now()}`;
           
-          // Simple check if the URL is accessible
           const response = await fetch(currentUrl, { method: 'HEAD' });
           if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
           }
           
-          // If URL is accessible, update the frame directly
           videoBuffer.updateFrame(currentUrl);
-          
-          // On success, reset the delay back to normal
           retryDelay = 33;
           
         } catch (error) {
           console.warn('Failed to fetch frame:', error);
-          // Increase delay on failure, but don't exceed maxDelay
           retryDelay = Math.min(retryDelay * backoffFactor, maxDelay);
         }
         
-        // Schedule next update with current delay
         setTimeout(updateFrame, retryDelay);
       };
       
-      // Start the update loop
       updateFrame();
       
     } catch (error) {
@@ -406,17 +413,17 @@
           }}
           transition:fade
         >
-        {#if preset.thumbnail && preset.type !== 'timeline'}
-          <video 
-            src={`data:video/webm;base64,${preset.thumbnail}`}
-            autoplay
-            muted
-            loop
-            playsinline
-            class="w-full mb-2 rounded"
-            height="120"
-          ></video>
-        {/if}
+          {#if preset.thumbnail && preset.type !== 'timeline'}
+            <video 
+              src={`data:video/webm;base64,${preset.thumbnail}`}
+              autoplay
+              muted
+              loop
+              playsinline
+              class="w-full mb-2 rounded"
+              height="120"
+            ></video>
+          {/if}
           
           <div class="flex justify-between items-start mb-2">
             <h3 class="font-semibold text-gray-800">{preset.title}</h3>
@@ -432,6 +439,9 @@
               {#if preset.type === 'rewards' && preset.data?.rewards}
                 <br>
                 {preset.data.rewards.length} rewards
+                {#if preset.cache_file_path}
+                  <span class="text-green-600">📁 Cached</span>
+                {/if}
               {/if}
             {:else if preset.type === 'timeline'}
               Duration: {preset.data.duration}s
