@@ -341,7 +341,7 @@ def get_version():
 def get_configs():
     try:
         db = Content()
-        configs = db.get_all()
+        configs = db.get_all()  # This will already include cache_file_path from our earlier model update
         return jsonify(configs)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -355,7 +355,8 @@ def create_config():
             title=data['title'],
             thumbnail=data['thumbnail'],
             type=data['type'],  # vibe/reward/llm
-            data=data['data']   # json object
+            data=data['data'],  # json object
+            cache_file_path=data.get('cache_file_path')  # Optional field
         )
         return jsonify({'id': config_id}), 201
     except Exception as e:
@@ -371,7 +372,8 @@ def update_config(config_id):
             title=data.get('title'),
             thumbnail=data.get('thumbnail'),
             type=data.get('type'),
-            data=data.get('data')
+            data=data.get('data'),
+            cache_file_path=data.get('cache_file_path')  # Added cache_file_path update
         )
         return jsonify({'success': True})
     except Exception as e:
@@ -385,6 +387,5 @@ def delete_config(config_id):
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)

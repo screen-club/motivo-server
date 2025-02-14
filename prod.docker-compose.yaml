@@ -9,7 +9,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./metamotivo-S-1-datasets:/app/metamotivo-S-1-datasets
+      - ./storage:/app/storage
     restart: unless-stopped
     deploy:
       resources:

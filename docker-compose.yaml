@@ -14,7 +14,6 @@ services:
     volumes:
       - ./motivo:/app/motivo
       - ./webserver:/app/webserver
-      - ./metamotivo-S-1-datasets:/app/metamotivo-S-1-datasets
       - ./storage:/app/storage
     restart: unless-stopped
     deploy:

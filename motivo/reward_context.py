@@ -257,6 +257,10 @@ def create_reward_function(reward_type, weight):
 
 def compute_reward_context(reward_config, env, model, buffer_data, use_gpu=True):
     """Compute reward context with optional GPU acceleration"""
+    if not reward_config or 'rewards' not in reward_config or not reward_config['rewards']:
+        print("\nNo rewards in configuration - using default context")
+        return model.get_default_z() if hasattr(model, 'get_default_z') else model.prior.sample((1,))
+        
     if use_gpu:
         return compute_reward_context_gpu(reward_config, env, model, buffer_data)
     else:
@@ -473,53 +477,21 @@ def _compute_chunk_rewards(reward_fn, weight, chunk_data, device, dtype, env, sh
 
 def compute_reward_context_gpu(reward_config, env, model, buffer_data):
     """GPU/MPS-accelerated implementation with optimized batching"""
+    if not reward_config or 'rewards' not in reward_config or not reward_config['rewards']:
+        print("\nNo rewards in configuration - using default context")
+        return model.get_default_z() if hasattr(model, 'get_default_z') else model.prior.sample((1,))
+
     device, dtype = get_compute_device()
     if device.type == 'cpu':
         print("No GPU/MPS acceleration available, falling back to CPU")
         return compute_reward_context_cpu(reward_config, env, model, buffer_data)
     
-    # Ensure model is on the correct device
     model = model.to(device)
-    
     combination_type = reward_config.get('combination_type', 'geometric')
     
-    # Get memory info and adjust batch size
-    total_memory, free_memory = get_available_memory()
-    
-    # Calculate memory requirements more accurately
-    sample_sizes = {
-        'next_qpos': buffer_data['next_qpos'][0].nbytes,
-        'next_qvel': buffer_data['next_qvel'][0].nbytes,
-        'action': buffer_data['action'][0].nbytes,
-        'next_observation': buffer_data['next_observation'][0].nbytes
-    }
-    
-    # Add overhead for temporary tensors and computations (2x factor)
-    memory_per_sample = sum(sample_sizes.values()) * 2
-    
-    # Be conservative with memory usage
-    memory_fraction = 0.3 if device.type == 'mps' else 0.4
-    
-    # Calculate batch size based on actual memory requirements
-    theoretical_max_samples = int(free_memory * memory_fraction / memory_per_sample)
-    batch_size = min(theoretical_max_samples, 30_000)
-    batch_size = max(batch_size, 5_000)  # Minimum batch size
-    
-    print("\n" + "="*50)
-    print(f"USING REWARD COMBINATION METHOD: {combination_type.upper()} ({device.type.upper()})")
-    print(f"Using dtype: {dtype}, batch_size: {batch_size}")
-    print(f"Memory: {free_memory/1024/1024:.1f}MB free of {total_memory/1024/1024:.1f}MB total")
-    print(f"Memory per sample: {memory_per_sample/1024:.2f}KB")
-    print(f"Sample sizes:")
-    for name, size in sample_sizes.items():
-        print(f"  - {name}: {size/1024:.2f}KB")
-    print(f"Estimated batch memory: {(batch_size * memory_per_sample)/1024/1024:.1f}MB")
-    print(f"Memory fraction: {memory_fraction:.1%}")
-    print("="*50 + "\n")
-    
+    batch_size = 10_000
     idx = np.random.randint(0, len(buffer_data['next_qpos']), batch_size)
     
-    # Move data to device with correct dtype
     batch = {
         'next_qpos': torch.tensor(buffer_data['next_qpos'][idx], device=device, dtype=dtype),
         'next_qvel': torch.tensor(buffer_data['next_qvel'][idx], device=device, dtype=dtype),
@@ -527,99 +499,47 @@ def compute_reward_context_gpu(reward_config, env, model, buffer_data):
         'next_observation': torch.tensor(buffer_data['next_observation'][idx], device=device, dtype=dtype)
     }
     
-    # Create reward functions and weights with correct dtype
     rewards = []
     weights = torch.tensor(reward_config.get('weights', [1.0]), device=device, dtype=dtype)
     
     for reward_type, weight in zip(reward_config['rewards'], weights):
-        rewards.append(create_reward_function(reward_type, weight))
+        reward_tuple = create_reward_function(reward_type, weight)
+        if reward_tuple is not None:
+            rewards.append(reward_tuple)
     
-    print(f"Computing reward context with {combination_type} combination")
-    
-    # Optimize chunk size based on device type
-    chunk_size = 1000 if device.type == 'mps' else 2000
-    
-    # Scaler only for CUDA
-    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
-    
+    if not rewards:
+        print("\nNo valid rewards could be created - using default context")
+        return model.get_default_z() if hasattr(model, 'get_default_z') else model.prior.sample((1,))
+
     try:
-        # Compute rewards with correct dtype and optimized batching
-        computed_rewards = None  # Initialize to None for error handling
+        rewards_list = []
+        epsilon = torch.tensor(1e-8, device=device, dtype=dtype)
         
-        if combination_type == 'additive':
-            computed_rewards = torch.zeros(batch_size, device=device, dtype=dtype)
-            for reward_fn, weight in rewards:
-                with (torch.cuda.amp.autocast() if device.type == 'cuda' else nullcontext()):
-                    computed_rewards += parallel_reward_compute(
-                        reward_fn, weight, batch, device, dtype, batch_size, env,
-                        chunk_size=chunk_size, scaler=scaler
-                    )
-        elif combination_type == 'multiplicative':
-            computed_rewards = torch.ones(batch_size, device=device, dtype=dtype)
-            for reward_fn, weight in rewards:
-                with (torch.cuda.amp.autocast() if device.type == 'cuda' else nullcontext()):
-                    computed_rewards *= parallel_reward_compute(
-                        reward_fn, weight, batch, device, dtype, batch_size, env,
-                        chunk_size=chunk_size, scaler=scaler
-                    ) ** weight
-        elif combination_type in ['min', 'max']:
-            rewards_list = []
-            for reward_fn, weight in rewards:
-                with (torch.cuda.amp.autocast() if device.type == 'cuda' else nullcontext()):
-                    rewards_list.append(
-                        parallel_reward_compute(
-                            reward_fn, weight, batch, device, dtype, batch_size, env,
-                            chunk_size=chunk_size, scaler=scaler
-                        )
-                    )
-            computed_rewards = torch.stack(rewards_list).min(dim=0)[0] if combination_type == 'min' else torch.stack(rewards_list).max(dim=0)[0]
-        elif combination_type == 'geometric':
-            epsilon = torch.tensor(1e-8, device=device, dtype=dtype)
-            rewards_list = []
-            for reward_fn, weight in rewards:
-                with (torch.cuda.amp.autocast() if device.type == 'cuda' else nullcontext()):
-                    rewards_list.append(
-                        torch.max(
-                            parallel_reward_compute(
-                                reward_fn, weight, batch, device, dtype, batch_size, env,
-                                chunk_size=chunk_size, scaler=scaler
-                            ),
-                            epsilon
-                        )
-                    )
-            computed_rewards = torch.prod(torch.stack(rewards_list), dim=0) ** (1.0 / len(rewards))
-        else:
-            raise ValueError(f"Unknown combination type: {combination_type}")
-
-        if computed_rewards is None:
-            raise RuntimeError("Failed to compute rewards - no valid combination type found")
-
-        print(f"Computed rewards shape: {computed_rewards.shape}, dtype: {computed_rewards.dtype}")
+        for reward_fn, weight in rewards:
+            reward_result = parallel_reward_compute(
+                reward_fn, weight, batch, device, dtype, batch_size, env
+            )
+            if reward_result is not None:
+                rewards_list.append(torch.max(reward_result, epsilon))
         
-        # Ensure all tensors are on the same device for model inference
-        next_obs = batch['next_observation'].to(device)
+        if not rewards_list:
+            print("\nNo valid rewards were computed - using default context")
+            return model.get_default_z() if hasattr(model, 'get_default_z') else model.prior.sample((1,))
+            
+        computed_rewards = torch.prod(torch.stack(rewards_list), dim=0) ** (1.0 / len(rewards))
         computed_rewards = computed_rewards.reshape(-1, 1).to(device)
         
-        # Perform model inference
         with torch.no_grad():
             z = model.reward_wr_inference(
-                next_obs=next_obs,
+                next_obs=batch['next_observation'],
                 reward=computed_rewards
             )
         
-        print(f"Computed z shape: {z.shape}, dtype: {z.dtype}, device: {z.device}")
         return z
         
     except Exception as e:
         print(f"Error in reward computation: {str(e)}")
-        print(f"Device info:")
-        print(f"- Model device: {next(model.parameters()).device}")
-        if computed_rewards is not None:
-            print(f"- Computed rewards device: {computed_rewards.device}")
-        else:
-            print("- Computed rewards: Not yet initialized")
-        print(f"- Next observation device: {batch['next_observation'].device}")
-        raise
+        return model.get_default_z() if hasattr(model, 'get_default_z') else model.prior.sample((1,))
     finally:
         if device.type == 'cuda':
             torch.cuda.empty_cache()

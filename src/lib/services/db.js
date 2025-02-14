@@ -1,5 +1,3 @@
-// lib/services/db.js
-
 /**
  * Base API URL from environment variables
  * @type {string}
@@ -34,9 +32,10 @@ export class DbService {
    * @param {string} config.thumbnail Thumbnail URL
    * @param {string} config.type Type of configuration (vibe/reward/llm)
    * @param {Object} config.data Configuration data
+   * @param {string} [config.cache_file_path] Path to cached reward file
    * @returns {Promise<Object>} Created configuration
    */
-  static async addConfig({ title, thumbnail = '', type, data }) {
+  static async addConfig({ title, thumbnail = '', type, data, cache_file_path = null }) {
     try {
       const response = await fetch(`${API_URL}/api/conf`, {
         method: 'POST',
@@ -47,7 +46,8 @@ export class DbService {
           title,
           thumbnail,
           type,
-          data
+          data,
+          cache_file_path
         })
       });
 
@@ -65,6 +65,11 @@ export class DbService {
    * Update an existing configuration
    * @param {number} id Configuration ID
    * @param {Object} config Configuration object
+   * @param {string} [config.title] Title of the configuration
+   * @param {string} [config.thumbnail] Thumbnail URL
+   * @param {string} [config.type] Type of configuration
+   * @param {Object} [config.data] Configuration data
+   * @param {string} [config.cache_file_path] Path to cached reward file
    * @returns {Promise<Object>} Updated configuration
    */
   static async updateConfig(id, config) {

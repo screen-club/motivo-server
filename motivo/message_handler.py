@@ -382,28 +382,47 @@ class MessageHandler:
             }
             await websocket.send(json.dumps(response))
             return
-        
-        self.active_rewards = data['reward']
-        self.current_reward_config = data['reward']  # Update current reward config
-        z, _ = await self.context_cache.get_cached_context(
-            self.active_rewards, 
-            self.get_reward_context
-        )
-        self.current_z = z
-        
-        response = {
-            "type": "reward",
-            "value": 1.0,
-            "timestamp": data.get("timestamp", ""),
-            "is_computing": self.is_computing_reward
-        }
-        await websocket.send(json.dumps(response))
-        
-        print(f"\nStatus:")
-        print(f"Active Rewards: {json.dumps(self.active_rewards['rewards'], indent=2)}")
-        print(f"Cached Computations: {len(self.context_cache.computation_cache)}")
-        print("=== End Processing ===\n")
 
+        try:
+            # Check if reward config is empty
+            if not data.get('reward', {}).get('rewards'):
+                print("\nNo rewards in configuration - treating as clean rewards")
+                await self.handle_clean_rewards(websocket, data)
+                return
+                
+            self.active_rewards = data['reward']
+            self.current_reward_config = data['reward']
+            z, _ = await self.context_cache.get_cached_context(
+                self.active_rewards, 
+                self.get_reward_context
+            )
+            self.current_z = z
+            
+            response = {
+                "type": "reward",
+                "value": 1.0,
+                "timestamp": data.get("timestamp", ""),
+                "is_computing": self.is_computing_reward
+            }
+            await websocket.send(json.dumps(response))
+            
+            print(f"\nStatus:")
+            print(f"Active Rewards: {json.dumps(self.active_rewards['rewards'], indent=2)}")
+            print(f"Cached Computations: {len(self.context_cache.computation_cache)}")
+            print("=== End Processing ===\n")
+
+        except Exception as e:
+            print(f"Error processing reward request: {str(e)}")
+            response = {
+                "type": "reward",
+                "status": "error",
+                "error": str(e),
+                "timestamp": data.get("timestamp", ""),
+                "is_computing": False
+            }
+            await websocket.send(json.dumps(response))
+            
+            
     async def handle_clean_rewards(self, websocket, data: Dict[str, Any]) -> None:
         print("\nCleaning active rewards...")
         
