@@ -10,6 +10,7 @@ from datetime import datetime
 import numpy as np
 from frame_utils import save_frame_data
 from utils.smpl_utils import qpos_to_smpl, smpl_to_qpose
+from pathlib import Path
 
 from env_setup import setup_environment
 from buffer_utils import download_buffer
@@ -31,6 +32,34 @@ WS_PORT = os.getenv("VITE_WS_PORT", 8765)
 API_PORT = os.getenv("VITE_API_PORT", 5000)
 WEBSERVER_PORT = os.getenv("VITE_WEBSERVER_PORT", 5002)
 VITE_WS_URL = os.getenv("VITE_WS_URL", f"ws://{BACKEND_DOMAIN}:{WS_PORT}")
+
+def get_cached_model(model_name: str, cache_dir: str = "./storage/cache") -> FBcprModel:
+    """
+    Get model from cache if it exists, otherwise download and cache it.
+    
+    Args:
+        model_name: Name of the model to load
+        cache_dir: Directory to store cached models
+        
+    Returns:
+        Loaded model instance
+    """
+    # Create cache directory if it doesn't exist
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(parents=True, exist_ok=True)
+    
+    # Create model-specific cache path
+    model_cache_path = cache_path / model_name
+    
+    if model_cache_path.exists():
+        print(f"Loading model from cache: {model_cache_path}")
+        model = FBcprModel.from_pretrained(str(model_cache_path))
+    else:
+        print(f"Downloading model {model_name} and caching to: {model_cache_path}")
+        model = FBcprModel.from_pretrained(f"facebook/{model_name}")
+        model.save_pretrained(str(model_cache_path))
+    
+    return model
 
 # Application state
 class AppState:
@@ -189,7 +218,6 @@ async def run_simulation():
 async def main():
     """Main function"""
     try:
-      
         # Device selection with CUDA support
         if torch.cuda.is_available():
             device = "cuda"
@@ -202,7 +230,7 @@ async def main():
         
         print("Loading model and environment...")
         model_name = "metamotivo-M-1"
-        model = FBcprModel.from_pretrained(f"facebook/{model_name}")
+        model = get_cached_model(model_name)
         model.to(device)
         model.eval()
         
