@@ -280,10 +280,38 @@
       videoBuffer = new VideoBuffer();
       await videoBuffer.initializeBuffer();
       
-      setInterval(() => {
-        const currentUrl = `${apiUrl}/amjpeg?${Date.now()}`;
-        videoBuffer.updateFrame(currentUrl);
-      }, 33);
+      let retryDelay = 33; // Start with 33ms delay
+      const maxDelay = 2000; // Maximum delay of 2 seconds
+      const backoffFactor = 1.5; // Multiply delay by this factor on failure
+      
+      const updateFrame = async () => {
+        try {
+          const currentUrl = `${apiUrl}/amjpeg?${Date.now()}`;
+          
+          // Simple check if the URL is accessible
+          const response = await fetch(currentUrl, { method: 'HEAD' });
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          
+          // If URL is accessible, update the frame directly
+          videoBuffer.updateFrame(currentUrl);
+          
+          // On success, reset the delay back to normal
+          retryDelay = 33;
+          
+        } catch (error) {
+          console.warn('Failed to fetch frame:', error);
+          // Increase delay on failure, but don't exceed maxDelay
+          retryDelay = Math.min(retryDelay * backoffFactor, maxDelay);
+        }
+        
+        // Schedule next update with current delay
+        setTimeout(updateFrame, retryDelay);
+      };
+      
+      // Start the update loop
+      updateFrame();
       
     } catch (error) {
       console.error('Failed during initialization:', error);
