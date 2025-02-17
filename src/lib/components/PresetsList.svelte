@@ -112,44 +112,83 @@
 
   async function loadSinglePreset(preset) {
     if (preset.data?.environmentParams) {
-      // Update local parameter store
-      Object.entries(preset.data.environmentParams).forEach(([key, value]) => {
-        parameterStore.updateParameter(key, value);
-      });
+        // Update local parameter store
+        Object.entries(preset.data.environmentParams).forEach(([key, value]) => {
+            parameterStore.updateParameter(key, value);
+        });
 
-      // Use update_parameters instead of update_environment
-      await websocketService.send({
-        type: "update_parameters",
-        parameters: preset.data.environmentParams,
-        timestamp: new Date().toISOString()
-      });
+        await websocketService.send({
+            type: "update_parameters",
+            parameters: preset.data.environmentParams,
+            timestamp: new Date().toISOString()
+        });
     }
 
-    if (preset.type === 'rewards') {
-      if (preset.cache_file_path) {
-        // Use load_npz_context instead of load_cached_reward
-        await websocketService.send({
-          type: "load_npz_context",
-          npz_path: preset.cache_file_path,
-          timestamp: new Date().toISOString()
-        });
-      } else if (preset.data?.rewards) {
-        await websocketService.send({
-          type: "request_reward",
-          reward: {
-            rewards: preset.data.rewards,
-            weights: preset.data.weights,
-            combinationType: preset.data.combinationType
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
+    if (preset.type === 'pose' || preset.data?.pose) {
+        const poseData = preset.data.pose;
+        if (poseData.type === 'smpl') {
+            // Flatten arrays if they're nested
+            const pose = Array.isArray(poseData.pose[0]) ? poseData.pose[0] : poseData.pose;
+            const trans = Array.isArray(poseData.trans[0]) ? poseData.trans[0] : poseData.trans;
+            
+            console.log("Sending SMPL pose:", {
+                type: "load_pose_smpl",
+                pose: pose,
+                trans: trans,
+                model: poseData.model,
+                inference_type: poseData.inference_type
+            });
 
-      await websocketService.send({
+            await websocketService.send({
+                type: "load_pose_smpl",
+                pose: pose,
+                trans: trans,
+                model: poseData.model,
+                inference_type: poseData.inference_type,
+                timestamp: new Date().toISOString()
+            });
+        } else if (poseData.type === 'qpos') {
+            const qpos = Array.isArray(poseData.qpos[0]) ? poseData.qpos[0] : poseData.qpos;
+            
+            console.log("Sending qpos:", {
+                type: "load_pose",
+                pose: qpos,
+                inference_type: poseData.inference_type
+            });
+
+            await websocketService.send({
+                type: "load_pose",
+                pose: qpos,
+                inference_type: poseData.inference_type,
+                timestamp: new Date().toISOString()
+            });
+        }
+    }
+
+    if (preset.type === 'rewards' || preset.data?.rewards) {
+        if (preset.cache_file_path) {
+            await websocketService.send({
+                type: "load_npz_context",
+                npz_path: preset.cache_file_path,
+                timestamp: new Date().toISOString()
+            });
+        } else if (preset.data?.rewards) {
+            await websocketService.send({
+                type: "request_reward",
+                reward: {
+                    rewards: preset.data.rewards,
+                    weights: preset.data.weights,
+                    combinationType: preset.data.combinationType
+                },
+                timestamp: new Date().toISOString()
+            });
+        }
+    }
+
+    await websocketService.send({
         type: "debug_model_info"
-      });
-    }
-  }
+    });
+}
 
   async function saveCurrentTimeline() {
     const title = prompt('Enter a name for this timeline:');
@@ -199,65 +238,54 @@
             reader.readAsDataURL(videoBlob);
         });
 
-        let rewardsData = null;
-        let cacheFilePath = null;
-
-        try {
-            // Set up message handlers first
-            const modelInfoPromise = new Promise((resolve, reject) => {
-                const cleanup = websocketService.addMessageHandler((data) => {
-                    if (data.type === 'debug_model_info') {
-                        cleanup();
-                        resolve(data);
-                    }
-                });
-                setTimeout(() => {
+        // Get both active rewards and current context
+        const contextData = await new Promise((resolve, reject) => {
+            let modelInfo = null;
+            let contextInfo = null;
+            
+            const cleanup = websocketService.addMessageHandler((data) => {
+                if (data.type === 'debug_model_info') {
+                    modelInfo = data;
+                } else if (data.type === 'current_context' && data.status === 'success') {
+                    contextInfo = data.data;
+                }
+                
+                // If we have both pieces of information, resolve
+                if (modelInfo && contextInfo) {
                     cleanup();
-                    reject(new Error('Timeout waiting for model info'));
-                }, 5000);
+                    resolve({ modelInfo, contextInfo });
+                }
             });
 
-            const contextDataPromise = new Promise((resolve, reject) => {
-                const cleanup = websocketService.addMessageHandler((data) => {
-                    if (data.type === 'current_context' && data.status === 'success') {
-                        cleanup();
-                        resolve(data.data);
-                    }
-                });
-                setTimeout(() => {
-                    cleanup();
-                    reject(new Error('Timeout waiting for context data'));
-                }, 5000);
-            });
-
-            // Then send the requests
-            await websocketService.send({
+            // Send both requests
+            websocketService.send({
                 type: "debug_model_info"
             });
             
-            await websocketService.send({
+            websocketService.send({
                 type: "get_current_context"
             });
 
-            // Wait for responses
-            const [modelInfo, contextData] = await Promise.all([
-                modelInfoPromise,
-                contextDataPromise
-            ]);
+            // Timeout after 5 seconds
+            setTimeout(() => {
+                cleanup();
+                reject(new Error('Timeout waiting for context data'));
+            }, 5000);
+        });
 
-            if (modelInfo?.active_rewards) {
-                rewardsData = {
-                    rewards: modelInfo.active_rewards.rewards,
-                    weights: modelInfo.active_rewards.weights,
-                    combinationType: modelInfo.active_rewards.combinationType,
-                };
-            }
+        let rewardsData = null;
+        let cacheFilePath = null;
 
-            if (contextData?.cache_file) {
-                cacheFilePath = contextData.cache_file;
-            }
-        } catch (error) {
-            console.log('No rewards/cache data available:', error);
+        if (contextData.modelInfo?.active_rewards) {
+            rewardsData = {
+                rewards: contextData.modelInfo.active_rewards.rewards,
+                weights: contextData.modelInfo.active_rewards.weights,
+                combinationType: contextData.modelInfo.active_rewards.combinationType,
+            };
+        }
+
+        if (contextData.contextInfo?.cache_file) {
+            cacheFilePath = contextData.contextInfo.cache_file;
         }
 
         const environmentParams = {
@@ -269,14 +297,21 @@
             viscosity: $parameterStore.viscosity,
             timestep: $parameterStore.timestep
         };
+
+        // Determine type based on whether we have pose or rewards data
+        const type = contextData.contextInfo?.active_poses ? 'pose' : 
+                    rewardsData ? 'rewards' : 'environment';
         
         const config = {
             title,
-            type: rewardsData ? 'rewards' : 'environment',
+            type,
             thumbnail: base64Thumbnail,
             cache_file_path: cacheFilePath,
             data: {
                 ...(rewardsData && { ...rewardsData }),
+                ...(contextData.contextInfo?.active_poses && { 
+                    pose: contextData.contextInfo.active_poses 
+                }),
                 environmentParams
             }
         };
@@ -290,7 +325,8 @@
     } finally {
         isSaving = false;
     }
-}
+  }
+
   onMount(async () => {
     try {
       await loadPresets();
@@ -370,6 +406,7 @@
         <option value="all">All Types</option>
         <option value="environment">Environment</option>
         <option value="rewards">Rewards</option>
+        <option value="pose">Pose</option>
         <option value="timeline">Timeline</option>
       </select>
       <button 
@@ -440,49 +477,58 @@
             {#if preset.data?.environmentParams}
               G: {preset.data.environmentParams.gravity}
               D: {preset.data.environmentParams.density}
-              {#if preset.type === 'rewards' && preset.data?.rewards}
-                <br>
-                {preset.data.rewards.length} rewards
-                {#if preset.cache_file_path}
-                  <span class="text-green-600">📁 Cached</span>
-                {/if}
-              {/if}
-            {:else if preset.type === 'timeline'}
-              Duration: {preset.data.duration}s
+            {/if}
+            {#if preset.data?.rewards}
               <br>
-              Presets: {preset.data.placedPresets.length}
+              {preset.data.rewards.length} rewards
+              {#if preset.cache_file_path}
+              <span class="text-green-600">📁 Cached</span>
             {/if}
-          </div>
-
-          <div class="flex justify-end gap-2">
-            {#if preset.type !== 'timeline'}
-              <button 
-                class="text-sm text-blue-600 hover:text-blue-800"
-                on:click={() => loadPresetConfig(preset)}
-              >
-                Load
-              </button>
+          {/if}
+          {#if preset.data?.pose}
+            <br>
+            Type: {preset.data.pose.type}
+            {#if preset.data.pose.type === 'smpl'}
+              Model: {preset.data.pose.model}
             {/if}
-            <button 
-              class="text-sm text-red-600 hover:text-red-800"
-              on:click={() => deletePreset(preset.id)}
-            >
-              Delete
-            </button>
-          </div>
+            Inference: {preset.data.pose.inference_type}
+          {/if}
+          {#if preset.type === 'timeline'}
+            Duration: {preset.data.duration}s
+            <br>
+            Presets: {preset.data.placedPresets.length}
+          {/if}
         </div>
-      {/each}
-    </div>
-  {/if}
+
+        <div class="flex justify-end gap-2">
+          {#if preset.type !== 'timeline'}
+            <button 
+              class="text-sm text-blue-600 hover:text-blue-800"
+              on:click={() => loadPresetConfig(preset)}
+            >
+              Load
+            </button>
+          {/if}
+          <button 
+            class="text-sm text-red-600 hover:text-red-800"
+            on:click={() => deletePreset(preset.id)}
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    {/each}
+  </div>
+{/if}
 </div>
 
 <style>
-  .overflow-x-auto::-webkit-scrollbar {
-    display: none;
-  }
+.overflow-x-auto::-webkit-scrollbar {
+  display: none;
+}
 
-  .overflow-x-auto {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
-  }
+.overflow-x-auto {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
 </style>
