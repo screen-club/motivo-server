@@ -21,31 +21,6 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
   
-  vibe:
-    image: yassinsiouda/cog-vibe:latest
-    ports:
-      - "5000:5000"
-    restart: unless-stopped
-    shm_size: '16gb'
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      # Disable GUI and use headless mode
-      - DISPLAY=:99
-      - DEBIAN_FRONTEND=noninteractive
-      - PYTHONUNBUFFERED=1
-      # Force CPU rendering for EGL
-      - LIBGL_ALWAYS_SOFTWARE=1
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-
   frontend:
     image: yassinsiouda/motivo-client-front:latest
     ports:
@@ -57,6 +32,18 @@ services:
     restart: unless-stopped
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
+
+  backup:
+      image: yassinsiouda/motivo-backup:latest
+      volumes:
+        - ./storage:/backup/storage
+      environment:
+        - S3_ENDPOINT=${S3_ENDPOINT}
+        - S3_ACCESS_KEY=${S3_ACCESS_KEY}
+        - S3_SECRET_KEY=${S3_SECRET_KEY}
+        - BACKUP_BUCKET=${BACKUP_BUCKET}
+        - BACKUP_INTERVAL_HOURS=${BACKUP_INTERVAL_HOURS}
+      restart: unless-stopped
 
   watchtower:
       image: containrrr/watchtower

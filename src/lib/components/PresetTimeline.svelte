@@ -126,30 +126,65 @@
   
   // Activate preset via websocket
   async function activatePreset(preset) {
-    try {
-      if (preset.data?.environmentParams) {
-        await websocketService.send({
-          type: "update_environment",
-          params: preset.data.environmentParams
-        });
+      try {
+          if (preset.data?.environmentParams) {
+              await websocketService.send({
+                  type: "update_parameters",  // Changed from update_environment
+                  parameters: preset.data.environmentParams,
+                  timestamp: new Date().toISOString()
+              });
+          }
+          
+          if (preset.type === 'pose' || preset.data?.pose) {
+              const poseData = preset.data.pose;
+              if (poseData.type === 'smpl') {
+                  // Flatten arrays if they're nested
+                  const pose = Array.isArray(poseData.pose[0]) ? poseData.pose[0] : poseData.pose;
+                  const trans = Array.isArray(poseData.trans[0]) ? poseData.trans[0] : poseData.trans;
+                  
+                  await websocketService.send({
+                      type: "load_pose_smpl",
+                      pose: pose,
+                      trans: trans,
+                      model: poseData.model,
+                      inference_type: poseData.inference_type,
+                      timestamp: new Date().toISOString()
+                  });
+              } else if (poseData.type === 'qpos') {
+                  const qpos = Array.isArray(poseData.qpos[0]) ? poseData.qpos[0] : poseData.qpos;
+                  
+                  await websocketService.send({
+                      type: "load_pose",
+                      pose: qpos,
+                      inference_type: poseData.inference_type,
+                      timestamp: new Date().toISOString()
+                  });
+              }
+          }
+          
+          if (preset.type === 'rewards' || preset.data?.rewards) {
+              if (preset.cache_file_path) {
+                  await websocketService.send({
+                      type: "load_npz_context",
+                      npz_path: preset.cache_file_path,
+                      timestamp: new Date().toISOString()
+                  });
+              } else if (preset.data?.rewards) {
+                  await websocketService.send({
+                      type: "request_reward",
+                      reward: {
+                          rewards: preset.data.rewards,
+                          weights: preset.data.weights,
+                          combinationType: preset.data.combinationType
+                      },
+                      timestamp: new Date().toISOString()
+                  });
+              }
+          }
+      } catch (error) {
+          console.error('Failed to activate preset:', error);
       }
-      
-      if (preset.type === 'rewards' && preset.data?.rewards) {
-        await websocketService.send({
-          type: "request_reward",
-          reward: {
-            rewards: preset.data.rewards,
-            weights: preset.data.weights,
-            combinationType: preset.data.combinationType
-          },
-          timestamp: new Date().toISOString()
-        });
-      }
-    } catch (error) {
-      console.error('Failed to activate preset:', error);
-    }
   }
-
   // Function to load timeline data
   export function loadTimeline(timelineData) {
     if (timelineData?.duration) {
