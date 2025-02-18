@@ -44,6 +44,8 @@ services:
         - BACKUP_BUCKET=${BACKUP_BUCKET}
         - BACKUP_INTERVAL_HOURS=${BACKUP_INTERVAL_HOURS}
       restart: unless-stopped
+      labels:
+        - "com.centurylinklabs.watchtower.enable=true"
 
   watchtower:
       image: containrrr/watchtower

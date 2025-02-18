@@ -3,43 +3,139 @@ import websockets
 import logging
 import json
 import numpy as np
+import os
 from datetime import datetime
+from scipy.spatial.transform import Rotation as R
 
+# Configuration
+CONFIG = {
+    'WS_URI': 'ws://localhost:8765',
+    'MAX_RETRIES': 3,
+    'RETRY_DELAY': 2,
+    'DEFAULT_FPS': 4,  # Default frames per second
+    'FRAME_DELAY': 0.25,  # 1/DEFAULT_FPS
+    'RESPONSE_TIMEOUT': 30,
+    'HEARTBEAT_INTERVAL': 10
+}
+
+# Configure logging
 logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# SMPL joint definitions
+SKEL_JOINTS = [
+    "Pelvis", "L_Hip", "R_Hip", "Torso", "L_Knee", "R_Knee", "Spine",
+    "L_Ankle", "R_Ankle", "Chest", "L_Toe", "R_Toe", "Neck", "L_Thorax",
+    "R_Thorax", "Head", "L_Shoulder", "R_Shoulder", "L_Elbow", "R_Elbow",
+    "L_Wrist", "R_Wrist", "L_Hand", "R_Hand"
+]
+
+def get_frame_indices(total_frames, fps):
+    """Calculate which frames to keep based on desired FPS"""
+    if fps <= 0:
+        return []
+    
+    # Calculate frame interval to achieve desired FPS
+    # Assuming original animation is 30 FPS
+    original_fps = 30
+    interval = original_fps / fps
+    
+    # Generate frame indices
+    return [int(i * interval) for i in range(total_frames) if int(i * interval) < total_frames]
+
+def convert_npz_to_smpl(npz_path):
+    """Convert NPZ animation data to SMPL format"""
+    try:
+        # Load NPZ file
+        data = np.load(npz_path)
+        print(f"Loaded NPZ data: {data.files}")
+        poses = data['poses']
+        
+        # Initialize SMPL arrays
+        num_frames = poses.shape[0]
+        smpl_poses = np.zeros((num_frames, len(SKEL_JOINTS) * 3))
+        
+        # Convert poses to SMPL format
+        for frame in range(num_frames):
+            frame_poses = poses[frame]
+            
+            # Convert rotation vectors to SMPL format
+            for joint_idx in range(len(SKEL_JOINTS)):
+                start_idx = joint_idx * 3
+                joint_rot = frame_poses[start_idx:start_idx + 3]
+                
+                # Convert to rotation vector format expected by SMPL
+                rot = R.from_rotvec(joint_rot)
+                smpl_rot = rot.as_rotvec()
+                
+                smpl_poses[frame, start_idx:start_idx + 3] = smpl_rot
+        
+        # Default translation if not in NPZ
+        smpl_trans = np.array([[0.0, 0.0, 0.91437225]] * num_frames)
+        if 'trans' in data:
+            smpl_trans = data['trans']
+            
+        return {
+            'poses': smpl_poses.tolist(),
+            'trans': smpl_trans.tolist()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error converting NPZ to SMPL: {e}")
+        return None
+
+async def heartbeat(websocket, stop_event):
+    """Send periodic heartbeat to keep connection alive"""
+    try:
+        while not stop_event.is_set():
+            await websocket.ping()
+            await asyncio.sleep(CONFIG['HEARTBEAT_INTERVAL'])
+    except Exception as e:
+        logger.error(f"Heartbeat error: {e}")
+        stop_event.set()
+
+async def send_smpl_pose(websocket, poses, trans, frame_idx=0):
+    """Send a single SMPL pose frame to the websocket with timeout"""
+    try:
+        message = {
+            "type": "load_pose_smpl",
+            "pose": poses[frame_idx],
+            "trans": trans[frame_idx],
+            "model": "smpl",
+            "inference_type": "goal",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        await websocket.send(json.dumps(message))
+        response = await asyncio.wait_for(
+            websocket.recv(), 
+            timeout=CONFIG['RESPONSE_TIMEOUT']
+        )
+        
+        # Validate response
+        try:
+            response_data = json.loads(response)
+            if response_data.get('type') == 'smpl_update':
+                return True
+            logger.warning(f"Unexpected response type: {response_data.get('type')}")
+        except json.JSONDecodeError:
+            logger.warning(f"Invalid JSON response: {response}")
+            
+        return True
+        
+    except asyncio.TimeoutError:
+        logger.error("Response timeout")
+        raise
+    except Exception as e:
+        logger.error(f"Send error: {e}")
+        raise
 
 async def send_fake_smpl_pose(websocket):
-    # Create a realistic SMPL pose based on sample data
-    fake_pose = [
-        0.017441272078737146, 0.45619148679542426, -0.07552543405604054,
-        -0.22330807380650328, -0.17182861078555783, 0.05428369699770573,
-        -0.00457316366932735, -0.3735833617857662, 0.06002956237969323,
-        0.8601181619200136, -0.0917155214223193, 0.23290778760760045,
-        0.19956260249681804, -0.0769628940936461, -0.10740945192236724,
-        -0.009381148785909727, -0.1150299996396832, 0.08485111644562089,
-        0.11227570214536008, 0.031172725976768324, -0.03128664947749358,
-        0.6191039383332614, 0.32965596663729096, 0.07150543817550722,
-        0.20644543619144207, -0.3400360352318141, 0.030041181777997618,
-        0.02547235905406732, -0.007446797651292281, -0.03681356003490967,
-        0.39218773751295277, -0.0613268961623882, -0.09185592162476884,
-        0.3906575825208223, -0.06193444910623656, -0.09128919710439902,
-        0.05443566679246781, -0.1812555897903745, 0.006073958076222322,
-        0.018828470945021315, 0.22220400988740838, -0.39684609815215244,
-        -0.10193169121241222, -0.1418140059491835, 0.29433394983588795,
-        0.33088827958671546, 0.16180533355386373, 0.25461576447704043,
-        0.5971931577184358, -0.4433038171215747, -0.5066867677088595,
-        0.8205170492437239, -0.9748714557359849, 0.7241528882064233,
-        0.035258675535545084, -1.204249797402286, 0.0063320669982186864,
-        -0.3271152847373648, 0.6677311870003668, -0.1907906957687962,
-        0.2942797197352062, -0.2915051957816511, 0.2827035978143476,
-        0.3079917047928932, 0.161590964566566, -0.38883131647218216,
-        -0.1559902290179879, 0.343271708237279, 0.08318362362289357,
-        -0.19242860797528188, -0.5176177384159464, 0.08710288561368576
-    ]
-
-    # Basic translation (x, y, z)
-    fake_trans = [0.0, 0.0, 0.91437225]  # Default translation
+    """Send a test SMPL pose"""
+    # Sample pose data
+    fake_pose = [0.017441272078737146] * 72  # Simplified for example
+    fake_trans = [0.0, 0.0, 0.91437225]
     
-    # Simplified message structure to match main.py changes
     message = {
         "type": "load_pose_smpl",
         "pose": fake_pose,
@@ -49,12 +145,65 @@ async def send_fake_smpl_pose(websocket):
         "timestamp": datetime.now().isoformat()
     }
     
-    print("\nSending fake SMPL pose...")
+    logger.info("Sending fake SMPL pose...")
     await websocket.send(json.dumps(message))
-    
-    # Wait for response
     response = await websocket.recv()
-    print(f"Received response: {response}")
+    logger.info(f"Received response: {response}")
+
+async def send_npz_as_smpl(websocket, npz_path, stop_event):
+    """Convert and send NPZ animation with frame rate control"""
+    logger.info(f"Converting NPZ animation: {npz_path}")
+    
+    smpl_data = convert_npz_to_smpl(npz_path)
+    if not smpl_data:
+        logger.error("Failed to convert NPZ to SMPL format")
+        return
+        
+    poses = smpl_data['poses']
+    trans = smpl_data['trans']
+    
+    # Get desired FPS from user
+    while True:
+        try:
+            fps_input = input(f"Enter desired frames per second (default: {CONFIG['DEFAULT_FPS']}): ").strip()
+            fps = float(fps_input) if fps_input else CONFIG['DEFAULT_FPS']
+            if fps > 0:
+                break
+            print("Please enter a positive number")
+        except ValueError:
+            print("Invalid input. Please enter a number")
+    
+    # Calculate which frames to keep
+    frame_indices = get_frame_indices(len(poses), fps)
+    
+    logger.info(f"Original frames: {len(poses)}")
+    logger.info(f"Reduced to {len(frame_indices)} frames at {fps} FPS")
+    
+    # Adjust frame delay based on FPS
+    frame_delay = 1.0 / fps
+    
+    for frame_idx in frame_indices:
+        if stop_event.is_set():
+            logger.info("Stopping animation due to connection issues")
+            return
+
+        retries = 0
+        while retries < CONFIG['MAX_RETRIES']:
+            try:
+                logger.info(f"Sending frame {frame_idx + 1}/{len(poses)}")
+                success = await send_smpl_pose(websocket, poses, trans, frame_idx)
+                if success:
+                    break
+            except Exception as e:
+                retries += 1
+                if retries == CONFIG['MAX_RETRIES']:
+                    logger.error(f"Failed to send frame {frame_idx + 1} after {CONFIG['MAX_RETRIES']} attempts")
+                    stop_event.set()
+                    return
+                logger.info(f"Retry {retries}/{CONFIG['MAX_RETRIES']} after error: {e}")
+                await asyncio.sleep(CONFIG['RETRY_DELAY'])
+                
+        await asyncio.sleep(frame_delay)
 
 async def get_current_context(websocket):
     """Request and display current context information"""
@@ -63,113 +212,147 @@ async def get_current_context(websocket):
         "timestamp": datetime.now().isoformat()
     }
     
-    print("\nRequesting current context...")
+    logger.info("Requesting current context...")
     await websocket.send(json.dumps(message))
     
     while True:
-        # Wait for response
         response = await websocket.recv()
         
         try:
             context_data = json.loads(response)
             
-            # Skip any SMPL updates
+            # Skip SMPL updates
             if isinstance(context_data, dict) and context_data.get("type") == "smpl_update":
                 continue
                 
-            print("\n=== Current Context Information ===")
-            print(json.dumps(context_data, indent=2))
+            logger.info("\n=== Current Context Information ===")
+            logger.info(json.dumps(context_data, indent=2))
             break
                 
         except json.JSONDecodeError as e:
-            print(f"Failed to parse JSON response: {e}")
-            print(f"Raw response: {response}")
+            logger.error(f"Failed to parse JSON response: {e}")
+            logger.error(f"Raw response: {response}")
             break
         except Exception as e:
-            print(f"Error processing response: {e}")
-            print(f"Raw response: {response}")
+            logger.error(f"Error processing response: {e}")
+            logger.error(f"Raw response: {response}")
             break
-    
-    print("\n===============================")
 
-async def load_npz_context(websocket, npz_path):
-    """Load a context from an NPZ file"""
-    message = {
-        "type": "load_npz_context",
-        "npz_path": npz_path,
-        "timestamp": datetime.now().isoformat()
-    }
-    
-    print(f"\nLoading context from NPZ: {npz_path}")
-    await websocket.send(json.dumps(message))
-    
-    # Wait for response
-    response = await websocket.recv()
-    print("\nRaw response:", response)
-    
+async def load_npz_animation_folder(websocket, folder_path, stop_event):
+    """Load and send animations from a folder of NPZ files"""
     try:
-        response_data = json.loads(response)
-        print("\nParsed response:", json.dumps(response_data, indent=2))
-    except json.JSONDecodeError as e:
-        print(f"Failed to parse response: {e}")
+        npz_files = [f for f in os.listdir(folder_path) if f.endswith('.npz')]
+        if not npz_files:
+            logger.info(f"No NPZ files found in folder: {folder_path}")
+            return
+            
+        logger.info(f"Found {len(npz_files)} NPZ files in folder")
+        
+        for npz_file in npz_files:
+            if stop_event.is_set():
+                logger.info("Stopping folder processing due to connection issues")
+                return
+
+            full_path = os.path.join(folder_path, npz_file)
+            logger.info(f"Processing animation: {npz_file}")
+            
+            await send_npz_as_smpl(websocket, full_path, stop_event)
+            
+            if npz_file != npz_files[-1] and not stop_event.is_set():
+                input("Press Enter to load next animation...")
+                
+    except FileNotFoundError:
+        logger.error(f"Folder not found: {folder_path}")
+    except Exception as e:
+        logger.error(f"Error loading animations: {e}")
 
 async def display_menu():
     """Display the main menu and get user choice"""
     print("\n=== Motivo WebSocket Client Menu ===")
     print("1. Send fake SMPL pose")
     print("2. Get current context")
-    print("3. Load NPZ context file")
-    print("4. Exit")
+    print("3. Convert and send NPZ animation")
+    print("4. Convert and send NPZ animation folder")
+    print("5. Exit")
     
     while True:
         try:
-            choice = input("\nEnter your choice (1-4): ")
-            if choice in ['1', '2', '3', '4']:
+            choice = input("\nEnter your choice (1-5): ")
+            if choice in ['1', '2', '3', '4', '5']:
                 return choice
-            print("Invalid choice. Please enter a number between 1 and 4.")
+            print("Invalid choice. Please enter a number between 1 and 5.")
         except ValueError:
             print("Invalid input. Please enter a number.")
 
-async def get_npz_path():
-    """Get NPZ file path from user"""
-    return input("\nEnter the path to the NPZ file: ").strip()
-
 async def interactive_client():
-    uri = "ws://localhost:8765"
-    print(f"\nConnecting to {uri}...")
+    """Main interactive client with connection management"""
+    retries = 0
+    stop_event = asyncio.Event()
     
-    try:
-        async with websockets.connect(uri) as websocket:
-            print("Connected successfully!")
-            
-            while True:
-                choice = await display_menu()
+    while retries < CONFIG['MAX_RETRIES']:
+        try:
+            logger.info(f"Connecting to {CONFIG['WS_URI']}...")
+            async with websockets.connect(CONFIG['WS_URI']) as websocket:
+                logger.info("Connected successfully!")
                 
-                if choice == '1':
-                    await send_fake_smpl_pose(websocket)
-                elif choice == '2':
-                    await get_current_context(websocket)
-                elif choice == '3':
-                    npz_path = await get_npz_path()
-                    if npz_path:
-                        await load_npz_context(websocket, npz_path)
-                elif choice == '4':
-                    print("\nExiting program...")
-                    break
+                # Reset stop event for new connection
+                stop_event.clear()
                 
-                # Wait for user to press enter before showing menu again
-                input("\nPress Enter to continue...")
+                # Start heartbeat task
+                heartbeat_task = asyncio.create_task(heartbeat(websocket, stop_event))
                 
-    except websockets.exceptions.ConnectionClosed:
-        print("\nConnection closed unexpectedly")
-    except Exception as e:
-        print(f"\nError during communication: {e}")
-        raise
+                while not stop_event.is_set():
+                    try:
+                        choice = await display_menu()
+                        
+                        if choice == '1':
+                            await send_fake_smpl_pose(websocket)
+                        elif choice == '2':
+                            await get_current_context(websocket)
+                        elif choice == '3':
+                            npz_path = input("\nEnter the path to the NPZ file: ").strip()
+                            if npz_path:
+                                await send_npz_as_smpl(websocket, npz_path, stop_event)
+                        elif choice == '4':
+                            folder_path = "./npz-animations"
+                            await load_npz_animation_folder(websocket, folder_path, stop_event)
+                        elif choice == '5':
+                            logger.info("Exiting program...")
+                            stop_event.set()
+                            heartbeat_task.cancel()
+                            return
+                        
+                        if choice != '5' and not stop_event.is_set():
+                            input("\nPress Enter to continue...")
+                            
+                    except websockets.exceptions.WebSocketException as e:
+                        logger.error(f"WebSocket error during operation: {e}")
+                        stop_event.set()
+                        break
+                
+                # Clean up heartbeat task
+                if not heartbeat_task.done():
+                    heartbeat_task.cancel()
+                        
+        except websockets.exceptions.WebSocketException as e:
+            retries += 1
+            if retries < CONFIG['MAX_RETRIES']:
+                logger.error(f"Connection error: {e}")
+                logger.info(f"Retrying in {CONFIG['RETRY_DELAY']} seconds... (Attempt {retries}/{CONFIG['MAX_RETRIES']})")
+                await asyncio.sleep(CONFIG['RETRY_DELAY'])
+                continue
+            else:
+                logger.error(f"Failed to connect after {CONFIG['MAX_RETRIES']} attempts")
+                return
+                
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+            return
 
 if __name__ == "__main__":
     try:
         asyncio.run(interactive_client())
     except KeyboardInterrupt:
-        print("\nProgram terminated by user")
+        logger.info("Program terminated by user")
     except Exception as e:
-        print(f"\nUnexpected error: {e}")
+        logger.error(f"Unexpected error: {e}")

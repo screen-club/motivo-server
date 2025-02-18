@@ -391,7 +391,7 @@
   }
 </script>
 
-<div class="w-full bg-white rounded-lg shadow-lg p-4 mb-8">
+<div class="w-full bg-white rounded-lg shadow-lg p-4 mb-14">
   <div class="w-full">
     <h2 class="text-lg font-bold text-gray-800">Timeline</h2>
     <PresetTimeline bind:this={timelineComponent} />
@@ -521,14 +521,3 @@
   </div>
 {/if}
 </div>
-
-<style>
-.overflow-x-auto::-webkit-scrollbar {
-  display: none;
-}
-
-.overflow-x-auto {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-</style>

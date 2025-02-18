@@ -24,19 +24,19 @@ services:
               count: 1
               capabilities: [gpu]
   
-  vibe:
-    image: yassinsiouda/cog-vibe:latest
-    ports:
-      - "5000:5000"
-    restart: unless-stopped
-    shm_size: '16gb'  # Shared memory size
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+  # vibe:
+  #   image: yassinsiouda/cog-vibe:latest
+  #   ports:
+  #     - "5000:5000"
+  #   restart: unless-stopped
+  #   shm_size: '16gb'  # Shared memory size
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
   
   # backup:
   #     image: yassinsiouda/motivo-backup:latest
