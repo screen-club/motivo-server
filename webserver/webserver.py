@@ -341,7 +341,7 @@ def get_version():
 def get_configs():
     try:
         db = Content()
-        configs = db.get_all()  # This will already include cache_file_path from our earlier model update
+        configs = db.get_all()  # This will now include tags from our updated model
         return jsonify(configs)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -356,7 +356,8 @@ def create_config():
             thumbnail=data['thumbnail'],
             type=data['type'],  # vibe/reward/llm
             data=data['data'],  # json object
-            cache_file_path=data.get('cache_file_path')  # Optional field
+            cache_file_path=data.get('cache_file_path'),  # Optional field
+            tags=data.get('tags', [])  # Optional tags field, defaults to empty list
         )
         return jsonify({'id': config_id}), 201
     except Exception as e:
@@ -367,18 +368,19 @@ def update_config(config_id):
     try:
         data = request.json
         db = Content()
-        db.update(
-            id=config_id,
-            title=data.get('title'),
-            thumbnail=data.get('thumbnail'),
-            type=data.get('type'),
-            data=data.get('data'),
-            cache_file_path=data.get('cache_file_path')  # Added cache_file_path update
-        )
-        return jsonify({'success': True})
+        
+        # Remove any None values from the data
+        update_data = {k: v for k, v in data.items() if v is not None}
+        
+        # Update the configuration
+        updated_config = db.update_content(config_id, **update_data)
+        
+        return jsonify(updated_config)
+        
     except Exception as e:
+        print(f"Error updating configuration: {str(e)}")
         return jsonify({'error': str(e)}), 500
-
+    
 @app.route('/api/conf/<int:config_id>', methods=['DELETE'])
 def delete_config(config_id):
     try:

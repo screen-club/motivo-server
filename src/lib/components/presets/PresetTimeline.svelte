@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { websocketService } from '../services/websocketService';
+  import { websocketService } from '../../services/websocketService';
   
   export let duration = 30; // Now exported
   export let placedPresets = []; // Now exported

@@ -13,7 +13,7 @@
     import { favoriteStore } from '../stores/favoriteStore';
     import LLM from '../components/LLM.svelte';
     import { chatStore } from '../stores/chatStore';
-    import PresetsList from '../components/PresetsList.svelte';
+    import PresetsList from '../components/presets/PresetsList.svelte';
     
     let isSocketReady = $state(false);
     let cleanupListener;
