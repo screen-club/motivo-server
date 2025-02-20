@@ -1,6 +1,19 @@
 version: '3.8'
 
 services:
+  traefik:
+    image: traefik:v2.10
+    command:
+      - "--api.insecure=false"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:5173"
+    ports:
+      - "5173:5173"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
   backend:
     image: yassinsiouda/motivo-server-back:latest
     ports:
@@ -23,36 +36,42 @@ services:
   
   frontend:
     image: yassinsiouda/motivo-client-front:latest
-    ports:
-      - "5173:5173"
+    expose:
+      - "5173"
     depends_on:
       - backend
     env_file:
       - .env
     restart: unless-stopped
     labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.frontend.entrypoints=web"
+      - "traefik.http.services.frontend.loadbalancer.server.port=5173"
+      - "traefik.http.middlewares.auth.basicauth.users=meta:$$apr1$$BjXC97Sd$$iTlpYw9xQFlTY0nYA5EOE1"
+      - "traefik.http.routers.frontend.middlewares=auth"
       - "com.centurylinklabs.watchtower.enable=true"
 
   backup:
-      image: yassinsiouda/motivo-backup:latest
-      volumes:
-        - ./storage:/backup/storage
-      environment:
-        - S3_ENDPOINT=${S3_ENDPOINT}
-        - S3_ACCESS_KEY=${S3_ACCESS_KEY}
-        - S3_SECRET_KEY=${S3_SECRET_KEY}
-        - BACKUP_BUCKET=${BACKUP_BUCKET}
-        - BACKUP_INTERVAL_HOURS=${BACKUP_INTERVAL_HOURS}
-      restart: unless-stopped
-      labels:
-        - "com.centurylinklabs.watchtower.enable=true"
+    image: yassinsiouda/motivo-backup:latest
+    volumes:
+      - ./storage:/backup/storage
+    environment:
+      - S3_ENDPOINT=${S3_ENDPOINT}
+      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
+      - S3_SECRET_KEY=${S3_SECRET_KEY}
+      - BACKUP_BUCKET=${BACKUP_BUCKET}
+      - BACKUP_INTERVAL_HOURS=${BACKUP_INTERVAL_HOURS}
+    restart: unless-stopped
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
 
   watchtower:
-      image: containrrr/watchtower
-      volumes:
-        - /var/run/docker.sock:/var/run/docker.sock
-      command: --interval 30 --cleanup --remove-volumes --stop-timeout 10s
-      environment:
-        - WATCHTOWER_CLEANUP=true
-        - WATCHTOWER_STOP_TIMEOUT=10s  # Forces container stop after 10 seconds
-      restart: unless-stopped
+    image: containrrr/watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 30 --cleanup --remove-volumes --stop-timeout 10s
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_STOP_TIMEOUT=10s
+    restart: unless-stopped
