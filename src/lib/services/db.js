@@ -112,6 +112,25 @@ export class DbService {
       throw error;
     }
   }
+
+  /**
+   * Update preset tags
+   * @param {number} id Preset ID
+   * @param {string[]} tags Array of tags
+   * @returns {Promise<Object>} Updated configuration
+   */
+  static async updatePresetTags(id, tags) {
+    return await this.updateConfig(id, { tags });
+  }
+
+  /**
+   * Get all unique tags from all presets
+   * @param {Array} presets Array of all presets
+   * @returns {Set<string>} Set of unique tags
+   */
+  static getAllUniqueTags(presets) {
+    return new Set(presets.flatMap(preset => preset.tags || []));
+  }
 }
 
 export default DbService;
