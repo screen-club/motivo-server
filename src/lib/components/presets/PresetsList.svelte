@@ -63,7 +63,11 @@
       }
 
       if (animationOptions.isAnimation && preset.data) {
-        currentAnimationInterval = await PoseService.handleAnimationPlayback(preset, animationOptions.fps || 4);
+        currentAnimationInterval = await PoseService.handleAnimationPlayback(
+          preset, 
+          animationOptions.fps || 4,
+          animationOptions.speedFactor || 1
+        );
       } else {
         await loadSinglePreset(preset);
       }
@@ -394,7 +398,7 @@
   {#if isLoading}
     <p class="text-gray-500">Loading presets...</p>
   {:else}
-    <div class="flex gap-4 overflow-x-auto pb-4">
+    <div class="flex flex-wrap gap-4 max-h-[600px] overflow-y-auto pb-4">
       {#each filterPresets(presets) as preset (preset.id)}
         <PresetCard
           {preset}

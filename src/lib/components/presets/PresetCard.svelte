@@ -1,6 +1,7 @@
 <script>
   import TagInput from "./TagsInput.svelte";
   import { DbService } from "../../services/db";
+  import { fade } from 'svelte/transition';
 
   export let preset;
   export let onLoad;
@@ -13,44 +14,43 @@
   // Animation state
   let isAnimationPlaying = false;
   let animationFPS = 4;
+  let speedFactor = 1;
 
-  // Helper to detect if preset is an animation
+  /// In the script section:
   function isAnimation(preset) {
-    if (!preset.data) return false;
-    
-    // Direct pose data check
-    if (Array.isArray(preset.data.pose)) {
-      return preset.data.pose.length > 1;
-    }
-    
-    // Direct qpos data check
-    if (Array.isArray(preset.data.qpos)) {
-      return preset.data.qpos.length > 1;
-    }
-    
-    return false;
+      if (!preset.data) return false;
+      
+      // Check for direct pose array
+      if (Array.isArray(preset.data.pose)) {
+          return preset.data.pose.length > 1;
+      }
+      
+      // Check for direct qpos array
+      if (Array.isArray(preset.data.qpos)) {
+          return preset.data.qpos.length > 1;
+      }
+      
+      return false;
   }
 
-  // Handle animation loading and playback
   async function handleLoad() {
-    if (isAnimation(preset)) {
-      isAnimationPlaying = true;
-      // Pass the entire preset data for proper handling in the parent
-      onLoad(preset, { 
-        isAnimation: true, 
-        fps: animationFPS 
-      });
-    } else {
-      onLoad(preset);
-    }
+      if (isAnimation(preset)) {
+          isAnimationPlaying = true;
+          onLoad(preset, { 
+              isAnimation: true, 
+              fps: animationFPS,
+              speedFactor: speedFactor
+          });
+      } else {
+          onLoad(preset);
+      }
   }
 
-  // Stop animation playback
   function stopAnimation() {
-    if (isAnimationPlaying) {
-      isAnimationPlaying = false;
-      onLoad(preset, { stopAnimation: true });
-    }
+      if (isAnimationPlaying) {
+          isAnimationPlaying = false;
+          onLoad(preset, { stopAnimation: true });
+      }
   }
 
   async function handleTagsUpdate(event) {
@@ -93,45 +93,45 @@
 
   <!-- Thumbnail section -->
   {#if preset.type !== "timeline"}
-  <div class="relative">
-    {#if preset.thumbnail}
-      <video
-        src={`data:video/webm;base64,${preset.thumbnail}`}
-        autoplay
-        muted
-        loop
-        playsinline
-        class="w-full mb-2 rounded"
-        height="120"
-      ></video>
-    {:else if isAnimation(preset)}
-      <div class="w-full h-[120px] mb-2 rounded bg-gray-100 flex items-center justify-center">
-        <i class="fas fa-film text-4xl text-gray-400"></i>
-      </div>
-    {/if}
-    <button
-      class="absolute top-2 right-2 bg-white rounded-full p-1.5 shadow-md hover:bg-gray-100 transition-colors"
-      on:click|stopPropagation={() => onRegenerateThumbnail(preset)}
-      disabled={isRegenerating}
-      title="Regenerate thumbnail"
-    >
-      <svg
-        class={`w-4 h-4 ${isRegenerating ? "animate-spin" : ""}`}
-        xmlns="http://www.w3.org/2000/svg"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
+    <div class="relative">
+      {#if preset.thumbnail}
+        <video
+          src={`data:video/webm;base64,${preset.thumbnail}`}
+          autoplay
+          muted
+          loop
+          playsinline
+          class="w-full mb-2 rounded"
+          height="120"
+        ></video>
+      {:else if isAnimation(preset)}
+        <div class="w-full h-[120px] mb-2 rounded bg-gray-100 flex items-center justify-center">
+          <i class="fas fa-film text-4xl text-gray-400"></i>
+        </div>
+      {/if}
+      <button
+        class="absolute top-2 right-2 bg-white rounded-full p-1.5 shadow-md hover:bg-gray-100 transition-colors"
+        on:click|stopPropagation={() => onRegenerateThumbnail(preset)}
+        disabled={isRegenerating}
+        title="Regenerate thumbnail"
       >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-        />
-      </svg>
-    </button>
-  </div>
-{ /if}
+        <svg
+          class={`w-4 h-4 ${isRegenerating ? "animate-spin" : ""}`}
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+          />
+        </svg>
+      </button>
+    </div>
+  {/if}
 
   <!-- Title and type -->
   <div class="flex justify-between items-start mb-2">
@@ -158,15 +158,31 @@
       <br />
       {#if isAnimation(preset)}
         Frames: {preset.data.pose?.length || preset.data.qpos?.length}
-        <div class="mt-1">
-          <label class="text-xs">FPS:</label>
-          <input 
-            type="number" 
-            bind:value={animationFPS}
-            min="1" 
-            max="30" 
-            class="w-16 ml-1 px-1 py-0.5 border rounded"
-          />
+        <!-- Animation Controls -->
+        <div class="mt-2 space-y-2">
+          <div class="flex items-center">
+            <label class="text-xs mr-2">FPS:</label>
+            <input 
+              type="range"
+              bind:value={animationFPS}
+              min="1"
+              max="30"
+              class="flex-1 h-4"
+            />
+            <span class="text-xs ml-2">{animationFPS}</span>
+          </div>
+          <div class="flex items-center">
+            <label class="text-xs mr-2">Speed:</label>
+            <input 
+              type="range"
+              bind:value={speedFactor}
+              min="0.1"
+              max="5"
+              step="0.1"
+              class="flex-1 h-4"
+            />
+            <span class="text-xs ml-2">{speedFactor}x</span>
+          </div>
         </div>
       {/if}
     {/if}

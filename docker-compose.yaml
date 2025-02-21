@@ -23,6 +23,15 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+  sqlite-web:
+    image: coleifer/sqlite-web
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./storage:/data
+    environment:
+      - SQLITE_DATABASE=/data/db.db
+    restart: unless-stopped
   
   # vibe:
   #   image: yassinsiouda/cog-vibe:latest
