@@ -4,6 +4,7 @@
   import { DbService } from '../../services/db';
   import { websocketService } from '../../services/websocketService';
   import { parameterStore } from '../../stores/parameterStore';
+  import { PoseService } from '../../services/poses';
   import PresetTimeline from './PresetTimeline.svelte';
   import PresetCard from './PresetCard.svelte';
   import VideoBuffer from '../../services/videoBuffer';
@@ -40,7 +41,6 @@
 
   async function loadPresetConfig(preset, animationOptions = {}) {
     try {
-      // Stop any currently playing animation
       stopCurrentAnimation();
 
       if (preset.type === 'timeline') {
@@ -58,48 +58,13 @@
         return;
       }
 
-      // If stopping animation was requested
       if (animationOptions.stopAnimation) {
         return;
       }
 
-      // Handle animation playback
       if (animationOptions.isAnimation && preset.data) {
-        const fps = animationOptions.fps || 4;
-        const frameDelay = 1000 / fps;
-        
-        let frameIndex = 0;
-        
-        const playFrame = async () => {
-          // Handle pose animation
-          if (Array.isArray(preset.data.pose)) {
-            await websocketService.send({
-              type: "load_pose_smpl",
-              pose: preset.data.pose[frameIndex],
-              trans: preset.data.trans?.[frameIndex],
-              model: preset.data.model,
-              inference_type: preset.data.inference_type,
-              timestamp: new Date().toISOString()
-            });
-            frameIndex = (frameIndex + 1) % preset.data.pose.length;
-          } 
-          // Handle qpos animation
-          else if (Array.isArray(preset.data.qpos)) {
-            await websocketService.send({
-              type: "load_pose",
-              pose: preset.data.qpos[frameIndex],
-              inference_type: preset.data.inference_type,
-              timestamp: new Date().toISOString()
-            });
-            frameIndex = (frameIndex + 1) % preset.data.qpos.length;
-          }
-        };
-
-        // Start animation loop
-        await playFrame(); // Play first frame immediately
-        currentAnimationInterval = setInterval(playFrame, frameDelay);
+        currentAnimationInterval = await PoseService.handleAnimationPlayback(preset, animationOptions.fps || 4);
       } else {
-        // Load single preset normally
         await loadSinglePreset(preset);
       }
 
@@ -124,32 +89,7 @@
     }
 
     if (preset.type === 'pose' || preset.data?.pose) {
-      const poseData = preset.data;
-      
-      if (Array.isArray(poseData.pose)) {
-        // Load first frame if it's an animation
-        const pose = poseData.pose[0];
-        const trans = poseData.trans?.[0];
-        
-        await websocketService.send({
-          type: "load_pose_smpl",
-          pose,
-          trans,
-          model: poseData.model,
-          inference_type: poseData.inference_type,
-          timestamp: new Date().toISOString()
-        });
-      } else if (Array.isArray(poseData.qpos)) {
-        // Load first frame if it's a qpos animation
-        const qpos = poseData.qpos[0];
-        
-        await websocketService.send({
-          type: "load_pose",
-          pose: qpos,
-          inference_type: poseData.inference_type,
-          timestamp: new Date().toISOString()
-        });
-      }
+      await PoseService.loadPoseConfig(preset);
     }
 
     if (preset.type === 'rewards' || preset.data?.rewards) {
@@ -234,7 +174,7 @@
     
     try {
       regeneratingPresetId = preset.id;
-      stopCurrentAnimation(); // Stop any playing animation
+      stopCurrentAnimation();
       
       await loadPresetConfig(preset);
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -465,7 +405,7 @@
           isDraggable={true}
           allTags={presets.map(p => p.tags).flat().filter(Boolean)}
         />
-        {/each}
-      </div>
-    {/if}
-  </div>
+      {/each}
+    </div>
+  {/if}
+</div>

@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from "svelte";
   import VideoEditor from "./VideoEditor.svelte";
-    import VibeSavedPoses from "./VibeSavedPoses.svelte";
+  // import VibeSavedPoses from "./VibeSavedPoses.svelte";
 
   let videoUrl = "";
   let fileInput;
@@ -348,6 +348,6 @@
       </div>
     </div>
     <!-- Saved Poses Component -->
-    <VibeSavedPoses />
+    <!-- <VibeSavedPoses /> -->
   </div>
 </div>
