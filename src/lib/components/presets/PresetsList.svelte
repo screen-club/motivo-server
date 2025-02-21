@@ -17,6 +17,7 @@
   let loadError = '';
   let timelineComponent;
   let regeneratingPresetId = null;
+  let currentAnimationInterval = null;
   
   const apiUrl = import.meta.env.VITE_API_URL;
 
@@ -30,8 +31,18 @@
     }
   }
 
-  async function loadPresetConfig(preset) {
+  function stopCurrentAnimation() {
+    if (currentAnimationInterval) {
+      clearInterval(currentAnimationInterval);
+      currentAnimationInterval = null;
+    }
+  }
+
+  async function loadPresetConfig(preset, animationOptions = {}) {
     try {
+      // Stop any currently playing animation
+      stopCurrentAnimation();
+
       if (preset.type === 'timeline') {
         if (timelineComponent) {
           timelineComponent.loadTimeline(preset.data);
@@ -47,7 +58,51 @@
         return;
       }
 
-      await loadSinglePreset(preset);
+      // If stopping animation was requested
+      if (animationOptions.stopAnimation) {
+        return;
+      }
+
+      // Handle animation playback
+      if (animationOptions.isAnimation && preset.data) {
+        const fps = animationOptions.fps || 4;
+        const frameDelay = 1000 / fps;
+        
+        let frameIndex = 0;
+        
+        const playFrame = async () => {
+          // Handle pose animation
+          if (Array.isArray(preset.data.pose)) {
+            await websocketService.send({
+              type: "load_pose_smpl",
+              pose: preset.data.pose[frameIndex],
+              trans: preset.data.trans?.[frameIndex],
+              model: preset.data.model,
+              inference_type: preset.data.inference_type,
+              timestamp: new Date().toISOString()
+            });
+            frameIndex = (frameIndex + 1) % preset.data.pose.length;
+          } 
+          // Handle qpos animation
+          else if (Array.isArray(preset.data.qpos)) {
+            await websocketService.send({
+              type: "load_pose",
+              pose: preset.data.qpos[frameIndex],
+              inference_type: preset.data.inference_type,
+              timestamp: new Date().toISOString()
+            });
+            frameIndex = (frameIndex + 1) % preset.data.qpos.length;
+          }
+        };
+
+        // Start animation loop
+        await playFrame(); // Play first frame immediately
+        currentAnimationInterval = setInterval(playFrame, frameDelay);
+      } else {
+        // Load single preset normally
+        await loadSinglePreset(preset);
+      }
+
       loadError = '';
     } catch (error) {
       console.error('Failed to load preset configuration:', error);
@@ -69,21 +124,24 @@
     }
 
     if (preset.type === 'pose' || preset.data?.pose) {
-      const poseData = preset.data.pose;
-      if (poseData.type === 'smpl') {
-        const pose = Array.isArray(poseData.pose[0]) ? poseData.pose[0] : poseData.pose;
-        const trans = Array.isArray(poseData.trans[0]) ? poseData.trans[0] : poseData.trans;
+      const poseData = preset.data;
+      
+      if (Array.isArray(poseData.pose)) {
+        // Load first frame if it's an animation
+        const pose = poseData.pose[0];
+        const trans = poseData.trans?.[0];
         
         await websocketService.send({
           type: "load_pose_smpl",
-          pose: pose,
-          trans: trans,
+          pose,
+          trans,
           model: poseData.model,
           inference_type: poseData.inference_type,
           timestamp: new Date().toISOString()
         });
-      } else if (poseData.type === 'qpos') {
-        const qpos = Array.isArray(poseData.qpos[0]) ? poseData.qpos[0] : poseData.qpos;
+      } else if (Array.isArray(poseData.qpos)) {
+        // Load first frame if it's a qpos animation
+        const qpos = poseData.qpos[0];
         
         await websocketService.send({
           type: "load_pose",
@@ -176,6 +234,7 @@
     
     try {
       regeneratingPresetId = preset.id;
+      stopCurrentAnimation(); // Stop any playing animation
       
       await loadPresetConfig(preset);
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -184,7 +243,6 @@
       const videoBlob = await videoBuffer.getBuffer();
       const base64Thumbnail = await blobToBase64(videoBlob);
 
-      // Send only the thumbnail update
       await DbService.updateConfig(preset.id, {
         thumbnail: base64Thumbnail
       });
@@ -197,7 +255,7 @@
     } finally {
       regeneratingPresetId = null;
     }
-}
+  }
 
   function blobToBase64(blob) {
     return new Promise((resolve) => {
@@ -326,6 +384,7 @@
   }
 
   onDestroy(() => {
+    stopCurrentAnimation();
     if (videoBuffer?.stream) {
       videoBuffer.stream.getTracks().forEach(track => track.stop());
     }
@@ -403,8 +462,10 @@
           onDelete={deletePreset}
           onRegenerateThumbnail={regenerateThumbnail}
           isRegenerating={regeneratingPresetId === preset.id}
+          isDraggable={true}
+          allTags={presets.map(p => p.tags).flat().filter(Boolean)}
         />
-      {/each}
-    </div>
-  {/if}
-</div>
+        {/each}
+      </div>
+    {/if}
+  </div>
