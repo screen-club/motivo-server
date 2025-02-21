@@ -6,13 +6,17 @@ import numpy as np
 import os
 from datetime import datetime
 from scipy.spatial.transform import Rotation as R
+from pathlib import Path
+from lib.api import APIClient
 
 # Configuration
 CONFIG = {
     'WS_URI': 'ws://localhost:8765',
+    'API_URL': 'http://localhost:5002',
     'MAX_RETRIES': 3,
     'RETRY_DELAY': 2,
-    'DEFAULT_FPS': 4,  # Default frames per second
+    'DEFAULT_FPS': 4,  # Default frames per second for websocket streaming
+    'TARGET_FPS': 30,  # FPS for database storage
     'FRAME_DELAY': 0.25,  # 1/DEFAULT_FPS
     'RESPONSE_TIMEOUT': 30,
     'HEARTBEAT_INTERVAL': 10
@@ -36,8 +40,7 @@ def get_frame_indices(total_frames, fps):
         return []
     
     # Calculate frame interval to achieve desired FPS
-    # Assuming original animation is 30 FPS
-    original_fps = 30
+    original_fps = CONFIG['TARGET_FPS']
     interval = original_fps / fps
     
     # Generate frame indices
@@ -83,6 +86,72 @@ def convert_npz_to_smpl(npz_path):
     except Exception as e:
         logger.error(f"Error converting NPZ to SMPL: {e}")
         return None
+
+def prepare_animation_for_db(poses, trans):
+    """Convert animation data to database format"""
+    return {
+        "type": "smpl",
+        "inference_type": "goal",
+        "model": "smpl",
+        "pose": poses,
+        "trans": trans
+    }
+
+async def upload_npz_to_db(npz_path):
+    """Convert NPZ file and upload to database"""
+    try:
+        # Convert NPZ to SMPL format
+        smpl_data = convert_npz_to_smpl(npz_path)
+        if not smpl_data:
+            logger.error("Failed to convert NPZ to SMPL format")
+            return False
+            
+        # Get animation name from filename
+        animation_name = Path(npz_path).stem
+        
+        # Prepare data for database
+        db_data = prepare_animation_for_db(
+            poses=smpl_data['poses'],
+            trans=smpl_data['trans']
+        )
+        
+        # Upload to database
+        api_client = APIClient(CONFIG['API_URL'])
+        result = api_client.add_config(
+            title=animation_name,
+            data=db_data,
+            type="pose"
+        )
+        
+        logger.info(f"Successfully uploaded animation '{animation_name}' to database")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error uploading animation to database: {e}")
+        return False
+
+async def upload_npz_folder_to_db(folder_path):
+    """Upload all NPZ files in folder to database"""
+    try:
+        npz_files = [f for f in os.listdir(folder_path) if f.endswith('.npz')]
+        if not npz_files:
+            logger.info(f"No NPZ files found in folder: {folder_path}")
+            return
+            
+        logger.info(f"Found {len(npz_files)} NPZ files to upload")
+        
+        for npz_file in npz_files:
+            full_path = os.path.join(folder_path, npz_file)
+            logger.info(f"Processing: {npz_file}")
+            
+            success = await upload_npz_to_db(full_path)
+            if success:
+                logger.info(f"Successfully uploaded: {npz_file}")
+            else:
+                logger.error(f"Failed to upload: {npz_file}")
+            
+    except Exception as e:
+        logger.error(f"Error processing folder: {e}")
 
 async def heartbeat(websocket, stop_event):
     """Send periodic heartbeat to keep connection alive"""
@@ -273,14 +342,16 @@ async def display_menu():
     print("2. Get current context")
     print("3. Convert and send NPZ animation")
     print("4. Convert and send NPZ animation folder")
-    print("5. Exit")
+    print("5. Upload NPZ animation to database")
+    print("6. Upload NPZ folder to database")
+    print("7. Exit")
     
     while True:
         try:
-            choice = input("\nEnter your choice (1-5): ")
-            if choice in ['1', '2', '3', '4', '5']:
+            choice = input("\nEnter your choice (1-7): ")
+            if choice in ['1', '2', '3', '4', '5', '6', '7']:
                 return choice
-            print("Invalid choice. Please enter a number between 1 and 5.")
+            print("Invalid choice. Please enter a number between 1 and 7.")
         except ValueError:
             print("Invalid input. Please enter a number.")
 
@@ -314,15 +385,24 @@ async def interactive_client():
                             if npz_path:
                                 await send_npz_as_smpl(websocket, npz_path, stop_event)
                         elif choice == '4':
-                            folder_path = "./npz-animations"
-                            await load_npz_animation_folder(websocket, folder_path, stop_event)
+                            folder_path = input("\nEnter the path to the NPZ folder: ").strip()
+                            if folder_path:
+                                await load_npz_animation_folder(websocket, folder_path, stop_event)
                         elif choice == '5':
+                            npz_path = input("\nEnter the path to the NPZ file: ").strip()
+                            if npz_path:
+                                await upload_npz_to_db(npz_path)
+                        elif choice == '6':
+                            folder_path = input("\nEnter the path to the NPZ folder: ").strip()
+                            if folder_path:
+                                await upload_npz_folder_to_db(folder_path)
+                        elif choice == '7':
                             logger.info("Exiting program...")
                             stop_event.set()
                             heartbeat_task.cancel()
                             return
                         
-                        if choice != '5' and not stop_event.is_set():
+                        if choice != '7' and not stop_event.is_set():
                             input("\nPress Enter to continue...")
                             
                     except websockets.exceptions.WebSocketException as e:
