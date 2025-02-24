@@ -11,6 +11,7 @@
 
   let presets = [];
   let selectedType = 'all';
+  let selectedTags = [];
   let isLoading = true;
   let isSaving = false;
   let videoBuffer;
@@ -335,8 +336,12 @@
   });
 
   function filterPresets(presets) {
-    if (selectedType === 'all') return presets;
-    return presets.filter(preset => preset.type === selectedType);
+    return presets.filter(preset => {
+      const matchesType = selectedType === 'all' || preset.type === selectedType;
+      const matchesTags = selectedTags.length === 0 || 
+        (preset.tags && selectedTags.some(tag => preset.tags.includes(tag))); // Changed from every to some
+      return matchesType && matchesTags;
+    });
   }
 
   async function deletePreset(id) {
@@ -370,6 +375,17 @@
         <option value="pose">Pose</option>
         <option value="timeline">Timeline</option>
       </select>
+
+      <select
+        multiple
+        bind:value={selectedTags}
+        class="border rounded-md px-2 py-1 text-sm min-w-[150px]"
+      >
+        {#each [...new Set(presets.map(p => p.tags).flat().filter(Boolean))] as tag}
+          <option value={tag}>{tag}</option>
+        {/each}
+      </select>
+
       <button 
         class="bg-purple-500 text-white px-3 py-1 text-sm font-medium rounded-md hover:bg-purple-600 transition-colors disabled:bg-gray-400"
         on:click={saveCurrentTimeline}
@@ -386,6 +402,28 @@
       </button>
     </div>
   </div>
+
+  {#if selectedTags.length > 0}
+    <div class="flex gap-2 mt-2 flex-wrap">
+      {#each selectedTags as tag}
+        <span class="bg-purple-100 text-purple-800 px-2 py-1 rounded-full text-sm flex items-center gap-1">
+          {tag}
+          <button
+            class="hover:text-purple-600"
+            on:click={() => selectedTags = selectedTags.filter(t => t !== tag)}
+          >
+            ×
+          </button>
+        </span>
+      {/each}
+      <button
+        class="text-sm text-gray-500 hover:text-gray-700"
+        on:click={() => selectedTags = []}
+      >
+        Clear all
+      </button>
+    </div>
+  {/if}
 
   {#if saveError}
     <div class="text-red-500 mb-4 text-sm">{saveError}</div>
