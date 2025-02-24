@@ -1,18 +1,18 @@
 <script>
   import { onMount } from 'svelte';
   import { websocketService } from '../../services/websocketService';
+  import { PoseService } from '../../services/poses';
   
-  export let duration = 30; // Now exported
-  export let placedPresets = []; // Now exported
+  export let duration = 30;
+  export let placedPresets = [];
   let isPlaying = false;
   let timelineRef;
   let currentTime = 0;
   let animationFrame;
   let startTime;
-  
-  // Add variable to track dragging state
+  let selectedPreset = null;
+  let currentAnimations = new Map(); // Track running animations
   let isDraggingPreset = null;
-  let isDraggingPlayhead = false;
   
   // Handle duration change
   function handleDurationChange(event) {
@@ -32,40 +32,116 @@
     isDraggingPreset = preset;
     event.dataTransfer.setData('preset_move', 'true');
   }
+
+  // Calculate preset width based on duration
+  function getPresetWidth(preset) {
+    if (preset.data?.pose || preset.data?.qpos) {
+      // For animations, calculate width based on number of frames and FPS
+      const frames = Array.isArray(preset.data.pose) ? preset.data.pose.length :
+                    Array.isArray(preset.data.qpos) ? preset.data.qpos.length : 1;
+      const fps = preset.data.fps || PoseService.CONFIG.DEFAULT_FPS;
+      const speedFactor = preset.data.speedFactor || 1;
+      const animationDuration = (frames / fps) / speedFactor;
+      return `${(animationDuration / duration) * 100}%`;
+    }
+    // Default width for non-animation presets (2 seconds)
+    return `${(2 / duration) * 100}%`;
+  }
   
   // Handle drop for both new presets and moving existing ones
   function handleDrop(event) {
     event.preventDefault();
     const timelineRect = timelineRef.getBoundingClientRect();
     const dropX = event.clientX - timelineRect.left;
-    const position = Math.min(Math.max(0, (dropX / timelineRect.width) * duration), duration);
+    let dropPosition = Math.min(Math.max(0, (dropX / timelineRect.width) * duration), duration);
 
     if (isDraggingPreset) {
       // Move existing preset
       placedPresets = placedPresets
-        .map(p => p === isDraggingPreset ? { ...p, position } : p)
+        .map(p => p === isDraggingPreset ? { ...p, position: dropPosition } : p)
         .sort((a, b) => a.position - b.position);
       isDraggingPreset = null;
     } else {
-      // Add new preset
-      const preset = JSON.parse(event.dataTransfer.getData('preset'));
-      placedPresets = [...placedPresets, {
-        ...preset,
-        position
-      }].sort((a, b) => a.position - b.position);
+      try {
+        // Add new preset
+        const preset = JSON.parse(event.dataTransfer.getData('preset'));
+        
+        // Calculate preset duration
+        let presetDuration = 2; // Default 2 seconds for non-animation presets
+        if (preset.data?.pose || preset.data?.qpos) {
+          const frames = Array.isArray(preset.data.pose) ? preset.data.pose.length :
+                        Array.isArray(preset.data.qpos) ? preset.data.qpos.length : 1;
+          const fps = preset.data.fps || PoseService.CONFIG.DEFAULT_FPS;
+          const speedFactor = preset.data.speedFactor || 1;
+          presetDuration = (frames / fps) / speedFactor;
+        }
+
+        // Check if the drop position plus duration exceeds timeline duration
+        dropPosition = Math.min(dropPosition, duration - presetDuration);
+
+        placedPresets = [...placedPresets, {
+          ...preset,
+          position: dropPosition,
+          duration: presetDuration
+        }].sort((a, b) => a.position - b.position);
+      } catch (error) {
+        console.error('Failed to parse dropped preset:', error);
+      }
     }
   }
 
   // Handle timeline click to move playhead
   function handleTimelineClick(event) {
-    if (!isDraggingPreset && !isDraggingPlayhead) {
-      const timelineRect = timelineRef.getBoundingClientRect();
-      const clickX = event.clientX - timelineRect.left;
-      currentTime = (clickX / timelineRect.width) * duration;
-      if (isPlaying) {
-        startTime = Date.now() - (currentTime * 1000);
-      }
+    const timelineRect = timelineRef.getBoundingClientRect();
+    const clickX = event.clientX - timelineRect.left;
+    currentTime = (clickX / timelineRect.width) * duration;
+    
+    // Update startTime if playing
+    if (isPlaying) {
+      startTime = Date.now() - (currentTime * 1000);
     }
+    
+    // Stop all current animations
+    stopAllAnimations();
+    
+    // Check if clicked within any preset's duration
+    placedPresets.forEach(preset => {
+      const presetEnd = preset.position + (preset.duration || 2);
+      if (currentTime >= preset.position && currentTime < presetEnd) {
+        activatePreset(preset);
+      }
+    });
+  }
+
+  // Handle preset selection
+  function handlePresetClick(event, preset) {
+    event.stopPropagation();
+    selectedPreset = selectedPreset === preset ? null : preset;
+  }
+
+  // Handle keydown for delete
+  function handleKeydown(event) {
+    if (event.key === 'Delete' && selectedPreset) {
+      stopPresetAnimation(selectedPreset);
+      placedPresets = placedPresets.filter(p => p !== selectedPreset);
+      selectedPreset = null;
+    }
+  }
+
+  // Stop specific preset animation
+  function stopPresetAnimation(preset) {
+    if (currentAnimations.has(preset.id)) {
+      clearInterval(currentAnimations.get(preset.id));
+      currentAnimations.delete(preset.id);
+      PoseService.stopCurrentAnimation();
+    }
+  }
+
+  // Stop all animations
+  function stopAllAnimations() {
+    currentAnimations.forEach(intervalId => clearInterval(intervalId));
+    currentAnimations.clear();
+    PoseService.stopCurrentAnimation();
   }
 
   // Move to next/previous preset
@@ -76,6 +152,8 @@
       if (isPlaying) {
         startTime = Date.now() - (currentTime * 1000);
       }
+      stopAllAnimations();
+      activatePreset(nextPreset);
     }
   }
 
@@ -88,6 +166,8 @@
       if (isPlaying) {
         startTime = Date.now() - (currentTime * 1000);
       }
+      stopAllAnimations();
+      activatePreset(previousPreset);
     }
   }
   
@@ -100,23 +180,33 @@
       playTimeline();
     } else {
       cancelAnimationFrame(animationFrame);
+      stopAllAnimations();
     }
   }
   
   // Timeline playback logic
   function playTimeline() {
+    const prevTime = currentTime;
     currentTime = (Date.now() - startTime) / 1000;
     
-    // Check for presets that need to be activated
+    // Check for presets that need to be activated/deactivated
     placedPresets.forEach(preset => {
-      if (currentTime >= preset.position && preset.position > (currentTime - 0.1)) {
+      const presetEnd = preset.position + (preset.duration || 2);
+      
+      // If we just entered the preset's duration
+      if (prevTime < preset.position && currentTime >= preset.position) {
         activatePreset(preset);
+      }
+      // If we just left the preset's duration
+      else if (prevTime < presetEnd && currentTime >= presetEnd) {
+        stopPresetAnimation(preset);
       }
     });
     
     if (currentTime >= duration) {
       currentTime = 0;
       startTime = Date.now();
+      stopAllAnimations();
     }
     
     if (isPlaying) {
@@ -126,65 +216,66 @@
   
   // Activate preset via websocket
   async function activatePreset(preset) {
-      try {
-          if (preset.data?.environmentParams) {
-              await websocketService.send({
-                  type: "update_parameters",  // Changed from update_environment
-                  parameters: preset.data.environmentParams,
-                  timestamp: new Date().toISOString()
-              });
-          }
-          
-          if (preset.type === 'pose' || preset.data?.pose) {
-              const poseData = preset.data.pose;
-              if (poseData.type === 'smpl') {
-                  // Flatten arrays if they're nested
-                  const pose = Array.isArray(poseData.pose[0]) ? poseData.pose[0] : poseData.pose;
-                  const trans = Array.isArray(poseData.trans[0]) ? poseData.trans[0] : poseData.trans;
-                  
-                  await websocketService.send({
-                      type: "load_pose_smpl",
-                      pose: pose,
-                      trans: trans,
-                      model: poseData.model,
-                      inference_type: poseData.inference_type,
-                      timestamp: new Date().toISOString()
-                  });
-              } else if (poseData.type === 'qpos') {
-                  const qpos = Array.isArray(poseData.qpos[0]) ? poseData.qpos[0] : poseData.qpos;
-                  
-                  await websocketService.send({
-                      type: "load_pose",
-                      pose: qpos,
-                      inference_type: poseData.inference_type,
-                      timestamp: new Date().toISOString()
-                  });
-              }
-          }
-          
-          if (preset.type === 'rewards' || preset.data?.rewards) {
-              if (preset.cache_file_path) {
-                  await websocketService.send({
-                      type: "load_npz_context",
-                      npz_path: preset.cache_file_path,
-                      timestamp: new Date().toISOString()
-                  });
-              } else if (preset.data?.rewards) {
-                  await websocketService.send({
-                      type: "request_reward",
-                      reward: {
-                          rewards: preset.data.rewards,
-                          weights: preset.data.weights,
-                          combinationType: preset.data.combinationType
-                      },
-                      timestamp: new Date().toISOString()
-                  });
-              }
-          }
-      } catch (error) {
-          console.error('Failed to activate preset:', error);
+    try {
+      if (preset.data?.environmentParams) {
+        await websocketService.send({
+          type: "update_parameters",
+          parameters: preset.data.environmentParams,
+          timestamp: new Date().toISOString()
+        });
       }
+      
+      if (preset.type === 'pose' || preset.data?.pose) {
+        const relativePosition = currentTime - preset.position;
+        const fps = preset.data.fps || PoseService.CONFIG.DEFAULT_FPS;
+        const speedFactor = preset.data.speedFactor || 1;
+        
+        if (Array.isArray(preset.data.pose)) {
+          // Calculate starting frame based on current position in timeline
+          const elapsedSeconds = relativePosition;
+          const startFrame = Math.floor(elapsedSeconds * fps * speedFactor);
+          
+          // Only start animation if not already running for this preset
+          if (!currentAnimations.has(preset.id)) {
+            const intervalId = await PoseService.handleAnimationPlayback(
+              preset,
+              fps * speedFactor,
+              startFrame
+            );
+            if (intervalId) {
+              currentAnimations.set(preset.id, intervalId);
+            }
+          }
+        } else {
+          // Handle single pose
+          await PoseService.loadPoseConfig(preset);
+        }
+      }
+      
+      if (preset.type === 'rewards' || preset.data?.rewards) {
+        if (preset.cache_file_path) {
+          await websocketService.send({
+            type: "load_npz_context",
+            npz_path: preset.cache_file_path,
+            timestamp: new Date().toISOString()
+          });
+        } else if (preset.data?.rewards) {
+          await websocketService.send({
+            type: "request_reward",
+            reward: {
+              rewards: preset.data.rewards,
+              weights: preset.data.weights,
+              combinationType: preset.data.combinationType
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Failed to activate preset:', error);
+    }
   }
+
   // Function to load timeline data
   export function loadTimeline(timelineData) {
     if (timelineData?.duration) {
@@ -197,10 +288,13 @@
   
   // Cleanup on component destroy
   onMount(() => {
+    window.addEventListener('keydown', handleKeydown);
     return () => {
+      window.removeEventListener('keydown', handleKeydown);
       if (animationFrame) {
         cancelAnimationFrame(animationFrame);
       }
+      stopAllAnimations();
     };
   });
 </script>
@@ -234,9 +328,9 @@
     <div class="flex items-center gap-2">
       <input 
         type="range" 
-        min="5" 
-        max="60" 
-        step="5" 
+        min="30" 
+        max="180" 
+        step="30" 
         bind:value={duration}
         on:input={handleDurationChange}
         class="w-48"
@@ -269,15 +363,19 @@
     <!-- Placed presets -->
     {#each placedPresets as preset}
       <div 
-        class="absolute top-4 transform -translate-x-1/2 cursor-move"
-        style="left: {(preset.position / duration) * 100}%"
+        class="absolute top-4 cursor-move {selectedPreset === preset ? 'ring-2 ring-blue-500' : ''}"
+        style="
+          left: {(preset.position / duration) * 100}%;
+          width: {getPresetWidth(preset)};
+        "
         draggable="true"
         on:dragstart={(e) => handlePresetDragStart(e, preset)}
+        on:click={(e) => handlePresetClick(e, preset)}
       >
         {#if preset.thumbnail}
           <video 
             src={`data:video/webm;base64,${preset.thumbnail}`}
-            class="w-16 h-12 rounded border-2 border-blue-500"
+            class="w-full h-12 rounded border-2 {selectedPreset === preset ? 'border-blue-500' : 'border-gray-300'}"
             autoplay
             loop
             muted

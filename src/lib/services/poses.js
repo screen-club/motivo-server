@@ -55,8 +55,8 @@ export class PoseService {
         }
     }
 
-    static async handleAnimationPlayback(preset, fps = this.CONFIG.DEFAULT_FPS) {
-        console.log('Playing animation:', preset);
+    static async handleAnimationPlayback(preset, fps = this.CONFIG.DEFAULT_FPS, startFrame = 0) {
+        console.log('Playing animation:', preset, 'starting from frame:', startFrame);
         
         // Stop any existing animation
         this.stopCurrentAnimation();
@@ -68,6 +68,12 @@ export class PoseService {
         let frameIndices;
         if (Array.isArray(preset.data.pose)) {
             frameIndices = this.getFrameIndices(preset.data.pose.length, fps);
+            
+            // Find the starting index based on startFrame
+            currentIndex = frameIndices.findIndex(index => index >= startFrame);
+            if (currentIndex === -1) {
+                currentIndex = 0; // If not found, start from beginning
+            }
         } else {
             console.error('Invalid animation data');
             return;
