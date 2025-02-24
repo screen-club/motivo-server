@@ -255,10 +255,6 @@
                 style="width: {(currentFrame / Math.max(totalFrames - 1, 1)) * 100}%"
               ></div>
             </div>
-            <div class="flex justify-between text-xs text-gray-600">
-              <span>Frame: {currentFrame + 1}/{totalFrames}</span>
-              <span>Duration: {getAnimationDuration().toFixed(2)}s</span>
-            </div>
           </div>
         </div>
       {/if}
