@@ -52,7 +52,7 @@
   }
 
   function getAnimationDuration() {
-    return totalFrames / speedFactor;
+    return (totalFrames / 30) / speedFactor; // Duration in seconds
   }
 
   function startFrameUpdater() {
@@ -60,8 +60,9 @@
       clearInterval(frameUpdateInterval);
     }
     
-    // Adjust interval time based on speed factor
-    const intervalTime = 1000 / (animationFPS * speedFactor);
+    // Calculate interval based on 30 FPS base rate and speed factor
+    const intervalTime = (1000 / 30) / speedFactor;
+    
     frameUpdateInterval = setInterval(() => {
       if (!isAnimationPlaying) return;
       currentFrame = (currentFrame + 1) % totalFrames;
@@ -220,7 +221,8 @@
     {#if preset.data?.pose || preset.data?.qpos}
       <br />
       {#if isAnimation(preset)}
-        Frames: {preset.data.pose?.length || preset.data.qpos?.length}
+        <p>Frames: {preset.data.pose?.length || preset.data.qpos?.length}</p>
+        <p>Duration: {(getAnimationDuration()).toFixed(2)}s</p>
         <!-- Animation Controls -->
         <div class="mt-2 space-y-2">
           <div class="flex items-center">
@@ -234,7 +236,7 @@
             />
             <span class="text-xs ml-2">{animationFPS}</span>
           </div>
-          <div class="flex items-center">
+          <!-- <div class="flex items-center">
             <label class="text-xs mr-2">Speed:</label>
             <input 
               type="range"
@@ -245,7 +247,7 @@
               class="flex-1 h-4"
             />
             <span class="text-xs ml-2">{speedFactor}x</span>
-          </div>
+          </div> -->
           
           <!-- Progress Bar - always visible -->
           <div class="space-y-1">
