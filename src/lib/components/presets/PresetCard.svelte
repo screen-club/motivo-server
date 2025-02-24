@@ -2,6 +2,9 @@
   import TagInput from "./TagsInput.svelte";
   import { DbService } from "../../services/db";
   import { fade } from 'svelte/transition';
+  import { get } from 'svelte/store';
+  import { currentlyPlayingPresetId } from "../../stores/playbackStore";
+  import { onDestroy } from 'svelte';
 
   export let preset;
   export let onLoad;
@@ -13,45 +16,99 @@
 
   // Animation state
   let isAnimationPlaying = false;
-  let animationFPS = 4;
+  let animationFPS = 4;  // Frames to send per second
   let speedFactor = 1;
+  let currentFrame = 0;
+  let totalFrames = 0;
+  let frameUpdateInterval;
+  let unsubscribe;
 
-  /// In the script section:
+  // Subscribe to the store to handle animation state changes
+  unsubscribe = currentlyPlayingPresetId.subscribe(playingId => {
+    if (playingId !== preset.id) {
+      if (isAnimationPlaying) {
+        stopAnimation();
+      }
+    } else if (!isAnimationPlaying && playingId === preset.id) {
+      // Another component requested this preset to play
+      handleLoad();
+    }
+  });
+
   function isAnimation(preset) {
-      if (!preset.data) return false;
-      
-      // Check for direct pose array
-      if (Array.isArray(preset.data.pose)) {
-          return preset.data.pose.length > 1;
-      }
-      
-      // Check for direct qpos array
-      if (Array.isArray(preset.data.qpos)) {
-          return preset.data.qpos.length > 1;
-      }
-      
-      return false;
+    if (!preset.data) return false;
+    
+    if (Array.isArray(preset.data.pose)) {
+      totalFrames = preset.data.pose.length;
+      return totalFrames > 1;
+    }
+    
+    if (Array.isArray(preset.data.qpos)) {
+      totalFrames = preset.data.qpos.length;
+      return totalFrames > 1;
+    }
+    
+    return false;
+  }
+
+  function getAnimationDuration() {
+    return totalFrames / speedFactor;
+  }
+
+  function startFrameUpdater() {
+    if (frameUpdateInterval) {
+      clearInterval(frameUpdateInterval);
+    }
+    
+    // Adjust interval time based on speed factor
+    const intervalTime = 1000 / (animationFPS * speedFactor);
+    frameUpdateInterval = setInterval(() => {
+      if (!isAnimationPlaying) return;
+      currentFrame = (currentFrame + 1) % totalFrames;
+    }, intervalTime);
   }
 
   async function handleLoad() {
-      if (isAnimation(preset)) {
-          isAnimationPlaying = true;
-          onLoad(preset, { 
-              isAnimation: true, 
-              fps: animationFPS,
-              speedFactor: speedFactor
-          });
-      } else {
-          onLoad(preset);
-      }
+    if (isAnimation(preset)) {
+      isAnimationPlaying = true;
+      currentlyPlayingPresetId.set(preset.id);
+      currentFrame = 0;
+      startFrameUpdater();
+      onLoad(preset, { 
+        isAnimation: true, 
+        fps: animationFPS,
+        speedFactor: speedFactor
+      });
+    } else {
+      onLoad(preset);
+    }
   }
 
   function stopAnimation() {
-      if (isAnimationPlaying) {
-          isAnimationPlaying = false;
-          onLoad(preset, { stopAnimation: true });
+    if (isAnimationPlaying) {
+      isAnimationPlaying = false;
+      currentlyPlayingPresetId.set(null);
+      currentFrame = 0;
+      if (frameUpdateInterval) {
+        clearInterval(frameUpdateInterval);
+        frameUpdateInterval = null;
       }
+      onLoad(preset, { stopAnimation: true });
+    }
   }
+
+  // Clean up subscription when component is destroyed
+  onDestroy(() => {
+    if (isAnimationPlaying) {
+      stopAnimation();
+    }
+    if (frameUpdateInterval) {
+      clearInterval(frameUpdateInterval);
+    }
+    if (unsubscribe) {
+      unsubscribe();
+    }
+  });
 
   async function handleTagsUpdate(event) {
     const newTags = event.detail.tags;
@@ -62,6 +119,12 @@
       console.error("Failed to update tags:", error);
     }
   }
+
+  $: if (isAnimationPlaying && (animationFPS !== prevFPS || speedFactor !== prevSpeed)) {
+    startFrameUpdater();
+  }
+  let prevFPS = animationFPS;
+  let prevSpeed = speedFactor;
 </script>
 
 <div
@@ -182,6 +245,20 @@
               class="flex-1 h-4"
             />
             <span class="text-xs ml-2">{speedFactor}x</span>
+          </div>
+          
+          <!-- Progress Bar - always visible -->
+          <div class="space-y-1">
+            <div class="w-full bg-gray-200 rounded-full h-2.5">
+              <div 
+                class="bg-blue-600 h-2.5 rounded-full transition-all" 
+                style="width: {(currentFrame / Math.max(totalFrames - 1, 1)) * 100}%"
+              ></div>
+            </div>
+            <div class="flex justify-between text-xs text-gray-600">
+              <span>Frame: {currentFrame + 1}/{totalFrames}</span>
+              <span>Duration: {getAnimationDuration().toFixed(2)}s</span>
+            </div>
           </div>
         </div>
       {/if}
