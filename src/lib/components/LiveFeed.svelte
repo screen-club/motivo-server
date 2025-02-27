@@ -8,6 +8,8 @@
   const apiUrl = import.meta.env.VITE_API_URL;
   const clientId = uuidv4(); // Unique ID for this client
 
+  // test
+
   // Reactive states
   let videoElement;
   let videoContainer;
