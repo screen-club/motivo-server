@@ -489,15 +489,38 @@ def compute_reward_context_gpu(reward_config, env, model, buffer_data):
     model = model.to(device)
     combination_type = reward_config.get('combination_type', 'geometric')
     
+    print("\n" + "="*50)
+    print(f"USING REWARD COMBINATION METHOD: {combination_type.upper()} ({device.type.upper()})")
+    print("="*50 + "\n")
+    
     batch_size = 10_000
     idx = np.random.randint(0, len(buffer_data['next_qpos']), batch_size)
     
-    batch = {
-        'next_qpos': torch.tensor(buffer_data['next_qpos'][idx], device=device, dtype=dtype),
-        'next_qvel': torch.tensor(buffer_data['next_qvel'][idx], device=device, dtype=dtype),
-        'action': torch.tensor(buffer_data['action'][idx], device=device, dtype=dtype),
-        'next_observation': torch.tensor(buffer_data['next_observation'][idx], device=device, dtype=dtype)
-    }
+    # Device-specific data transfer optimizations
+    if device.type == 'cuda':
+        # For CUDA: Use pinned memory for faster transfers
+        print(f"Using pinned memory optimization for CUDA transfer")
+        pin_memory_batch = {}
+        for key in ['next_qpos', 'next_qvel', 'action', 'next_observation']:
+            # Create tensor on CPU with pinned memory
+            tensor_data = torch.tensor(buffer_data[key][idx], dtype=dtype).pin_memory()
+            # Store in dictionary
+            pin_memory_batch[key] = tensor_data
+        
+        # Transfer data to device with non_blocking=True for overlap
+        batch = {
+            k: v.to(device, non_blocking=True) for k, v in pin_memory_batch.items()
+        }
+        
+        # Make sure the transfer is complete before proceeding
+        torch.cuda.synchronize()
+    else:
+        # For CPU/MPS: Direct transfer is more appropriate
+        # (MPS has unified memory so pinning isn't as beneficial)
+        batch = {
+            k: torch.tensor(buffer_data[k][idx], device=device, dtype=dtype)
+            for k in ['next_qpos', 'next_qvel', 'action', 'next_observation']
+        }
     
     rewards = []
     weights = torch.tensor(reward_config.get('weights', [1.0]), device=device, dtype=dtype)
