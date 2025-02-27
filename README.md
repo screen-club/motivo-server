@@ -178,5 +178,64 @@ Update
 
 MIT License
 
+# Motivo WebRTC Streaming Server
+
+This server provides a WebRTC-based streaming solution for the Motivo ML model, allowing real-time humanoid simulation visualization in a web browser with low latency.
+
+## Features
+
+- WebRTC video streaming from the simulation to web clients
+- WebSocket-based signaling for WebRTC connection establishment
+- Responsive UI with Svelte and Tailwind CSS
+- Real-time SMPL pose data transmission
+
+## Installation
+
+1. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+2. Run the server:
+
+```bash
+python motivo/main.py
+```
+
+## How it Works
+
+1. **WebRTC Implementation**:
+   - The server renders frames from the simulation environment
+   - Frames are sent to connected browsers via WebRTC
+   - Signaling is handled through WebSocket connections
+   - ICE candidates are exchanged for NAT traversal
+
+2. **Frontend**:
+   - The Svelte frontend creates a WebRTC PeerConnection
+   - Video frames are displayed in a `<video>` element
+   - Connection state is monitored and reconnection is handled automatically
+
+## Technical Details
+
+- The WebRTC video stream is implemented using `aiortc` on the server side
+- A custom `FrameVideoStreamTrack` provides frames from the simulation
+- WebRTC signaling uses the existing WebSocket infrastructure
+- STUN servers are used for NAT traversal
+
+## Configuration
+
+Environment variables:
+- `VITE_BACKEND_DOMAIN`: Backend domain (default: "localhost")
+- `VITE_WS_PORT`: WebSocket port (default: 8765)
+- `VITE_API_PORT`: API port (default: 5000)
+- `VITE_WEBSERVER_PORT`: Web server port (default: 5002)
+
+## Troubleshooting
+
+- If the video stream doesn't appear, check browser console for WebRTC connection errors
+- Make sure all required ports are accessible
+- For local development, a direct connection should work without TURN servers
+- For production deployment, consider adding TURN server configuration
 
 

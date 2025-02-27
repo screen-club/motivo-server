@@ -21,7 +21,7 @@ class DisplayManager:
                    frame: np.ndarray, 
                    q_percentage: Optional[float] = None,
                    is_computing: bool = False,
-                   resize_dims: tuple = (320, 240)) -> np.ndarray:
+                   resize_dims: tuple = (1280, 960)) -> np.ndarray:
         """
         Display and process a frame with optional overlays
         
@@ -29,7 +29,7 @@ class DisplayManager:
             frame: Original frame to display
             q_percentage: Quality percentage to display (0-100)
             is_computing: Whether reward computation is in progress
-            resize_dims: Dimensions for the saved frame
+            resize_dims: Dimensions for the saved frame (default: 1280x960)
             
         Returns:
             Resized frame for saving
@@ -42,10 +42,23 @@ class DisplayManager:
             if frame.dtype != np.uint8:
                 frame = (frame * 255).astype(np.uint8)
             
+            # Use the original frame directly with minimal processing
             display_frame = frame.copy()
             
-            # Convert to BGR if needed
+            # The environment returns frames in RGB format
+            # We need to convert to BGR for OpenCV display functions
             if len(display_frame.shape) == 3 and display_frame.shape[2] == 3:
+                # Debug log (first few frames)
+                if not hasattr(self, "_debug_count"):
+                    self._debug_count = 0
+                
+                if self._debug_count < 3:
+                    print(f"Display frame before conversion: shape={display_frame.shape}, "
+                          f"dtype={display_frame.dtype}, min={display_frame.min()}, "
+                          f"max={display_frame.max()}")
+                    self._debug_count += 1
+                
+                # Convert from RGB to BGR for OpenCV display
                 display_frame = cv2.cvtColor(display_frame, cv2.COLOR_RGB2BGR)
             
             # Add Q-value overlay with better visibility
@@ -73,19 +86,6 @@ class DisplayManager:
                 )
                 
                 # Draw text with anti-aliasing
-                # First draw slightly thicker black outline for better readability
-                cv2.putText(
-                    display_frame,
-                    text,
-                    (text_x, text_y),
-                    font,
-                    font_scale,
-                    (0, 0, 0),
-                    thickness + 2,
-                    cv2.LINE_AA  # Enable anti-aliasing
-                )
-                
-                # Then draw the white text
                 cv2.putText(
                     display_frame,
                     text,
@@ -101,7 +101,7 @@ class DisplayManager:
             if is_computing:
                 text = "Computing rewards..."
                 font_scale = 0.6
-                thickness = 1  # Reduced thickness
+                thickness = 1
                 font = self.font
                 
                 # Get text size
@@ -121,19 +121,6 @@ class DisplayManager:
                 )
                 
                 # Draw text with anti-aliasing
-                # First draw slightly thicker black outline
-                cv2.putText(
-                    display_frame,
-                    text,
-                    (text_x, text_y),
-                    font,
-                    font_scale,
-                    (0, 0, 0),
-                    thickness + 2,
-                    cv2.LINE_AA  # Enable anti-aliasing
-                )
-                
-                # Then draw the yellow text
                 cv2.putText(
                     display_frame,
                     text,
@@ -148,8 +135,15 @@ class DisplayManager:
             # Display the frame
             cv2.imshow(self.window_name, display_frame)
             
-            # Create resized version for saving
-            resized_frame = cv2.resize(display_frame, resize_dims, interpolation=cv2.INTER_AREA)
+            # Create resized version for saving - use high quality interpolation
+            if display_frame.shape[0] != resize_dims[1] or display_frame.shape[1] != resize_dims[0]:
+                resized_frame = cv2.resize(
+                    display_frame, 
+                    resize_dims, 
+                    interpolation=cv2.INTER_LANCZOS4  # Use high quality interpolation
+                )
+            else:
+                resized_frame = display_frame.copy()
             
             return resized_frame
             

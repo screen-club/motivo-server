@@ -11,6 +11,8 @@ import numpy as np
 from frame_utils import save_frame_data
 from utils.smpl_utils import qpos_to_smpl, smpl_to_qpose
 from pathlib import Path
+import base64
+from aiortc import RTCIceCandidate
 
 from env_setup import setup_environment
 from buffer_utils import download_buffer
@@ -24,6 +26,7 @@ from ws_manager import WebSocketManager
 from utils.utils import normalize_q_value
 from display_utils import DisplayManager
 from message_handler import MessageHandler
+from webrtc_manager import WebRTCManager
 import traceback
 
 # Environment variables
@@ -69,6 +72,7 @@ class AppState:
         self.buffer_data = None
         self.thread_pool = ThreadPoolExecutor(max_workers=2)
         self.ws_manager = WebSocketManager()
+        self.webrtc_manager = WebRTCManager(video_quality="high")  # Initialize without env first
         self.context_cache = None  # Initialize later when we have model, env, and buffer_data
         self.display_manager = DisplayManager()
         self.message_handler = None
@@ -81,6 +85,9 @@ class AppState:
         self.context_cache = RewardContextCache(model=model, env=env, buffer_data=buffer_data)
         self.message_handler = MessageHandler(model, env, self.ws_manager, self.context_cache)
         self.message_handler.set_buffer_data(buffer_data)
+        
+        # Now that we have the environment, set it in the WebRTC manager
+        self.webrtc_manager.set_environment(env)
 
     async def get_reward_context(self, reward_config):
         """Async wrapper for reward context computation"""
@@ -132,7 +139,101 @@ async def handle_websocket(websocket):
     
     try:
         async for message in websocket:
-            await app_state.message_handler.handle_message(websocket, message)
+            try:
+                data = json.loads(message)
+                
+                # Handle WebRTC signaling
+                if data.get("type") == "webrtc_offer":
+                    client_id = data.get("client_id")
+                    sdp = data.get("sdp")
+                    
+                    if client_id and sdp:
+                        answer = await app_state.webrtc_manager.handle_offer(client_id, sdp)
+                        
+                        # Send the answer back
+                        await websocket.send(json.dumps({
+                            "type": "webrtc_answer",
+                            "sdp": answer["sdp"],
+                            "sdpType": answer["type"],
+                            "client_id": client_id,
+                            "timestamp": datetime.now().isoformat()
+                        }))
+                    continue
+                
+                # Handle video quality change requests
+                if data.get("type") == "set_video_quality":
+                    client_id = data.get("client_id")
+                    quality = data.get("quality")
+                    
+                    if quality and quality in ["low", "medium", "high", "hd"]:
+                        success = app_state.webrtc_manager.set_video_quality(quality)
+                        
+                        # Send confirmation
+                        await websocket.send(json.dumps({
+                            "type": "video_quality_changed",
+                            "quality": quality,
+                            "success": success,
+                            "client_id": client_id,
+                            "timestamp": datetime.now().isoformat()
+                        }))
+                    continue
+                
+                # Handle ICE candidates
+                if data.get("type") == "ice_candidate":
+                    client_id = data.get("client_id")
+                    candidate_dict = data.get("candidate")
+                    
+                    if client_id and candidate_dict and client_id in app_state.webrtc_manager.peer_connections:
+                        pc = app_state.webrtc_manager.peer_connections[client_id]
+                        
+                        try:
+                            # Parse ICE candidate string manually
+                            candidate_str = candidate_dict.get("candidate", "")
+                            
+                            # The format is typically: candidate:foundation component protocol priority ip port type ...
+                            # Example: candidate:0 1 UDP 2122252543 192.168.1.100 49923 typ host
+                            parts = candidate_str.split()
+                            
+                            # Extract required components for RTCIceCandidate
+                            if len(parts) >= 10 and parts[0].startswith("candidate:"):
+                                foundation = parts[0].split(":")[1]
+                                component = int(parts[1])
+                                protocol = parts[2]
+                                priority = int(parts[3])
+                                ip = parts[4]
+                                port = int(parts[5])
+                                # parts[6] should be "typ"
+                                candidate_type = parts[7]
+                                
+                                # Create a fully initialized RTCIceCandidate
+                                ice_candidate = RTCIceCandidate(
+                                    foundation=foundation,
+                                    component=component,
+                                    protocol=protocol,
+                                    priority=priority,
+                                    ip=ip,
+                                    port=port,
+                                    type=candidate_type,
+                                    sdpMid=candidate_dict.get("sdpMid"),
+                                    sdpMLineIndex=candidate_dict.get("sdpMLineIndex")
+                                )
+                                
+                                # Add the candidate to the peer connection
+                                await pc.addIceCandidate(ice_candidate)
+                                print(f"Added ICE candidate for client {client_id}")
+                            else:
+                                print(f"Invalid ICE candidate format: {candidate_str}")
+                        except Exception as e:
+                            print(f"Error adding ICE candidate: {str(e)}")
+                            traceback.print_exc()
+                    continue
+                
+                # Handle other messages
+                await app_state.message_handler.handle_message(websocket, message)
+                
+            except json.JSONDecodeError:
+                await app_state.message_handler.handle_message(websocket, message)
+                
     except websockets.exceptions.ConnectionClosed:
         print("Client disconnected")
     finally:
@@ -186,12 +287,33 @@ async def run_simulation():
         
         # Render and display frame
         frame = app_state.env.render()
-        resized_frame = app_state.display_manager.show_frame(
+        
+        # Debug info to verify format - will print for first few frames
+        if app_state.env.unwrapped.data.time < 2.0:  # Only during first 2 seconds
+            print(f"Frame shape: {frame.shape}, dtype: {frame.dtype}, min: {frame.min()}, max: {frame.max()}")
+        
+        # First apply overlays using the display manager
+        # But store the result for WebRTC instead of just displaying it
+        frame_with_overlays = app_state.display_manager.show_frame(
             frame,
             q_percentage=q_percentage,
             is_computing=app_state.message_handler.is_computing_reward
         )
-        cv2.imwrite('../output.jpg', resized_frame)
+        
+        # Now send the frame WITH overlays to WebRTC
+        app_state.webrtc_manager.update_frame(frame_with_overlays)
+        
+        # The display_manager.show_frame function already showed the frame in the local window,
+        # so we don't need to call it again
+        
+        # Send a ping message to notify clients that a new frame is available
+        frame_ping = {
+            "type": "video_frame_ping",
+            "timestamp": datetime.now().isoformat(),
+            "available": True
+        }
+        
+        await app_state.ws_manager.broadcast(frame_ping)
         
         # Check for key presses
         should_quit, should_save = app_state.display_manager.check_key()
@@ -275,6 +397,8 @@ async def main():
     except KeyboardInterrupt:
         print("\nShutting down...")
     finally:
+        # Close all WebRTC connections
+        await app_state.webrtc_manager.close_all_connections()
         app_state.display_manager.cleanup()
         app_state.thread_pool.shutdown()
 
