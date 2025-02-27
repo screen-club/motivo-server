@@ -3,9 +3,10 @@
   import { websocketService, computingStatus } from '../services/websocketService';
   import StatusBar from './StatusBar.svelte';
   import RecordButton from './RecordButton.svelte';
+  import { v4 as uuidv4 } from 'uuid';
   
   const apiUrl = import.meta.env.VITE_API_URL;
-  const clientId = crypto.randomUUID(); // Unique ID for this client
+  const clientId = uuidv4(); // Unique ID for this client
 
   // Reactive states
   let videoElement;
