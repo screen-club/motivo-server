@@ -72,7 +72,7 @@ export DISPLAY=:${DISPLAY_NUM}
 echo "Starting Xvfb on display :${DISPLAY_NUM}"
 
 # Start Xvfb with the random display number
-Xvfb :${DISPLAY_NUM} -screen 0 1024x768x24 > /dev/null 2>&1 &
+Xvfb :${DISPLAY_NUM} -screen 0 1280x960x24 > /dev/null 2>&1 &
 
 # Wait for Xvfb to start
 sleep 5
