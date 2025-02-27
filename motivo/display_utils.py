@@ -6,8 +6,8 @@ import os
 class DisplayManager:
     def __init__(self, window_name: str = "Humanoid Simulation"):
         self.window_name = window_name
-        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.window_name, 800, 600)
+        #cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+        #cv2.resizeWindow(self.window_name, 800, 600)
         
         # Initialize font
         # Try to load a specific font file if available
@@ -133,7 +133,7 @@ class DisplayManager:
                 )
             
             # Display the frame
-            cv2.imshow(self.window_name, display_frame)
+            #cv2.imshow(self.window_name, display_frame)
             
             # Create resized version for saving - use high quality interpolation
             if display_frame.shape[0] != resize_dims[1] or display_frame.shape[1] != resize_dims[0]:
