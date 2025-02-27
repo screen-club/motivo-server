@@ -19,8 +19,18 @@ RUN apt-get update && apt-get install -y \
     libxi-dev \
     libxkbcommon-dev \
     libxkbcommon-x11-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavfilter-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libswresample-dev \
+    libx264-dev \
+    libvpx-dev \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

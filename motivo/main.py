@@ -148,6 +148,15 @@ async def handle_websocket(websocket):
                     sdp = data.get("sdp")
                     
                     if client_id and sdp:
+                        # Unconditional WebRTC logging - always log regardless of environment
+                        print(f"[WEBRTC-DIAG] Offer received from client {client_id}")
+                        codec_lines = [line for line in sdp.split('\n') if 'a=rtpmap:' in line]
+                        print(f"[WEBRTC-DIAG] Client codecs: {codec_lines}")
+                        
+                        # Check if there's a video section in the SDP
+                        video_section = "m=video" in sdp
+                        print(f"[WEBRTC-DIAG] SDP contains video section: {video_section}")
+                        
                         answer = await app_state.webrtc_manager.handle_offer(client_id, sdp)
                         
                         # Send the answer back
@@ -158,6 +167,11 @@ async def handle_websocket(websocket):
                             "client_id": client_id,
                             "timestamp": datetime.now().isoformat()
                         }))
+                        
+                        # Always log answer details
+                        print(f"[WEBRTC-DIAG] Answer sent to client {client_id}, type: {answer['type']}")
+                        server_codec_lines = [line for line in answer["sdp"].split('\n') if 'a=rtpmap:' in line]
+                        print(f"[WEBRTC-DIAG] Server codecs: {server_codec_lines}")
                     continue
                 
                 # Handle video quality change requests
@@ -166,6 +180,10 @@ async def handle_websocket(websocket):
                     quality = data.get("quality")
                     
                     if quality and quality in ["low", "medium", "high", "hd"]:
+                        # Try low quality in Docker to reduce encoding demands
+                        if os.environ.get("ENVIRONMENT") == "production" and quality != "low":
+                            print(f"In Docker: Received request for {quality} quality, consider using 'low' if video fails")
+                            
                         success = app_state.webrtc_manager.set_video_quality(quality)
                         
                         # Send confirmation
@@ -189,6 +207,17 @@ async def handle_websocket(websocket):
                         try:
                             # Parse ICE candidate string manually
                             candidate_str = candidate_dict.get("candidate", "")
+                            
+                            # Always log ICE candidate info
+                            candidate_type = "unknown"
+                            if "typ " in candidate_str:
+                                candidate_type = candidate_str.split("typ ")[1].split()[0]
+                            print(f"[WEBRTC-DIAG] ICE candidate from client {client_id}: type={candidate_type}")
+                            
+                            # Extract IP address for network debugging if present
+                            if len(candidate_str.split()) >= 5:
+                                ip = candidate_str.split()[4]
+                                print(f"[WEBRTC-DIAG] ICE candidate IP: {ip}")
                             
                             # The format is typically: candidate:foundation component protocol priority ip port type ...
                             # Example: candidate:0 1 UDP 2122252543 192.168.1.100 49923 typ host
@@ -248,6 +277,10 @@ async def run_simulation():
     """Continuous simulation loop"""
     observation, _ = app_state.env.reset()
     
+    # Add counter for frame diagnostics
+    frame_count = 0
+    black_frame_count = 0
+    
     while True:
         # Get action and step environment
         current_z = app_state.message_handler.get_current_z()
@@ -287,10 +320,25 @@ async def run_simulation():
         
         # Render and display frame
         frame = app_state.env.render()
+        frame_count += 1
         
-        # Debug info to verify format - will print for first few frames
-        if app_state.env.unwrapped.data.time < 2.0:  # Only during first 2 seconds
-            print(f"Frame shape: {frame.shape}, dtype: {frame.dtype}, min: {frame.min()}, max: {frame.max()}")
+        # Log frame information periodically or for early frames
+        if frame_count % 100 == 0 or frame_count < 5:
+            # Always log frame information
+            print(f"[FRAME-DIAG] Frame {frame_count} - shape: {frame.shape}, dtype: {frame.dtype}, min: {frame.min()}, max: {frame.max()}")
+
+            # Check if frame is mostly black - potential rendering issue
+            if frame.size > 0 and frame.max() < 20:  # very dark frame
+                black_frame_count += 1
+                print(f"[FRAME-DIAG] WARNING: Frame {frame_count} is mostly black/dark. Black frame count: {black_frame_count}")
+                
+                # Save diagnostic image unconditionally
+                try:
+                    os.makedirs("/tmp/webrtc_diagnostic", exist_ok=True)
+                    cv2.imwrite(f"/tmp/webrtc_diagnostic/black_frame_{frame_count}.png", frame)
+                    print(f"[FRAME-DIAG] Saved black frame to /tmp/webrtc_diagnostic/black_frame_{frame_count}.png")
+                except Exception as e:
+                    print(f"[FRAME-DIAG] Error saving diagnostic frame: {str(e)}")
         
         # First apply overlays using the display manager
         # But store the result for WebRTC instead of just displaying it
@@ -300,7 +348,14 @@ async def run_simulation():
             is_computing=app_state.message_handler.is_computing_reward
         )
         
-        # Now send the frame WITH overlays to WebRTC
+        # Now send the frame WITH overlays to WebRTC - log every 50 frames
+        if frame_count % 50 == 0:
+            print(f"[WEBRTC-DIAG] Sending frame {frame_count} to WebRTC - shape: {frame_with_overlays.shape}")
+            # Log active connections
+            active_connections = sum(1 for pc in app_state.webrtc_manager.peer_connections.values() 
+                                  if pc.connectionState == "connected")
+            print(f"[WEBRTC-DIAG] Active WebRTC connections: {active_connections}/{len(app_state.webrtc_manager.peer_connections)}")
+        
         app_state.webrtc_manager.update_frame(frame_with_overlays)
         
         # The display_manager.show_frame function already showed the frame in the local window,

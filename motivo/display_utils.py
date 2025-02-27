@@ -133,7 +133,8 @@ class DisplayManager:
                 )
             
             # Display the frame
-            #cv2.imshow(self.window_name, display_frame)
+            
+            cv2.imshow(self.window_name, display_frame)
             
             # Create resized version for saving - use high quality interpolation
             if display_frame.shape[0] != resize_dims[1] or display_frame.shape[1] != resize_dims[0]:

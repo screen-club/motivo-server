@@ -2,12 +2,26 @@ import asyncio
 import cv2
 import json
 import uuid
+import logging
+import os
 from typing import Dict, Set, Any, Tuple
 from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack, RTCConfiguration
 from aiortc.contrib.media import MediaStreamTrack
 import numpy as np
 import fractions
 import traceback
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [WebRTC] %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger("webrtc")
+
+# Set higher log level in production environment
+if os.environ.get("ENVIRONMENT") == "production":
+    logger.setLevel(logging.DEBUG)
 
 class FrameVideoStreamTrack(VideoStreamTrack):
     """
@@ -23,6 +37,7 @@ class FrameVideoStreamTrack(VideoStreamTrack):
         self.height = height
         self.fps = fps
         self.time_base = fractions.Fraction(1, fps)
+        logger.info(f"Initialized video track with resolution {width}x{height} @ {fps}fps")
         
     def update_frame(self, frame):
         """Update the latest frame to be sent to connected peers"""
@@ -37,37 +52,52 @@ class FrameVideoStreamTrack(VideoStreamTrack):
             # Process frame - make a copy to avoid modifying the original
             processed_frame = frame.copy()
             
+            # Log frame details periodically (every 100 frames)
+            if self.frame_count % 100 == 0:
+                logger.debug(f"Frame info - shape: {processed_frame.shape}, dtype: {processed_frame.dtype}, " 
+                           f"min/max: {np.min(processed_frame)}/{np.max(processed_frame)}")
+            
             # NOTE: We don't convert color here anymore
             # The WebRTCManager class already converted BGR to RGB
             
             # Resize frame to target resolution if needed with high-quality anti-aliasing
             if processed_frame.shape[1] != self.width or processed_frame.shape[0] != self.height:
                 try:
+                    orig_shape = processed_frame.shape
                     # Use high-quality interpolation for resizing
                     processed_frame = cv2.resize(
                         processed_frame, 
                         (self.width, self.height), 
                         interpolation=cv2.INTER_LANCZOS4
                     )
+                    logger.debug(f"Resized frame from {orig_shape} to {processed_frame.shape}")
                 except Exception as e:
-                    print(f"Error resizing frame: {str(e)}")
+                    logger.error(f"Error resizing frame: {str(e)}")
                     # Create a blank frame of the target size as a fallback
                     processed_frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                    # Add text to the frame to indicate an error
+                    cv2.putText(processed_frame, "RESIZE ERROR", (20, self.height//2), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
             
             # Put new frame in queue
             self.queue.put_nowait(processed_frame)
+            self.frame_count += 1
         except Exception as e:
-            print(f"Error updating frame: {str(e)}")
+            logger.error(f"Error updating frame: {str(e)}")
+            traceback.print_exc()
             # If all else fails, try to put an empty frame in the queue
             try:
                 blank_frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                # Add text to the frame to indicate an error
+                cv2.putText(blank_frame, "UPDATE ERROR", (20, self.height//2), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
                 self.queue.put_nowait(blank_frame)
             except:
+                logger.error("Failed to put blank frame in queue after error")
                 pass
 
     async def recv(self):
         """Return a new video frame."""
-        self.frame_count += 1
         pts, time_base = self.frame_count, self.time_base
         
         # Get the latest frame from the queue
@@ -78,25 +108,57 @@ class FrameVideoStreamTrack(VideoStreamTrack):
             # Create a blank frame if no frame is available
             if self.latest_frame is not None:
                 frame = self.latest_frame
+                logger.debug("Using previous frame due to timeout")
             else:
                 frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                # Add text to the frame to indicate a timeout
+                cv2.putText(frame, "NO FRAME", (20, self.height//2), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                logger.warning("No frame available, using blank frame")
         
         # Store latest frame
         self.latest_frame = frame
         
+        # Log frame status occasionally
+        if self.frame_count % 300 == 0:
+            logger.debug(f"Frame {self.frame_count} - shape: {frame.shape}, non-zero: {np.count_nonzero(frame) > 0}")
+        
         # The frame is already in RGB format (converted in update_frame method)
-        # No need for additional conversion
         rgb_frame = frame
         
-        # Create a VideoFrame from the numpy array with high quality settings
-        from av import VideoFrame
-        video_frame = VideoFrame.from_ndarray(rgb_frame, format='rgb24')
-        
-        # Set quality-related parameters
-        video_frame.pts = pts
-        video_frame.time_base = time_base
-        
-        return video_frame
+        try:
+            # Create a VideoFrame from the numpy array with high quality settings
+            from av import VideoFrame
+            video_frame = VideoFrame.from_ndarray(rgb_frame, format='rgb24')
+            
+            # Set quality-related parameters
+            video_frame.pts = pts
+            video_frame.time_base = time_base
+            
+            return video_frame
+        except Exception as e:
+            logger.error(f"Error creating VideoFrame: {str(e)}")
+            traceback.print_exc()
+            
+            # Create an emergency blank frame with visible pattern
+            emergency_frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+            # Add a checkerboard pattern to verify the frame is actually reaching the client
+            cell_size = 40
+            for i in range(0, self.height, cell_size):
+                for j in range(0, self.width, cell_size):
+                    if (i//cell_size + j//cell_size) % 2 == 0:
+                        emergency_frame[i:i+cell_size, j:j+cell_size] = [128, 128, 128]
+            
+            # Add text
+            cv2.putText(emergency_frame, "VIDEO ERROR", (20, self.height//2), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+            
+            # Create emergency VideoFrame
+            emergency_video_frame = VideoFrame.from_ndarray(emergency_frame, format='rgb24')
+            emergency_video_frame.pts = pts
+            emergency_video_frame.time_base = time_base
+            
+            return emergency_video_frame
 
 class WebRTCManager:
     """
@@ -105,8 +167,10 @@ class WebRTCManager:
     def __init__(self, video_quality="medium", env=None):
         # Video quality presets
         self.quality_presets = {
+            "low": (320, 240, 15),       # Added low quality option
             "medium": (640, 480, 30),    # Width, Height, FPS
-            "high": (1280, 960, 30)      # Width, Height, FPS
+            "high": (1280, 960, 30),     # Width, Height, FPS
+            "hd": (1920, 1080, 30)       # HD option
         }
         
         # Store reference to environment if provided
@@ -114,6 +178,12 @@ class WebRTCManager:
         
         # Encoder settings - simplified for clean output
         self.encoder_settings = {
+            "low": {
+                "preset": "ultrafast",   # Fastest preset for low-spec devices
+                "tune": None,
+                "crf": 28,               # Lower quality, better performance
+                "profile": "baseline"
+            },
             "medium": {
                 "preset": "medium",       # Balanced preset
                 "tune": None,             # No specific tuning
@@ -125,11 +195,21 @@ class WebRTCManager:
                 "tune": None,             # No specific tuning
                 "crf": 18,                # Same quality level for consistency
                 "profile": "high"
+            },
+            "hd": {
+                "preset": "medium",
+                "tune": None,
+                "crf": 18,
+                "profile": "high"
             }
         }
         
+        # Track if this is the first frame for extra logging
+        self.is_first_frame = True
+        
         # Select quality preset
         width, height, fps = self.quality_presets.get(video_quality, self.quality_presets["medium"])
+        logger.info(f"Initializing WebRTC Manager with {video_quality} quality ({width}x{height}@{fps}fps)")
         
         self.peer_connections: Dict[str, RTCPeerConnection] = {}
         self.video_track = FrameVideoStreamTrack(width=width, height=height, fps=fps)
@@ -141,9 +221,14 @@ class WebRTCManager:
             "encoder_settings": self.encoder_settings[video_quality]
         }
         
+        # Log codec options
+        logger.info(f"Using codec options: {self.codec_options}")
+        
         # Set initial environment render resolution if environment is available
         if self.env is not None:
             self.set_environment_resolution(width, height)
+        else:
+            logger.info("Environment not provided, deferring resolution setting")
     
     def set_environment_resolution(self, width, height):
         """
@@ -222,20 +307,76 @@ class WebRTCManager:
             # Make a copy to avoid modifying the original
             processed_frame = frame.copy()
             
+            # Log frame info for the first frame and occasionally after
+            if self.is_first_frame or (self.video_track.frame_count % 300 == 0):
+                logger.info(f"Frame info: shape={processed_frame.shape}, "
+                           f"dtype={processed_frame.dtype}, "
+                           f"min/max={np.min(processed_frame)}/{np.max(processed_frame)}, "
+                           f"non-zero pixels: {np.count_nonzero(processed_frame)}")
+                
+                if self.is_first_frame:
+                    # Save a diagnostic image in Docker environment
+                    if os.environ.get("ENVIRONMENT") == "production":
+                        try:
+                            # Save both the original and a processed version for diagnosis
+                            diag_path = "/tmp/webrtc_diagnostic"
+                            os.makedirs(diag_path, exist_ok=True)
+                            cv2.imwrite(f"{diag_path}/original_frame.png", processed_frame)
+                            logger.info(f"Saved diagnostic image to {diag_path}/original_frame.png")
+                        except Exception as e:
+                            logger.error(f"Could not save diagnostic image: {str(e)}")
+                
+                self.is_first_frame = False
+            
             # Convert from BGR (from DisplayManager) back to RGB for WebRTC
             if processed_frame.shape[2] == 3:
                 processed_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+                
+                # Verify pixel values after conversion
+                if self.video_track.frame_count % 300 == 0:
+                    logger.debug(f"After RGB conversion - min/max: {np.min(processed_frame)}/{np.max(processed_frame)}")
+            
+            # Ensure the frame is uint8 (required for VideoFrame)
+            if processed_frame.dtype != np.uint8:
+                logger.warning(f"Frame dtype is {processed_frame.dtype}, converting to uint8")
+                processed_frame = np.clip(processed_frame, 0, 255).astype(np.uint8)
+            
+            # Check for completely black frames
+            if np.max(processed_frame) < 10:  # Almost black
+                logger.warning("Frame appears to be mostly black, adding diagnostic pattern")
+                # Add a simple pattern to verify transmission
+                height, width = processed_frame.shape[:2]
+                # Add crosshairs
+                processed_frame[height//2, :, 0] = 255  # Red horizontal line
+                processed_frame[:, width//2, 2] = 255   # Blue vertical line
+                
+                # Add frame number text
+                cv2.putText(processed_frame, f"Frame {self.video_track.frame_count}", 
+                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
             # Update the video track with the RGB frame
             self.video_track.update_frame(processed_frame)
+            
+            # Count active connections
+            if self.video_track.frame_count % 100 == 0:
+                active_connections = 0
+                for client_id, pc in self.peer_connections.items():
+                    if pc.connectionState == "connected":
+                        active_connections += 1
+                logger.info(f"Active WebRTC connections: {active_connections}/{len(self.peer_connections)}")
+                
         except Exception as e:
-            print(f"Error updating frame: {str(e)}")
+            logger.error(f"Error updating frame: {str(e)}")
+            traceback.print_exc()
             # If update fails, try to send an empty frame
             try:
                 blank_frame = np.zeros((self.video_track.height, self.video_track.width, 3), dtype=np.uint8)
+                # Add diagnostic information to the blank frame
+                cv2.putText(blank_frame, "ERROR: " + str(e)[:30], 
+                           (10, blank_frame.shape[0]//2), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
                 self.video_track.update_frame(blank_frame)
             except:
-                print(f"Failed to send blank frame after error")
+                logger.error(f"Failed to send blank frame after error")
                 pass
     
     def set_video_quality(self, quality):
@@ -277,14 +418,21 @@ class WebRTCManager:
         if client_id is None:
             client_id = str(uuid.uuid4())
             
-        # Create a RTCPeerConnection with default configuration
-        # Let aiortc handle the ICE server configuration internally
-        pc = RTCPeerConnection()
+        # Create a RTCPeerConnection with STUN servers for Docker/NAT traversal
+        rtc_config = RTCConfiguration(
+            iceServers=[
+                {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}
+                # Add more STUN servers or TURN servers if needed
+            ]
+        )
+        logger.info(f"Creating peer connection for {client_id} with ICE servers")
+        pc = RTCPeerConnection(rtc_config)
         
         self.peer_connections[client_id] = pc
         
         # Add the video track with codec preferences
         sender = pc.addTrack(self.video_track)
+        logger.debug(f"Added video track to peer connection for {client_id}")
         
         # Try to configure encoder parameters for better raw quality
         try:
@@ -293,10 +441,14 @@ class WebRTCManager:
                 params = sender.getParameters()
                 if hasattr(params, 'encodings') and params.encodings:
                     # Set bitrate - high enough for clean video but not excessive
-                    if self.video_quality == "medium":
+                    if self.video_quality == "low":
+                        max_bitrate = 1_000_000  # 1Mbps for low quality
+                    elif self.video_quality == "medium":
                         max_bitrate = 3_000_000  # 3Mbps (was 2.5Mbps)
                     elif self.video_quality == "high":
                         max_bitrate = 6_000_000  # 6Mbps (was 5Mbps)
+                    else:  # hd
+                        max_bitrate = 8_000_000  # 8Mbps for HD
                     
                     # Apply bitrate limit
                     for encoding in params.encodings:
@@ -312,23 +464,67 @@ class WebRTCManager:
                     
                     # Apply the parameters
                     sender.setParameters(params)
-                    print(f"Set max bitrate to {max_bitrate/1_000_000}Mbps for {client_id}")
+                    logger.info(f"Set max bitrate to {max_bitrate/1_000_000}Mbps for {client_id}")
         except Exception as e:
-            print(f"Error setting encoding parameters: {str(e)}")
+            logger.error(f"Error setting encoding parameters: {str(e)}")
+            traceback.print_exc()
         
         # Handle ICE connection state changes
         @pc.on("iceconnectionstatechange")
         async def on_iceconnectionstatechange():
-            print(f"ICE connection state for {client_id}: {pc.iceConnectionState}")
-            if pc.iceConnectionState == "failed" or pc.iceConnectionState == "closed":
+            ice_state = pc.iceConnectionState
+            logger.info(f"ICE connection state for {client_id}: {ice_state}")
+            
+            # Log all gathered ICE candidates on failure
+            if ice_state == "failed":
+                try:
+                    sdp = pc.localDescription.sdp if pc.localDescription else "No local description"
+                    candidates = [line for line in sdp.split('\n') if line.startswith('a=candidate:')]
+                    logger.error(f"ICE candidates for {client_id} ({len(candidates)} total):")
+                    for i, candidate in enumerate(candidates[:5]):  # Log first 5 only
+                        logger.error(f"  {i+1}: {candidate}")
+                    
+                    # Log network interfaces in production for debugging
+                    if os.environ.get("ENVIRONMENT") == "production":
+                        logger.debug("Network interfaces:")
+                        import subprocess
+                        try:
+                            result = subprocess.run(["ip", "addr"], capture_output=True, text=True)
+                            logger.debug(result.stdout)
+                        except Exception as e:
+                            logger.error(f"Could not get network interfaces: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Error logging ICE candidates: {str(e)}")
+            
+            if ice_state == "failed" or ice_state == "closed":
                 # Use a safe closure method to prevent KeyErrors
                 await self.safe_close_peer_connection(client_id)
+        
+        # Handle signaling state changes
+        @pc.on("signalingstatechange") 
+        def on_signalingstatechange():
+            logger.info(f"Signaling state for {client_id}: {pc.signalingState}")
+        
+        # Handle ICE gathering state changes
+        @pc.on("icegatheringstatechange")
+        def on_icegatheringstatechange():
+            logger.info(f"ICE gathering state for {client_id}: {pc.iceGatheringState}")
+            # When gathering is complete, log the number of candidates
+            if pc.iceGatheringState == "complete" and pc.localDescription:
+                sdp = pc.localDescription.sdp
+                candidates = [line for line in sdp.split('\n') if line.startswith('a=candidate:')]
+                logger.info(f"Gathered {len(candidates)} ICE candidates for {client_id}")
         
         # Handle connection state changes
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
-            print(f"Connection state for {client_id}: {pc.connectionState}")
-            if pc.connectionState == "failed" or pc.connectionState == "closed":
+            conn_state = pc.connectionState
+            logger.info(f"Connection state for {client_id}: {conn_state}")
+            
+            if conn_state == "connected":
+                logger.info(f"WebRTC connection established for {client_id}")
+            elif conn_state == "failed" or conn_state == "closed":
+                logger.warning(f"WebRTC connection {conn_state} for {client_id}")
                 # Use a safe closure method to prevent KeyErrors
                 await self.safe_close_peer_connection(client_id)
         
