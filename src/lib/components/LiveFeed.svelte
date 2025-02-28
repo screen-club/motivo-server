@@ -124,17 +124,17 @@
       // Create a new RTCPeerConnection
       const configuration = { 
         iceServers: [
-          // Use the custom COTURN server (same as backend)
-          { urls: 'stun:51.159.163.145:3478' },
+          // Use COTURN configuration from environment variables
+          { urls: import.meta.env.VITE_STUN_URL },
           {
-            urls: 'turn:51.159.163.145:3478',
-            username: 'admin',
-            credential: 'password'
+            urls: import.meta.env.VITE_TURN_URL,
+            username: import.meta.env.VITE_TURN_USERNAME,
+            credential: import.meta.env.VITE_TURN_PASSWORD
           },
           {
-            urls: 'turn:51.159.163.145:3478?transport=tcp',
-            username: 'admin',
-            credential: 'password'
+            urls: `${import.meta.env.VITE_TURN_URL}?transport=tcp`,
+            username: import.meta.env.VITE_TURN_USERNAME,
+            credential: import.meta.env.VITE_TURN_PASSWORD
           }
         ] 
       };

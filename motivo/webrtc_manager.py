@@ -330,30 +330,41 @@ class WebRTCManager:
         # Add STUN and TURN servers for better connectivity in Docker
         ice_servers = []
         
-        # Use self-hosted COTURN server for both STUN and TURN
-        # STUN configuration
-        ice_servers.append(RTCIceServer(urls=["stun:51.159.163.145:3478"]))
+        # Get COTURN configuration from environment variables
+        import os
         
-        # TURN configuration - standard TURN over UDP
-        ice_servers.append(RTCIceServer(
-            urls=["turn:51.159.163.145:3478"],
-            username="admin",  # From Docker environment variables
-            credential="password"  # From Docker environment variables
-        ))
+        stun_url = os.getenv("VITE_STUN_URL")
+        turn_url = os.getenv("VITE_TURN_URL")
+        turn_username = os.getenv("VITE_TURN_USERNAME")
+        turn_password = os.getenv("VITE_TURN_PASSWORD")
         
-        # TURN over TCP for firewall traversal
-        ice_servers.append(RTCIceServer(
-            urls=["turn:51.159.163.145:3478?transport=tcp"],
-            username="admin",
-            credential="password"
-        ))
+        # Add STUN server if configured
+        if stun_url:
+            ice_servers.append(RTCIceServer(urls=[stun_url]))
         
-        # TURNS (TURN over TLS) for secure connections
-        ice_servers.append(RTCIceServer(
-            urls=["turns:51.159.163.145:5349"],
-            username="admin",
-            credential="password"
-        ))
+        # Add TURN server if configured
+        if turn_url and turn_username and turn_password:
+            # Standard TURN over UDP
+            ice_servers.append(RTCIceServer(
+                urls=[turn_url],
+                username=turn_username,
+                credential=turn_password
+            ))
+            
+            # TURN over TCP for firewall traversal
+            ice_servers.append(RTCIceServer(
+                urls=[f"{turn_url}?transport=tcp"],
+                username=turn_username,
+                credential=turn_password
+            ))
+            
+            # TURNS (TURN over TLS) for secure connections
+            turns_url = turn_url.replace("turn:", "turns:").replace("3478", "5349")
+            ice_servers.append(RTCIceServer(
+                urls=[turns_url],
+                username=turn_username,
+                credential=turn_password
+            ))
         
         logger.info(f"Creating peer connection for {client_id} with custom COTURN server")
         
