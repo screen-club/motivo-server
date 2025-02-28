@@ -9,6 +9,7 @@ export const versionInfo = writable({
 
 // Fetch version info from the Flask backend
 async function loadVersionInfo() {
+  return;
   try {
     const response = await fetch(`${import.meta.env.VITE_API_URL}/api/version`);
     if (!response.ok) {
@@ -38,6 +39,6 @@ async function loadVersionInfo() {
 loadVersionInfo();
 
 // Refresh every 5 minutes in dev
-if (import.meta.env.DEV ) {
+if (import.meta.env.DEV) {
   setInterval(loadVersionInfo, 5 * 60 * 1000);
 }

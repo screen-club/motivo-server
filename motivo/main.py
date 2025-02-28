@@ -74,7 +74,12 @@ class AppState:
         self.ws_manager = WebSocketManager()
         self.webrtc_manager = WebRTCManager(video_quality="high")  # Initialize without env first
         self.context_cache = None  # Initialize later when we have model, env, and buffer_data
-        self.display_manager = DisplayManager()
+        
+        # Initialize DisplayManager in headless mode for Docker compatibility
+        # Check if running in Docker/container environment
+        in_container = os.path.exists('/.dockerenv') or os.environ.get('ENVIRONMENT') == 'production'
+        self.display_manager = DisplayManager(headless=in_container)
+        
         self.message_handler = None
 
     def initialize(self, model, env, buffer_data):

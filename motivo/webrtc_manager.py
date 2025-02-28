@@ -240,6 +240,30 @@ class WebRTCManager:
         The input frame is now in BGR format (from DisplayManager).
         """
         try:
+            # Check if frame is None and create a black frame as fallback
+            if frame is None:
+                logger.warning("Received None frame from environment, generating blank frame")
+                blank_frame = np.zeros((self.video_track.height, self.video_track.width, 3), dtype=np.uint8)
+                
+                # Add text to indicate no frame is available
+                cv2.putText(
+                    blank_frame,
+                    "No frame available",
+                    (self.video_track.width // 4, self.video_track.height // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.0,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA
+                )
+                
+                # Convert to RGB (WebRTC expects RGB)
+                if blank_frame.shape[2] == 3:
+                    blank_frame = cv2.cvtColor(blank_frame, cv2.COLOR_BGR2RGB)
+                    
+                self.video_track.update_frame(blank_frame)
+                return
+            
             # Make a copy to avoid modifying the original
             processed_frame = frame.copy()
             

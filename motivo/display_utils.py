@@ -4,10 +4,40 @@ from typing import Optional
 import os
 
 class DisplayManager:
-    def __init__(self, window_name: str = "Humanoid Simulation"):
+    def __init__(self, window_name: str = "Humanoid Simulation", headless: bool = False):
         self.window_name = window_name
-        #cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        #cv2.resizeWindow(self.window_name, 800, 600)
+        self.headless = headless
+        
+        # Log information about headless mode initialization
+        if self.headless:
+            print("=== Headless Mode Details ===")
+            print("DisplayManager initialized with headless=True")
+            # Check environment variables for context
+            if os.path.exists('/.dockerenv'):
+                print("Running in Docker container environment")
+            if os.environ.get('ENVIRONMENT') == 'production':
+                print("Running in production environment")
+            print("Headless mode skips creating display windows and rendering to screen")
+            print("All frames will still be processed for WebRTC streaming")
+            print("===============================")
+        
+        # Only create window if not in headless mode
+        if not self.headless:
+            try:
+                cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(self.window_name, 800, 600)
+                print("Created display window successfully")
+            except Exception as e:
+                print(f"Failed to create display window, switching to headless mode: {e}")
+                self.headless = True
+                print("=== Forced Headless Mode ===")
+                print("DisplayManager switched to headless mode due to window creation failure")
+                print(f"Error details: {str(e)}")
+                print("This typically happens when:") 
+                print("- Running in an environment without a display server (SSH without X11, Docker, etc.)")
+                print("- Missing graphics drivers or OpenCV display dependencies")
+                print("All frames will still be processed for WebRTC streaming")
+                print("===============================")
         
         # Initialize font
         # Try to load a specific font file if available
@@ -16,6 +46,8 @@ class DisplayManager:
             self.font = cv2.FONT_HERSHEY_DUPLEX  # Fallback to built-in font
         else:
             self.font = cv2.FONT_HERSHEY_SIMPLEX  # Use default font
+        
+        print(f"DisplayManager initialized in {'headless' if self.headless else 'display'} mode")
             
     def show_frame(self, 
                    frame: np.ndarray, 
@@ -32,10 +64,23 @@ class DisplayManager:
             resize_dims: Dimensions for the saved frame (default: 1280x960)
             
         Returns:
-            Resized frame for saving
+            Processed frame with overlays for saving or streaming
         """
         if frame is None:
-            return None
+            # Create a blank frame as fallback to prevent NoneType errors
+            blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            text = "No frame available"
+            cv2.putText(
+                blank_frame,
+                text,
+                (100, 240),
+                self.font,
+                1.0,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA
+            )
+            return blank_frame
             
         try:
             # Ensure frame is in the correct format
@@ -132,9 +177,13 @@ class DisplayManager:
                     cv2.LINE_AA  # Enable anti-aliasing
                 )
             
-            # Display the frame
-            
-            cv2.imshow(self.window_name, display_frame)
+            # Only show the frame if not in headless mode
+            if not self.headless:
+                try:
+                    cv2.imshow(self.window_name, display_frame)
+                except Exception as e:
+                    print(f"Failed to show frame, continuing in headless mode: {e}")
+                    self.headless = True
             
             # Create resized version for saving - use high quality interpolation
             if display_frame.shape[0] != resize_dims[1] or display_frame.shape[1] != resize_dims[0]:
@@ -150,7 +199,19 @@ class DisplayManager:
             
         except Exception as e:
             print(f"Error in show_frame: {str(e)}")
-            return None
+            # Return a blank frame with error message instead of None
+            blank_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(
+                blank_frame,
+                f"Error: {str(e)}",
+                (50, 240),
+                self.font,
+                0.7,
+                (0, 0, 255),
+                1,
+                cv2.LINE_AA
+            )
+            return blank_frame
     
     def check_key(self) -> tuple[bool, bool]:
         """
@@ -159,6 +220,9 @@ class DisplayManager:
         Returns:
             Tuple of (should_quit, should_save)
         """
+        if self.headless:
+            return False, False
+            
         try:
             key = cv2.waitKey(1) & 0xFF
             should_quit = key == 27  # ESC
@@ -166,13 +230,19 @@ class DisplayManager:
             return should_quit, should_save
         except Exception as e:
             print(f"Error in check_key: {str(e)}")
+            # If we encounter an error, switch to headless mode
+            self.headless = True
             return False, False
     
     def cleanup(self):
         """Clean up OpenCV windows"""
+        if self.headless:
+            return
+            
         try:
             cv2.destroyAllWindows()
             for i in range(4):
                 cv2.waitKey(1)
         except Exception as e:
-            print(f"Error in cleanup: {str(e)}") 
+            print(f"Error in cleanup: {str(e)}")
+            self.headless = True 
