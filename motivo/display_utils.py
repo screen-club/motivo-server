@@ -8,19 +8,6 @@ class DisplayManager:
         self.window_name = window_name
         self.headless = headless
         
-        # Log information about headless mode initialization
-        if self.headless:
-            print("=== Headless Mode Details ===")
-            print("DisplayManager initialized with headless=True")
-            # Check environment variables for context
-            if os.path.exists('/.dockerenv'):
-                print("Running in Docker container environment")
-            if os.environ.get('ENVIRONMENT') == 'production':
-                print("Running in production environment")
-            print("Headless mode skips creating display windows and rendering to screen")
-            print("All frames will still be processed for WebRTC streaming")
-            print("===============================")
-        
         # Only create window if not in headless mode
         if not self.headless:
             try:
@@ -30,14 +17,6 @@ class DisplayManager:
             except Exception as e:
                 print(f"Failed to create display window, switching to headless mode: {e}")
                 self.headless = True
-                print("=== Forced Headless Mode ===")
-                print("DisplayManager switched to headless mode due to window creation failure")
-                print(f"Error details: {str(e)}")
-                print("This typically happens when:") 
-                print("- Running in an environment without a display server (SSH without X11, Docker, etc.)")
-                print("- Missing graphics drivers or OpenCV display dependencies")
-                print("All frames will still be processed for WebRTC streaming")
-                print("===============================")
         
         # Initialize font
         # Try to load a specific font file if available

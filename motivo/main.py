@@ -320,7 +320,7 @@ async def run_simulation():
     
     while True:
         # Get action and step environment
-        print(f"Running simulation at frame {frame_count}")
+        #print(f"Running simulation at frame {frame_count}")
         current_z = app_state.message_handler.get_current_z()
         action = app_state.model.act(observation, current_z, mean=True)
         q_value = compute_q_value(app_state.model, observation, current_z, action)
@@ -350,7 +350,7 @@ async def run_simulation():
                 "cache_file": str(cache_file) if cache_file else None
             }
             
-            print(f"Broadcasting pose data to {len(app_state.ws_manager.connected_clients)} clients")
+            #print(f"Broadcasting pose data to {len(app_state.ws_manager.connected_clients)} clients")
             
             # Add timeout protection to prevent blocking indefinitely
             try:
