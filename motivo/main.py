@@ -382,24 +382,6 @@ async def run_simulation():
         frame = app_state.env.render()
         frame_count += 1
         
-        # Log frame information periodically or for early frames
-        if frame_count % 100 == 0 or frame_count < 5:
-            # Always log frame information
-            print(f"[FRAME-DIAG] Frame {frame_count} - shape: {frame.shape}, dtype: {frame.dtype}, min: {frame.min()}, max: {frame.max()}")
-
-            # Check if frame is mostly black - potential rendering issue
-            if frame.size > 0 and frame.max() < 20:  # very dark frame
-                black_frame_count += 1
-                print(f"[FRAME-DIAG] WARNING: Frame {frame_count} is mostly black/dark. Black frame count: {black_frame_count}")
-                
-                # Save diagnostic image unconditionally
-                try:
-                    os.makedirs("/tmp/webrtc_diagnostic", exist_ok=True)
-                    cv2.imwrite(f"/tmp/webrtc_diagnostic/black_frame_{frame_count}.png", frame)
-                    print(f"[FRAME-DIAG] Saved black frame to /tmp/webrtc_diagnostic/black_frame_{frame_count}.png")
-                except Exception as e:
-                    print(f"[FRAME-DIAG] Error saving diagnostic frame: {str(e)}")
-        
         # First apply overlays using the display manager
         # But store the result for WebRTC instead of just displaying it
         frame_with_overlays = app_state.display_manager.show_frame(
@@ -421,23 +403,7 @@ async def run_simulation():
         # The display_manager.show_frame function already showed the frame in the local window,
         # so we don't need to call it again
         
-        # Send a ping message to notify clients that a new frame is available
-        frame_ping = {
-            "type": "video_frame_ping",
-            "timestamp": datetime.now().isoformat(),
-            "available": True
-        }
-        
-        # Add timeout protection here too
-        try:
-            await asyncio.wait_for(
-                app_state.ws_manager.broadcast(frame_ping),
-                timeout=0.5  # 500ms timeout
-            )
-        except asyncio.TimeoutError:
-            print(f"WARNING: Frame ping broadcast timed out")
-        except Exception as e:
-            print(f"Error broadcasting frame ping: {str(e)}")
+      
         
         # Check for key presses
         should_quit, should_save = app_state.display_manager.check_key()
