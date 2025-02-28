@@ -72,7 +72,7 @@ class AppState:
         self.buffer_data = None
         self.thread_pool = ThreadPoolExecutor(max_workers=2)
         self.ws_manager = WebSocketManager()
-        self.webrtc_manager = WebRTCManager(video_quality="high")  # Initialize without env first
+        self.webrtc_manager = WebRTCManager(video_quality="medium")  # Initialize without env first
         self.context_cache = None  # Initialize later when we have model, env, and buffer_data
         
         # Initialize DisplayManager in headless mode for Docker compatibility
@@ -359,7 +359,7 @@ async def run_simulation():
                     app_state.ws_manager.broadcast(pose_data),
                     timeout=0.5  # 500ms timeout, adjust as needed
                 )
-                print(f"Successfully broadcast pose data")
+                #print(f"Successfully broadcast pose data")
             except asyncio.TimeoutError:
                 print(f"WARNING: Broadcast operation timed out after 0.5 seconds")
                 # Check for and clean up any dead connections that might be causing the timeout
@@ -398,7 +398,10 @@ async def run_simulation():
                                   if pc.connectionState == "connected")
             print(f"[WEBRTC-DIAG] Active WebRTC connections: {active_connections}/{len(app_state.webrtc_manager.peer_connections)}")
         
-        app_state.webrtc_manager.update_frame(frame_with_overlays)
+        # Run WebRTC frame update in a separate thread to avoid blocking the simulation loop
+        # Make a copy of the frame to avoid race conditions
+        frame_copy = frame_with_overlays.copy()
+        app_state.thread_pool.submit(app_state.webrtc_manager.update_frame, frame_copy)
         
         # The display_manager.show_frame function already showed the frame in the local window,
         # so we don't need to call it again
