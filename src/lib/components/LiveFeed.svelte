@@ -91,29 +91,18 @@
       // Enter fullscreen
       if (videoContainer.requestFullscreen) {
         videoContainer.requestFullscreen();
-      } else if (videoContainer.webkitRequestFullscreen) { /* Safari */
-        videoContainer.webkitRequestFullscreen();
-      } else if (videoContainer.msRequestFullscreen) { /* IE11 */
-        videoContainer.msRequestFullscreen();
       }
     } else {
       // Exit fullscreen
       if (document.exitFullscreen) {
         document.exitFullscreen();
-      } else if (document.webkitExitFullscreen) { /* Safari */
-        document.webkitExitFullscreen();
-      } else if (document.msExitFullscreen) { /* IE11 */
-        document.msExitFullscreen();
       }
     }
   }
   
   // Listen for fullscreen change events
   function handleFullscreenChange() {
-    isFullscreen = !!(document.fullscreenElement || 
-                     document.webkitFullscreenElement || 
-                     document.mozFullScreenElement || 
-                     document.msFullscreenElement);
+    isFullscreen = !!document.fullscreenElement;
     
     addLog(`Fullscreen mode: ${isFullscreen ? 'enabled' : 'disabled'}`);
   }
@@ -130,11 +119,23 @@
         peerConnection.close();
         peerConnection = null;
       }
+
       
       // Create a new RTCPeerConnection
       const configuration = { 
         iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' }
+          // Use the custom COTURN server (same as backend)
+          { urls: 'stun:51.159.163.145:3478' },
+          {
+            urls: 'turn:51.159.163.145:3478',
+            username: 'admin',
+            credential: 'password'
+          },
+          {
+            urls: 'turn:51.159.163.145:3478?transport=tcp',
+            username: 'admin',
+            credential: 'password'
+          }
         ] 
       };
       addLog('Creating peer connection with config: ' + JSON.stringify(configuration));
