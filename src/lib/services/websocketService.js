@@ -81,6 +81,16 @@ class WebSocketService {
         console.log(`[DEBUG] Protocol: ${window.location.protocol}`);
         console.log(`[DEBUG] Current origin: ${window.location.origin}`);
 
+        // Check if we're using HTTPS on the frontend but WS (not WSS) for WebSockets
+        if (
+          window.location.protocol === "https:" &&
+          this.wsUrl.startsWith("ws:")
+        ) {
+          console.warn(
+            "[DEBUG] Security warning: Using ws:// from an https:// page. This may be blocked by the browser."
+          );
+        }
+
         // Simple connectivity test to the backend server over HTTP
         const apiUrl = import.meta.env.VITE_API_URL;
         console.log(`[DEBUG] Checking API connectivity to ${apiUrl}`);
@@ -94,6 +104,18 @@ class WebSocketService {
           .catch((error) =>
             console.error(`[DEBUG] API connectivity error: ${error.message}`)
           );
+      }
+
+      // Try an alternative approach - If we're connecting to a remote host, try a local connection first
+      // This helps in development environments
+      const wsUrlObj = new URL(this.wsUrl);
+      if (
+        wsUrlObj.hostname !== "localhost" &&
+        wsUrlObj.hostname !== "127.0.0.1"
+      ) {
+        console.log(
+          "[DEBUG] Remote host detected, will try localhost fallback if primary connection fails"
+        );
       }
 
       // Create WebSocket with a timeout for connection
@@ -112,6 +134,30 @@ class WebSocketService {
             console.error("[DEBUG] Error closing timed-out socket:", e);
           }
           this.socket = null;
+
+          // Try alternative connection options if we're trying to connect to a remote host
+          const wsUrlObj = new URL(this.wsUrl);
+          if (
+            this.reconnectAttempts === 1 &&
+            wsUrlObj.hostname !== "localhost" &&
+            wsUrlObj.hostname !== "127.0.0.1"
+          ) {
+            // Try localhost as a fallback (for development)
+            console.log("[DEBUG] Trying localhost fallback...");
+            const port = wsUrlObj.port || "8765";
+            this.wsUrl = `ws://localhost:${port}`;
+            console.log(`[DEBUG] New WebSocket URL: ${this.wsUrl}`);
+          } else if (this.reconnectAttempts === 2) {
+            // Try with different protocol (wss:// if we were using ws://)
+            if (
+              this.wsUrl.startsWith("ws:") &&
+              !this.wsUrl.startsWith("wss:")
+            ) {
+              console.log("[DEBUG] Trying secure WebSocket (WSS) instead...");
+              this.wsUrl = this.wsUrl.replace("ws:", "wss:");
+              console.log(`[DEBUG] New WebSocket URL: ${this.wsUrl}`);
+            }
+          }
 
           // Try an alternative approach - sometimes the port needs a second attempt
           console.log("[DEBUG] Attempting alternative connection approach...");

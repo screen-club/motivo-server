@@ -315,13 +315,14 @@ async def run_simulation():
     
     while True:
         # Get action and step environment
+        print(f"Running simulation at frame {frame_count}")
         current_z = app_state.message_handler.get_current_z()
         action = app_state.model.act(observation, current_z, mean=True)
         q_value = compute_q_value(app_state.model, observation, current_z, action)
         q_percentage = normalize_q_value(q_value)
         observation, _, terminated, truncated, _ = app_state.env.step(action.cpu().numpy().ravel())
         
-        # Broadcast pose data using WebSocketManager
+        # Broadcast pose data using WebSocketManager with timeout protection
         try:
             qpos = app_state.env.unwrapped.data.qpos
             pose, trans, positions, position_names = qpos_to_smpl(qpos, app_state.env.unwrapped.model)
@@ -344,8 +345,30 @@ async def run_simulation():
                 "cache_file": str(cache_file) if cache_file else None
             }
             
-            await app_state.ws_manager.broadcast(pose_data)
+            print(f"Broadcasting pose data to {len(app_state.ws_manager.connected_clients)} clients")
             
+            # Add timeout protection to prevent blocking indefinitely
+            try:
+                # Use asyncio.wait_for to add a timeout
+                await asyncio.wait_for(
+                    app_state.ws_manager.broadcast(pose_data),
+                    timeout=0.5  # 500ms timeout, adjust as needed
+                )
+                print(f"Successfully broadcast pose data")
+            except asyncio.TimeoutError:
+                print(f"WARNING: Broadcast operation timed out after 0.5 seconds")
+                # Check for and clean up any dead connections that might be causing the timeout
+                stale_connections = set()
+                for ws in app_state.ws_manager.connected_clients:
+                    if ws.state == websockets.ConnectionState.CLOSED:
+                        stale_connections.add(ws)
+                        print(f"Found closed connection that wasn't properly removed")
+                
+                # Remove stale connections
+                for ws in stale_connections:
+                    app_state.ws_manager.connected_clients.discard(ws)
+                    
+                print(f"Removed {len(stale_connections)} stale connections, {len(app_state.ws_manager.connected_clients)} remaining")
         except Exception as e:
             print(f"Error broadcasting pose data: {str(e)}")
             traceback.print_exc()
@@ -400,7 +423,16 @@ async def run_simulation():
             "available": True
         }
         
-        await app_state.ws_manager.broadcast(frame_ping)
+        # Add timeout protection here too
+        try:
+            await asyncio.wait_for(
+                app_state.ws_manager.broadcast(frame_ping),
+                timeout=0.5  # 500ms timeout
+            )
+        except asyncio.TimeoutError:
+            print(f"WARNING: Frame ping broadcast timed out")
+        except Exception as e:
+            print(f"Error broadcasting frame ping: {str(e)}")
         
         # Check for key presses
         should_quit, should_save = app_state.display_manager.check_key()
