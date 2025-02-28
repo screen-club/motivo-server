@@ -133,13 +133,35 @@ app_state = AppState()
 
 async def handle_websocket(websocket):
     """Handle websocket connections"""
-    print("\n=== New WebSocket Connection Established ===")
+    # Enhanced logging for connection diagnostics
+    client_info = f"{websocket.remote_address[0]}:{websocket.remote_address[1]}" if hasattr(websocket, 'remote_address') else "Unknown"
+    print(f"\n=== New WebSocket Connection Established from {client_info} ===")
+    
     app_state.ws_manager.connected_clients.add(websocket)
     print(f"Total connections: {len(app_state.ws_manager.connected_clients)}")
     
     try:
+        # Send initial welcome message to confirm connection is working
+        try:
+            welcome_msg = {
+                "type": "connection_established",
+                "message": "Successfully connected to WebSocket server",
+                "timestamp": datetime.now().isoformat(),
+                "server_info": {
+                    "backend_domain": BACKEND_DOMAIN,
+                    "ws_port": WS_PORT
+                }
+            }
+            await websocket.send(json.dumps(welcome_msg))
+            print(f"Sent welcome message to {client_info}")
+        except Exception as e:
+            print(f"Error sending welcome message: {str(e)}")
+        
         async for message in websocket:
             try:
+                # Log the raw message for debugging
+                print(f"Received message from {client_info}: {message[:100]}...")
+                
                 data = json.loads(message)
                 
                 # Handle WebRTC signaling
@@ -172,6 +194,16 @@ async def handle_websocket(websocket):
                         print(f"[WEBRTC-DIAG] Answer sent to client {client_id}, type: {answer['type']}")
                         server_codec_lines = [line for line in answer["sdp"].split('\n') if 'a=rtpmap:' in line]
                         print(f"[WEBRTC-DIAG] Server codecs: {server_codec_lines}")
+                    continue
+                
+                # Handle new ping messages from client
+                if data.get("type") == "ping":
+                    print(f"Received ping from {client_info}")
+                    # Respond with pong
+                    await websocket.send(json.dumps({
+                        "type": "pong",
+                        "timestamp": datetime.now().isoformat()
+                    }))
                     continue
                 
                 # Handle video quality change requests

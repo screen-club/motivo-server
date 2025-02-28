@@ -495,6 +495,61 @@
           <span class="text-xs text-gray-400 font-mono">
             Quality: {currentQuality}
           </span>
+          
+          <!-- Add direct WebSocket test button -->
+          <button 
+            class="bg-green-500 hover:bg-green-600 px-2 py-1 rounded text-xs mr-2"
+            on:click={() => {
+              try {
+                addLog('Attempting direct WebSocket connection test...');
+                const wsUrl = import.meta.env.VITE_WS_URL;
+                addLog(`Direct connection to: ${wsUrl}`);
+                
+                const testSocket = new WebSocket(wsUrl);
+                
+                testSocket.onopen = () => {
+                  addLog('Direct WebSocket connection successful!');
+                  testSocket.send(JSON.stringify({
+                    type: 'ping',
+                    timestamp: new Date().toISOString(),
+                    test: true
+                  }));
+                  
+                  setTimeout(() => {
+                    if (testSocket.readyState === WebSocket.OPEN) {
+                      testSocket.close();
+                      addLog('Direct test connection closed');
+                    }
+                  }, 5000);
+                };
+                
+                testSocket.onmessage = (event) => {
+                  addLog(`Direct test received: ${event.data.substring(0, 50)}...`);
+                };
+                
+                testSocket.onerror = (event) => {
+                  addLog(`Direct test error: ${event}`);
+                };
+                
+                testSocket.onclose = (event) => {
+                  addLog(`Direct test closed: ${event.code} ${event.reason}`);
+                };
+                
+                // Set timeout for connection
+                setTimeout(() => {
+                  if (testSocket.readyState === WebSocket.CONNECTING) {
+                    addLog('Direct test connection timed out');
+                    testSocket.close();
+                  }
+                }, 10000);
+              } catch (error) {
+                addLog(`Error in direct test: ${error.message}`);
+              }
+            }}
+          >
+            Direct WS Test
+          </button>
+          
           <button 
             class="bg-blue-500 hover:bg-blue-600 px-2 py-1 rounded text-xs"
             on:click={restartConnection}

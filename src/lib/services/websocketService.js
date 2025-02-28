@@ -27,6 +27,9 @@ class WebSocketService {
     this.messageHandlers = new Set();
 
     this.statusInterval = null;
+
+    // Debug flags for troubleshooting
+    this.debugMode = true; // Set to true to enable additional logging
   }
 
   startStatusCheck() {
@@ -71,19 +74,84 @@ class WebSocketService {
 
     try {
       console.log(`Attempting to connect to ${this.wsUrl}`);
+
+      // Add additional debugging for network connectivity
+      if (this.debugMode) {
+        console.log(`[DEBUG] Browser: ${navigator.userAgent}`);
+        console.log(`[DEBUG] Protocol: ${window.location.protocol}`);
+        console.log(`[DEBUG] Current origin: ${window.location.origin}`);
+
+        // Simple connectivity test to the backend server over HTTP
+        const apiUrl = import.meta.env.VITE_API_URL;
+        console.log(`[DEBUG] Checking API connectivity to ${apiUrl}`);
+
+        fetch(`${apiUrl}/api/ping`)
+          .then((response) => {
+            console.log(`[DEBUG] API connectivity test: ${response.status}`);
+            return response.text();
+          })
+          .then((text) => console.log(`[DEBUG] API response: ${text}`))
+          .catch((error) =>
+            console.error(`[DEBUG] API connectivity error: ${error.message}`)
+          );
+      }
+
+      // Create WebSocket with a timeout for connection
       this.socket = new WebSocket(this.wsUrl);
 
+      // Set a timeout to detect stalled connections
+      const connectionTimeout = setTimeout(() => {
+        if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
+          console.error(
+            `[DEBUG] WebSocket connection timed out after 10 seconds`
+          );
+          // Try to close and restart
+          try {
+            this.socket.close();
+          } catch (e) {
+            console.error("[DEBUG] Error closing timed-out socket:", e);
+          }
+          this.socket = null;
+
+          // Try an alternative approach - sometimes the port needs a second attempt
+          console.log("[DEBUG] Attempting alternative connection approach...");
+          this.reconnectAttempts++;
+
+          // Wait a moment before reconnecting
+          setTimeout(() => this.connect(), 1000);
+        }
+      }, 10000); // 10 second timeout
+
       this.socket.onopen = () => {
+        clearTimeout(connectionTimeout);
         console.log(`Successfully connected to ${this.wsUrl}`);
         this.isReady = true;
         this.reconnectAttempts = 0;
         this.notifyReadyStateListeners();
         this.startStatusCheck();
+
+        // Send an initial ping message to test the connection
+        if (this.debugMode) {
+          try {
+            this.socket.send(
+              JSON.stringify({
+                type: "ping",
+                timestamp: new Date().toISOString(),
+              })
+            );
+            console.log("[DEBUG] Sent initial ping message");
+          } catch (e) {
+            console.error("[DEBUG] Error sending initial ping:", e);
+          }
+        }
       };
 
       this.socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          if (this.debugMode) {
+            console.log("[DEBUG] Received message:", data.type);
+          }
           this.handleMessage(data);
         } catch (error) {
           console.error(
@@ -95,6 +163,7 @@ class WebSocketService {
       };
 
       this.socket.onclose = (event) => {
+        clearTimeout(connectionTimeout);
         const reason = event.reason || "No reason provided";
         console.log(
           `WebSocket disconnected - Code: ${event.code}, Reason: ${reason}, Clean: ${event.wasClean}`
@@ -131,6 +200,25 @@ class WebSocketService {
           readyState: this.socket?.readyState,
           error: error,
         });
+
+        if (this.debugMode) {
+          // Try alternative diagnostic approaches
+          console.log("[DEBUG] Attempting network diagnostics");
+
+          // Check if we can connect to the server on a different port
+          const wsUrlObj = new URL(this.wsUrl);
+          const host = wsUrlObj.hostname;
+
+          fetch(`http://${host}:5002/api/ping`)
+            .then((response) =>
+              console.log(
+                `[DEBUG] HTTP connectivity to port 5002: ${response.status}`
+              )
+            )
+            .catch((err) =>
+              console.error(`[DEBUG] HTTP connectivity failed: ${err.message}`)
+            );
+        }
       };
     } catch (error) {
       console.error("Error creating WebSocket connection:", error);

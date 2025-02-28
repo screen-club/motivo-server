@@ -389,5 +389,16 @@ def delete_config(config_id):
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+# Add a simple ping endpoint for connectivity testing
+@app.route('/api/ping', methods=['GET'])
+def ping():
+    """Simple endpoint for testing connectivity"""
+    return jsonify({
+        "status": "ok",
+        "message": "WebServer is running",
+        "timestamp": datetime.now().isoformat()
+    })
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
