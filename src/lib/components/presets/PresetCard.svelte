@@ -135,8 +135,15 @@
 
   // Watch for FPS or speed factor changes and update animation
   $: if (isAnimationPlaying && (animationFPS !== prevFPS || speedFactor !== prevSpeed)) {
-    startFrameUpdater();
     updateAnimationParams();
+    
+    // Only restart the frame updater when speed changes, not when FPS changes
+    if (speedFactor !== prevSpeed) {
+      startFrameUpdater();
+    }
+    
+    prevFPS = animationFPS;
+    prevSpeed = speedFactor;
   }
   
   let prevFPS = animationFPS;
@@ -144,7 +151,7 @@
   
   // Handle FPS slider change
   function handleFpsChange() {
-    prevFPS = animationFPS;
+    // No need to set prevFPS here as it's handled in the reactive statement
     updateAnimationParams();
   }
 </script>
