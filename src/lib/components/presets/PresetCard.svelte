@@ -16,7 +16,7 @@
 
   // Animation state
   let isAnimationPlaying = false;
-  let animationFPS = 4;  // Frames to send per second
+  let animationFPS = 4;  // Number of poses to send in one second
   let speedFactor = 1;
   let currentFrame = 0;
   let totalFrames = 0;
@@ -85,6 +85,18 @@
     }
   }
 
+  // Function to update animation parameters while playing
+  function updateAnimationParams() {
+    if (isAnimationPlaying) {
+      onLoad(preset, {
+        isAnimation: true,
+        fps: animationFPS,
+        speedFactor: speedFactor,
+        updateParamsOnly: true
+      });
+    }
+  }
+
   function stopAnimation() {
     if (isAnimationPlaying) {
       isAnimationPlaying = false;
@@ -121,11 +133,20 @@
     }
   }
 
+  // Watch for FPS or speed factor changes and update animation
   $: if (isAnimationPlaying && (animationFPS !== prevFPS || speedFactor !== prevSpeed)) {
     startFrameUpdater();
+    updateAnimationParams();
   }
+  
   let prevFPS = animationFPS;
   let prevSpeed = speedFactor;
+  
+  // Handle FPS slider change
+  function handleFpsChange() {
+    prevFPS = animationFPS;
+    updateAnimationParams();
+  }
 </script>
 
 <div
@@ -231,8 +252,10 @@
               type="range"
               bind:value={animationFPS}
               min="1"
-              max="30"
+              max="10"
               class="flex-1 h-4"
+              on:change={handleFpsChange}
+              on:input={handleFpsChange}
             />
             <span class="text-xs ml-2">{animationFPS}</span>
           </div>
