@@ -2,10 +2,17 @@ import { websocketService } from './websocketService';
 
 export class PoseService {
     static currentAnimation = null;
+    static currentPreset = null;
+    static currentFps = 4;
     static CONFIG = {
         TARGET_FPS: 30,
         DEFAULT_FPS: 4
     };
+    
+    // FPS tracking variables
+    static frameCounter = 0;
+    static lastFrameTimestamp = 0;
+    static fpsLoggingInterval = null;
 
     static getFrameIndices(totalFrames, fps) {
         if (fps <= 0) return [];
@@ -17,10 +24,29 @@ export class PoseService {
     }
 
     static async loadPoseConfig(preset, animationOptions = {}) {
-        console.log('Loading pose config:', preset);
+        console.log('Loading pose config:', preset, 'options:', animationOptions);
+        
+        // Handle FPS update for running animation
+        if (animationOptions.updateParamsOnly && this.currentAnimation && this.currentPreset) {
+            if (animationOptions.fps !== this.currentFps) {
+                console.log('FPS update requested from', this.currentFps, 'to', animationOptions.fps);
+                this.updateAnimationFps(animationOptions.fps);
+                return this.currentAnimation;
+            }
+            return;
+        }
+        
+        if (animationOptions.stopAnimation) {
+            console.log('Animation stop requested');
+            this.stopCurrentAnimation();
+            return;
+        }
         
         if (animationOptions.isAnimation) {
-            return this.handleAnimationPlayback(preset, animationOptions.fps);
+            this.currentPreset = preset;
+            this.currentFps = animationOptions.fps || this.CONFIG.DEFAULT_FPS;
+            console.log('Starting animation with FPS:', this.currentFps);
+            return this.handleAnimationPlayback(preset, this.currentFps);
         }
 
         if (preset.type === 'pose' || preset.data?.pose) {
@@ -55,19 +81,109 @@ export class PoseService {
         }
     }
 
+    static startFpsLogging() {
+        // Clear any existing logging interval
+        if (this.fpsLoggingInterval) {
+            clearInterval(this.fpsLoggingInterval);
+        }
+        
+        // Reset counters
+        this.frameCounter = 0;
+        this.lastFrameTimestamp = Date.now();
+        
+        // Create new logging interval (logs every second)
+        this.fpsLoggingInterval = setInterval(() => {
+            const now = Date.now();
+            const elapsed = (now - this.lastFrameTimestamp) / 1000; // Convert to seconds
+            const actualFps = this.frameCounter / elapsed;
+            
+            console.log(`FPS Stats: Target=${this.currentFps}, Actual=${actualFps.toFixed(2)}, Frames sent=${this.frameCounter}`);
+            
+            // Reset for next period
+            this.frameCounter = 0;
+            this.lastFrameTimestamp = now;
+        }, 1000);
+    }
+
+    static stopFpsLogging() {
+        if (this.fpsLoggingInterval) {
+            clearInterval(this.fpsLoggingInterval);
+            this.fpsLoggingInterval = null;
+        }
+    }
+
+    static updateAnimationFps(newFps) {
+        console.log('Updating animation FPS to:', newFps);
+        if (!this.currentAnimation || !this.currentPreset) return;
+        
+        this.currentFps = newFps;
+        
+        // Stop the current interval but keep track of what we're playing
+        clearInterval(this.currentAnimation);
+        
+        // Restart with new FPS
+        const frameDelay = 1000 / newFps;
+        console.log('New frame delay:', frameDelay, 'ms');
+        
+        // Calculate new frame indices
+        let frameIndices;
+        if (Array.isArray(this.currentPreset.data.pose)) {
+            frameIndices = this.getFrameIndices(this.currentPreset.data.pose.length, newFps);
+            console.log('Calculated frame indices:', frameIndices.length, 'frames to display');
+        } else {
+            console.error('Invalid animation data');
+            return;
+        }
+        
+        let currentIndex = 0;
+        
+        const playFrame = async () => {
+            const frameIndex = frameIndices[currentIndex];
+            const startTime = Date.now();
+            
+            await this.sendSMPLPose(
+                this.currentPreset.data.pose[frameIndex],
+                this.currentPreset.data.trans?.[frameIndex],
+                this.currentPreset.data.model,
+                this.currentPreset.data.inference_type
+            );
+            
+            // Update FPS counter
+            this.frameCounter++;
+            
+            const processingTime = Date.now() - startTime;
+            if (processingTime > frameDelay * 0.8) {
+                console.warn(`Frame processing time (${processingTime}ms) is close to or exceeds frame delay (${frameDelay}ms)`);
+            }
+            
+            currentIndex = (currentIndex + 1) % frameIndices.length;
+        };
+        
+        // Reset and start FPS logging
+        this.startFpsLogging();
+        
+        // Start the animation interval with new timing
+        this.currentAnimation = setInterval(playFrame, frameDelay);
+        return this.currentAnimation;
+    }
+
     static async handleAnimationPlayback(preset, fps = this.CONFIG.DEFAULT_FPS, startFrame = 0) {
-        console.log('Playing animation:', preset, 'starting from frame:', startFrame);
+        console.log('Playing animation:', preset.title, 'FPS:', fps, 'starting from frame:', startFrame);
         
         // Stop any existing animation
         this.stopCurrentAnimation();
         
         const frameDelay = 1000 / fps;
+        console.log('Frame delay:', frameDelay, 'ms');
+        
         let currentIndex = 0;
         
         // Calculate frame indices for the desired FPS
         let frameIndices;
         if (Array.isArray(preset.data.pose)) {
             frameIndices = this.getFrameIndices(preset.data.pose.length, fps);
+            console.log('Total frames in animation:', preset.data.pose.length);
+            console.log('Frames to display at current FPS:', frameIndices.length);
             
             // Find the starting index based on startFrame
             currentIndex = frameIndices.findIndex(index => index >= startFrame);
@@ -79,8 +195,13 @@ export class PoseService {
             return;
         }
     
+        // Reset frame counter and start time for FPS tracking
+        this.frameCounter = 0;
+        this.lastFrameTimestamp = Date.now();
+        
         const playFrame = async () => {
             const frameIndex = frameIndices[currentIndex];
+            const startTime = Date.now();
             
             await this.sendSMPLPose(
                 preset.data.pose[frameIndex],
@@ -88,11 +209,23 @@ export class PoseService {
                 preset.data.model,
                 preset.data.inference_type
             );
+            
+            // Update FPS counter
+            this.frameCounter++;
+            
+            const processingTime = Date.now() - startTime;
+            if (processingTime > frameDelay * 0.8) {
+                console.warn(`Frame processing time (${processingTime}ms) is close to or exceeds frame delay (${frameDelay}ms)`);
+            }
+            
             currentIndex = (currentIndex + 1) % frameIndices.length;
         };
     
         // Play first frame immediately
         await playFrame();
+        
+        // Start FPS logging
+        this.startFpsLogging();
         
         // Start the animation interval
         this.currentAnimation = setInterval(playFrame, frameDelay);
@@ -100,9 +233,14 @@ export class PoseService {
     }
 
     static stopCurrentAnimation() {
+        this.stopFpsLogging();
+        
         if (this.currentAnimation) {
             clearInterval(this.currentAnimation);
             this.currentAnimation = null;
+            this.currentPreset = null;
+            this.currentFps = this.CONFIG.DEFAULT_FPS;
+            console.log('Animation stopped');
         }
     }
 

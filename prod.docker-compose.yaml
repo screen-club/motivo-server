@@ -24,6 +24,8 @@ services:
     volumes:
       - ./storage:/app/storage
     restart: unless-stopped
+    depends_on:
+      - coturn
     deploy:
       resources:
         reservations:
@@ -69,8 +71,8 @@ services:
   coturn:
     image: coturn/coturn:latest
     network_mode: host
-    volumes:
-      - ./coturn/turnserver.conf:/etc/turnserver.conf
+    #volumes:
+    #  - ./coturn/turnserver.conf:/etc/turnserver.conf
     restart: unless-stopped
     ports:
       - "3478:3478/udp"

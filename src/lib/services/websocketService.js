@@ -29,7 +29,7 @@ class WebSocketService {
     this.statusInterval = null;
 
     // Debug flags for troubleshooting
-    this.debugMode = true; // Set to true to enable additional logging
+    this.debugMode = false; // Set to true to enable additional logging
   }
 
   startStatusCheck() {
