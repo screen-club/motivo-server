@@ -162,41 +162,43 @@
     const timelineRect = timelineRef.getBoundingClientRect();
     const deltaX = event.clientX - resizeStartX;
     
-    // Dampen the movement sensitivity
-    const sensitivityFactor = 0.5;
-    const dampedDeltaX = deltaX * sensitivityFactor;
-    
     if (resizingSide === 'right') {
       // Get maximum possible duration for this animation
       const maxDuration = getMaxAnimationDuration(resizingPreset);
+      const minSpeed = 0.2;  // Slowest allowed speed (5x slower)
+      const maxWidth = (maxDuration / minSpeed) / viewportDuration * timelineRect.width;
       
-      // Calculate new width based on deltaX
-      let newWidth = originalWidth + dampedDeltaX;
-      
-      // Calculate maximum allowed width based on max duration
-      const maxWidth = (maxDuration * originalSpeedFactor / viewportDuration) * timelineRect.width;
+      // For right resize, we allow both positive (enlarging) and negative (shrinking) changes
+      // Calculate new width based on raw deltaX (no dampening for scaling up)
+      let newWidth = originalWidth + deltaX;
       
       // Constrain newWidth between minimum and maximum
       newWidth = Math.max(20, Math.min(newWidth, maxWidth));
+      
+      // Apply the new width to the element
       element.style.width = `${newWidth}px`;
       
       // Calculate new speed factor based on width change
       const widthRatio = newWidth / originalWidth;
       const newSpeedFactor = originalSpeedFactor / widthRatio;
       
-      // Update the preset data
+      // Update the preset data if the new speed factor is within allowed range
       if (newSpeedFactor >= 0.2 && newSpeedFactor <= 5) {
         resizingPreset.data = {
           ...resizingPreset.data,
           speedFactor: newSpeedFactor
         };
       }
+      
+      // Update the debug info for better feedback
+      const speedDisplay = document.querySelector('.speed-display');
+      if (speedDisplay) {
+        speedDisplay.textContent = `Speed: ${newSpeedFactor.toFixed(2)}x`;
+      }
     } else {
       // Left side - only allow positive deltaX (making element smaller from left)
-      if (dampedDeltaX <= 0) return;
-      
       const maxLeftMove = Math.min(originalWidth - 20, resizePresetStartPosition / viewportDuration * timelineRect.width);
-      const leftDeltaX = Math.min(maxLeftMove, dampedDeltaX);
+      const leftDeltaX = Math.min(maxLeftMove, Math.max(0, deltaX));
       
       // Calculate the new width (smaller than original)
       const newWidth = Math.max(20, originalWidth - leftDeltaX);
@@ -211,13 +213,13 @@
                      resizingPreset.data?.qpos?.length || 60;
       const frameRatio = leftDeltaX / originalWidth;
       const startFrameChange = Math.floor(frameRatio * frames);
-      const newStartFrame = Math.max(originalStartFrame, originalStartFrame + startFrameChange);
+      const newStartFrame = Math.min(frames - 10, originalStartFrame + startFrameChange);
       
       // Update position and start frame
       resizingPreset.position = resizePresetStartPosition + (leftDeltaX / timelineRect.width) * viewportDuration;
       resizingPreset.data = {
         ...resizingPreset.data,
-        startFrame: Math.min(frames - 10, newStartFrame)
+        startFrame: newStartFrame
       };
     }
   }
@@ -652,8 +654,8 @@
           
           <!-- Show start frame/speed info when resizing -->
           {#if resizingPreset === preset}
-            <div class="absolute -bottom-6 left-0 text-xs bg-black text-white px-1 py-0.5 rounded whitespace-nowrap">
-              {resizingSide === 'left' ? `Start: ${preset.data?.startFrame || 0}` : `Speed: ${(preset.data?.speedFactor || 1).toFixed(1)}x`}
+            <div class="absolute -bottom-6 left-0 text-xs bg-black text-white px-1 py-0.5 rounded whitespace-nowrap speed-display">
+              {resizingSide === 'left' ? `Start: ${preset.data?.startFrame || 0}` : `Speed: ${(preset.data?.speedFactor || 1).toFixed(2)}x`}
             </div>
           {/if}
         </div>
@@ -661,7 +663,6 @@
     {/each}
   </div>
 </div>
-
 <style>
 input[type="range"] {
   -webkit-appearance: none;
@@ -678,4 +679,5 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 50%;
   cursor: pointer;
 }
+
 </style>
