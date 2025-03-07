@@ -493,7 +493,7 @@ def compute_reward_context_gpu(reward_config, env, model, buffer_data):
     print(f"USING REWARD COMBINATION METHOD: {combination_type.upper()} ({device.type.upper()})")
     print("="*50 + "\n")
     
-    batch_size = 10_000
+    batch_size = 750
     idx = np.random.randint(0, len(buffer_data['next_qpos']), batch_size)
     
     # Device-specific data transfer optimizations

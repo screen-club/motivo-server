@@ -261,60 +261,105 @@ class HandLateralDistanceReward(humenv_rewards.RewardFunction):
 class LeftHandHeightReward(humenv_rewards.RewardFunction):
     target_height: float = 1.0
     stand_height: float = 1.4
+    right_hand_penalty: bool = True  # Add flag to control right hand penalty
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
         # Get all necessary positions and states
-        hand_height = get_xpos(model, data, name="L_Hand")[-1]
+        left_hand_height = get_xpos(model, data, name="L_Hand")[-1]
+        right_hand_height = get_xpos(model, data, name="R_Hand")[-1]
         head_height = get_xpos(model, data, name="Head")[-1]
         chest_upright = get_chest_upright(model, data)
         center_of_mass_velocity = humenv_rewards.get_center_of_mass_linvel(model, data)
 
-        # Calculate standing reward
+        # Calculate standing reward (reduce weight by making it more lenient)
         standing = rewards.tolerance(
             head_height,
-            bounds=(self.stand_height, float("inf")),
+            bounds=(self.stand_height * 0.9, float("inf")),  # Lower minimum standing height
             margin=self.stand_height,
-            value_at_margin=0.01,
+            value_at_margin=0.1,  # More reward at margin
             sigmoid="linear",
         )
         
-        # Calculate upright reward
+        # Calculate upright reward (slightly relaxed)
         upright = rewards.tolerance(
             chest_upright,
-            bounds=(0.9, float("inf")),
+            bounds=(0.8, float("inf")),  # Lower the upright threshold
             sigmoid="linear",
-            margin=1.9,
-            value_at_margin=0,
+            margin=1.8,
+            value_at_margin=0.1,
         )
         
-        # Combine standing and upright
-        stand_reward = standing * upright
+        # Combine standing and upright with reduced importance
+        stand_reward = 0.5 + 0.5 * (standing * upright)  # Allow some reward even without perfect posture
         
-        # Calculate movement and control rewards
-        dont_move = rewards.tolerance(center_of_mass_velocity, margin=0.5).mean()
-        small_control = rewards.tolerance(data.ctrl, margin=1, value_at_margin=0, sigmoid="quadratic").mean()
-        small_control = (4 + small_control) / 5
+        # Calculate movement and control rewards (less strict)
+        dont_move = 0.7 + 0.3 * rewards.tolerance(center_of_mass_velocity, margin=0.7).mean()
+        small_control = rewards.tolerance(data.ctrl, margin=1, value_at_margin=0.1, sigmoid="quadratic").mean()
+        small_control = 0.5 + 0.5 * small_control  # Give some baseline reward
 
-        # Calculate hand height reward
-        hand_reward = rewards.tolerance(
-            hand_height,
-            bounds=(self.target_height - 0.1, self.target_height + 0.1),
-            margin=0.2,
-            value_at_margin=0.01,
-            sigmoid="linear",
+        # Calculate left hand height reward (tighter bounds)
+        left_hand_reward = rewards.tolerance(
+            left_hand_height,
+            bounds=(self.target_height - 0.05, self.target_height + 0.05),  # Tighter bounds
+            margin=0.3,
+            value_at_margin=0.05,
+            sigmoid="gaussian",  # Smoother falloff
         )
-        hand_reward = (4 * hand_reward + 1) / 5
-
-        # Combine all rewards
-        return small_control * stand_reward * dont_move * hand_reward
+        
+        # Add a stability bonus for maintaining position over time
+        if hasattr(self, 'last_left_hand_height'):
+            stability_bonus = rewards.tolerance(
+                abs(left_hand_height - self.last_left_hand_height),
+                bounds=(0, 0.01),  # Reward stability
+                margin=0.1,
+                sigmoid="linear",
+            )
+            left_hand_reward = left_hand_reward * (0.8 + 0.2 * stability_bonus)
+        
+        # Store current height for next calculation
+        self.last_left_hand_height = left_hand_height
+        
+        # Add right hand penalty (key improvement)
+        right_hand_penalty = 1.0
+        if self.right_hand_penalty:
+            # Penalize right hand for being above a certain height
+            right_hand_too_high = rewards.tolerance(
+                right_hand_height,
+                bounds=(0.6, 0.7),  # Keep right hand below this height 
+                margin=0.3,
+                value_at_margin=0.1,
+                sigmoid="linear",
+            )
+            right_hand_penalty = right_hand_too_high
+        
+        # Combine all rewards with stronger emphasis on hand position
+        base_reward = small_control * stand_reward * dont_move
+        hand_reward = left_hand_reward * right_hand_penalty
+        
+        # Weight the hand component higher
+        final_reward = 0.3 * base_reward + 0.7 * hand_reward
+        
+        print(f"DEBUG: Left hand: {left_hand_height:.3f}, Right hand: {right_hand_height:.3f}, Target: {self.target_height}, Reward: {final_reward:.3f}")
+        
+        return final_reward
 
     @staticmethod
     def reward_from_name(name: str) -> Optional["humenv_rewards.RewardFunction"]:
+        # Handle simple case
+        if name == "left-hand-height":
+            return LeftHandHeightReward()
+            
+        # Handle parameterized cases
         pattern = r"^left-hand-height-(\d+\.*\d*)$"
         match = re.search(pattern, name)
         if match:
             target_height = float(match.group(1))
             return LeftHandHeightReward(target_height=target_height)
+            
+        # Special case for asymmetric configuration
+        if name == "left-hand-height-only":
+            return LeftHandHeightReward(right_hand_penalty=True)
+            
         return None
 
 @dataclasses.dataclass

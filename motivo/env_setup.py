@@ -6,6 +6,7 @@ from gymnasium import Env
 
 class ParameterizedEnv(Env):
     def __init__(self, device="cpu", max_steps=2000000):
+        print(f"ParameterizedEnv initialized with max_steps={max_steps}")
         self.env, _ = make_humenv(
             num_envs=1,
             wrappers=[
@@ -23,6 +24,7 @@ class ParameterizedEnv(Env):
         self.unwrapped_env = self.env.unwrapped
         self.set_default_parameters()
         self.env = TimeLimit(self.env, max_episode_steps=max_steps)
+        print(f"TimeLimit wrapper applied with max_episode_steps={max_steps}")
 
         # Copy properties from wrapped env
         self.action_space = self.env.action_space
@@ -93,6 +95,6 @@ class ParameterizedEnv(Env):
         """Get current parameter values"""
         return self.parameters
 
-def setup_environment(device="cpu", max_steps=2000000):
+def setup_environment(device="cpu", max_steps=1000):
     """Setup parameterized environment with humanoid"""
     return ParameterizedEnv(device=device, max_steps=max_steps) 
