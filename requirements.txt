@@ -398,3 +398,4 @@ zipp==3.21.0
     #   etils
 
 psutil
+flask-socketio
