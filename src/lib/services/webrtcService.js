@@ -151,10 +151,61 @@ class WebRTCService {
       // Create a new RTCPeerConnection with minimal configuration
       // Use empty configuration to avoid any ICE issues
       const configuration = {
-        iceServers: [], // Empty ice servers - we'll rely on direct connection
+        iceServers: [
+          // Use Google's public STUN servers as fallback
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+
+          // Use the custom COTURN server if available
+          ...(import.meta.env.VITE_STUN_URL
+            ? [{ urls: import.meta.env.VITE_STUN_URL }]
+            : []),
+
+          // Add specific TURN server for this project
+          {
+            urls: "stun:51.159.163.145:3478",
+          },
+
+          // Add TURN server for this project
+          {
+            urls: "turn:51.159.163.145:3478",
+            username: "admin",
+            credential: "password",
+          },
+
+          // Add TURN over TCP for this project (helps with strict firewalls)
+          {
+            urls: "turn:51.159.163.145:3478?transport=tcp",
+            username: "admin",
+            credential: "password",
+          },
+
+          // Add environment variable TURN servers if available
+          ...(import.meta.env.VITE_TURN_URL &&
+          import.meta.env.VITE_TURN_USERNAME &&
+          import.meta.env.VITE_TURN_PASSWORD
+            ? [
+                {
+                  urls: import.meta.env.VITE_TURN_URL,
+                  username: import.meta.env.VITE_TURN_USERNAME,
+                  credential: import.meta.env.VITE_TURN_PASSWORD,
+                },
+                {
+                  urls: `${import.meta.env.VITE_TURN_URL}?transport=tcp`,
+                  username: import.meta.env.VITE_TURN_USERNAME,
+                  credential: import.meta.env.VITE_TURN_PASSWORD,
+                },
+              ]
+            : []),
+        ],
       };
 
-      this.addLog("Creating peer connection with minimal config");
+      this.addLog(
+        "Creating peer connection with ICE servers: " +
+          JSON.stringify(
+            configuration.iceServers.map((server) => ({ urls: server.urls }))
+          )
+      );
 
       this.peerConnection = new RTCPeerConnection(configuration);
 

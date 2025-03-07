@@ -336,9 +336,19 @@ class WebRTCManager:
         turn_username = os.getenv("VITE_TURN_USERNAME")
         turn_password = os.getenv("VITE_TURN_PASSWORD")
         
+        # Enhanced debugging for environment variables
+        logger.info(f"WebRTC Config - STUN URL: {stun_url or 'Not set'}")
+        logger.info(f"WebRTC Config - TURN URL: {turn_url or 'Not set'}")
+        logger.info(f"WebRTC Config - TURN Username: {'Set' if turn_username else 'Not set'}")
+        logger.info(f"WebRTC Config - TURN Password: {'Set' if turn_password else 'Not set'}")
+        
         # Add STUN server if configured
         if stun_url:
             ice_servers.append(RTCIceServer(urls=[stun_url]))
+        else:
+            # Fallback to Google's public STUN servers if not configured
+            logger.warning("No STUN server configured, using Google's public STUN servers as fallback")
+            ice_servers.append(RTCIceServer(urls=["stun:stun.l.google.com:19302"]))
         
         # Add TURN server if configured
         if turn_url and turn_username and turn_password:
@@ -363,8 +373,10 @@ class WebRTCManager:
                 username=turn_username,
                 credential=turn_password
             ))
+        else:
+            logger.warning("No TURN server configuration found. WebRTC may fail in restricted network environments.")
         
-        logger.info(f"Creating peer connection for {client_id} with custom COTURN server")
+        logger.info(f"Creating peer connection for {client_id} with {len(ice_servers)} ICE servers")
         
         # Create RTCConfiguration with ice servers
         config = RTCConfiguration(iceServers=ice_servers)
@@ -462,6 +474,11 @@ class WebRTCManager:
         logger.info(f"Received WebRTC offer from client {client_id}")
         
         try:
+            # Validate SDP content before processing
+            if not sdp or len(sdp) < 50:  # Basic validation check
+                logger.error(f"Invalid SDP received from client {client_id}: {sdp[:100]}")
+                return {"sdp": "", "type": "failed", "error": "Invalid SDP format"}
+                
             # Check if we already have an existing connection that might be stale
             if client_id in self.peer_connections:
                 pc = self.peer_connections[client_id]
@@ -487,8 +504,12 @@ class WebRTCManager:
             
             # Set the remote description
             offer = RTCSessionDescription(sdp=sdp, type="offer")
-            await pc.setRemoteDescription(offer)
-            logger.info(f"Set remote description for client {client_id}")
+            try:
+                await pc.setRemoteDescription(offer)
+                logger.info(f"Set remote description for client {client_id}")
+            except Exception as e:
+                logger.error(f"Error setting remote description: {str(e)}")
+                raise
             
             # Create an answer
             try:
@@ -498,6 +519,13 @@ class WebRTCManager:
                 
                 # Log ICE candidates for debugging
                 logger.info(f"Local ICE candidates for {client_id}: {len(pc.localDescription.sdp.split('a=candidate:'))}")
+                
+                # Log SDP details for diagnostic purposes
+                sdp_lines = pc.localDescription.sdp.split('\n')
+                media_lines = [line for line in sdp_lines if line.startswith('m=')]
+                codec_lines = [line for line in sdp_lines if line.startswith('a=rtpmap:')]
+                logger.info(f"SDP Media sections: {media_lines}")
+                logger.info(f"SDP Codecs: {codec_lines[:5]}")  # Log first 5 codecs
                 
                 return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
             except Exception as e:
@@ -620,7 +648,45 @@ class WebRTCManager:
         for client_id in client_ids:
             await self.safe_close_peer_connection(client_id)
     
-
+    def get_diagnostics(self):
+        """
+        Return diagnostic information about the WebRTC manager.
+        """
+        import os
+        
+        # Gather environment variables
+        env_vars = {
+            "STUN_URL": os.getenv("VITE_STUN_URL", "Not set"),
+            "TURN_URL": os.getenv("VITE_TURN_URL", "Not set"),
+            "TURN_USERNAME": "Set" if os.getenv("VITE_TURN_USERNAME") else "Not set",
+            "TURN_PASSWORD": "Set" if os.getenv("VITE_TURN_PASSWORD") else "Not set",
+        }
+        
+        # Gather active connections
+        connections = {}
+        for client_id, pc in self.peer_connections.items():
+            connections[client_id] = {
+                "iceConnectionState": pc.iceConnectionState,
+                "connectionState": pc.connectionState if hasattr(pc, "connectionState") else "Unknown",
+                "signalingState": pc.signalingState,
+                "iceGatheringState": pc.iceGatheringState,
+            }
+            
+        # Gather video track info
+        video_track_info = {
+            "width": self.video_track.width,
+            "height": self.video_track.height,
+            "fps": self.video_track.fps,
+            "frames_sent": self.video_track.frames_sent,
+        }
+        
+        return {
+            "environment_variables": env_vars,
+            "active_connections": connections,
+            "video_quality": self.video_quality,
+            "video_track": video_track_info,
+        }
+    
     async def add_ice_candidate(self, client_id, candidate_dict):
         """
         Process an ICE candidate received from a client

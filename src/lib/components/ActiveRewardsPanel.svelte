@@ -91,6 +91,21 @@
       combinationType: activeRewards.combinationType
     });
   }
+
+  function handleCombinationTypeChange(event) {
+    const newCombinationType = event.target.value;
+    if (activeRewards) {
+      websocketService.getSocket()?.send(JSON.stringify({
+        type: 'request_reward',
+        reward: {
+          ...activeRewards,
+          combinationType: newCombinationType,
+          combination_type: newCombinationType
+        },
+        timestamp: new Date().toISOString()
+      }));
+    }
+  }
 </script>
 
 <div class="h-full w-full">
@@ -184,8 +199,19 @@
           </div>
         {/each}
 
-        <div class="text-sm text-gray-600 col-span-full">
-          Combination Type: {activeRewards.combinationType}
+        <div class="text-sm text-gray-600 col-span-full flex items-center gap-2 mt-2">
+          <div>Combination Type:</div>
+          <select 
+            class="px-2 py-1 text-sm rounded border border-gray-300 bg-white"
+            value={activeRewards.combinationType}
+            on:change={handleCombinationTypeChange}
+          >
+            <option value="geometric">Geometric</option>
+            <option value="additive">Additive</option>
+            <option value="multiplicative">Multiplicative</option>
+            <option value="min">Min</option>
+            <option value="max">Max</option>
+          </select>
         </div>
       </div>
     {:else}
