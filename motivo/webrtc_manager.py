@@ -3,16 +3,15 @@ import cv2
 import json
 import uuid
 from typing import Dict, Set, Any, Tuple
-from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack, RTCConfiguration, RTCIceServer
+from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack, RTCConfiguration, RTCIceServer, RTCIceCandidate
 from aiortc.contrib.media import MediaStreamTrack
 import numpy as np
 import fractions
 import traceback
 import logging
+import time
 
-# Setup basic logging
-logging.basicConfig(level=logging.INFO, 
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 logger = logging.getLogger('webrtc_manager')
 
 class FrameVideoStreamTrack(VideoStreamTrack):
@@ -114,8 +113,7 @@ class FrameVideoStreamTrack(VideoStreamTrack):
         
         # Count successful frames sent
         self.frames_sent += 1
-        if self.frames_sent % 100 == 0:  # Log every 100 frames
-            logger.info(f"Sent {self.frames_sent} frames")
+       
             
         return video_frame
 
@@ -541,26 +539,77 @@ class WebRTCManager:
     
     async def safe_close_peer_connection(self, client_id):
         """
-        Safely close a peer connection with protection against concurrent closures.
+        Safely close a peer connection with proper error handling
         """
-        try:
-            if client_id in self.peer_connections:
-                pc = self.peer_connections[client_id]
-                # Remove from dictionary first to prevent other callbacks from attempting closure
-                del self.peer_connections[client_id]
-                # Then close the connection
-                await pc.close()
-                print(f"Safely closed peer connection for {client_id}")
-            # If client_id is not in peer_connections, it may have already been closed
-        except Exception as e:
-            print(f"Error during safe connection closure for {client_id}: {str(e)}")
+        if client_id in self.peer_connections:
+            pc = self.peer_connections[client_id]
+            try:
+                logger.info(f"Safely closing peer connection for client {client_id}")
+                
+                # Before closing the connection, cancel any pending ICE transactions
+                # This helps prevent "NoneType has no attribute sendto" errors
+                try:
+                    # Get all transceivers and cancel their pending operations
+                    transceivers = pc.getTransceivers()
+                    for transceiver in transceivers:
+                        # If transceiver has a sender with an active track, stop it
+                        if transceiver.sender and transceiver.sender.track:
+                            transceiver.sender.track.stop()
+                except Exception as e:
+                    logger.error(f"Error stopping tracks: {str(e)}")
+                
+                # Create a separate task to close the connection with a timeout
+                # This prevents blocking the main execution while waiting for close
+                try:
+                    # Set a timeout for the close operation
+                    close_task = asyncio.create_task(self.close_peer_connection(client_id))
+                    await asyncio.wait_for(close_task, timeout=2.0)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout while closing connection for {client_id}")
+                except Exception as e:
+                    logger.error(f"Error in close task: {str(e)}")
+                    
+            except Exception as e:
+                logger.error(f"Error during safe connection close: {str(e)}")
+                traceback.print_exc()
+            finally:
+                # Make sure connection is removed from our tracking
+                if client_id in self.peer_connections:
+                    del self.peer_connections[client_id]
+                if client_id in self.data_channels:
+                    del self.data_channels[client_id]
+                if client_id in self.connection_timestamps:
+                    del self.connection_timestamps[client_id]
+                    
+                logger.info(f"Peer connection for client {client_id} has been removed")
+                
+                # Force a garbage collection to free up resources
+                try:
+                    import gc
+                    gc.collect()
+                except Exception:
+                    pass
+                    
+        return True
     
     async def close_peer_connection(self, client_id):
         """
-        Close a peer connection.
+        Close a peer connection properly
         """
-        # Forward to the safe implementation
-        await self.safe_close_peer_connection(client_id)
+        if client_id in self.peer_connections:
+            pc = self.peer_connections[client_id]
+            try:
+                # Set all senders' tracks to null before closing
+                for sender in pc.getSenders():
+                    if sender.track:
+                        sender.replaceTrack(None)
+                
+                # Close the connection with a proper state transition
+                logger.info(f"Closing peer connection for client {client_id}")
+                await pc.close()
+                logger.info(f"Peer connection closed for {client_id}")
+            except Exception as e:
+                logger.error(f"Error closing peer connection: {str(e)}")
     
     async def close_all_connections(self):
         """
@@ -569,4 +618,99 @@ class WebRTCManager:
         # Make a copy of the keys to avoid modification during iteration
         client_ids = list(self.peer_connections.keys())
         for client_id in client_ids:
-            await self.safe_close_peer_connection(client_id) 
+            await self.safe_close_peer_connection(client_id)
+    
+
+    async def add_ice_candidate(self, client_id, candidate_dict):
+        """
+        Process an ICE candidate received from a client
+        
+        Args:
+            client_id: The unique identifier of the client
+            candidate_dict: Dictionary containing ICE candidate information
+        """
+        if not client_id or not candidate_dict:
+            if not client_id:
+                logger.warning("Received ICE candidate with no client ID")
+            else:
+                logger.warning(f"Received empty ICE candidate from client {client_id}")
+            return
+            
+        # Check if connection still exists
+        if client_id not in self.peer_connections:
+            logger.warning(f"Received ICE candidate for unknown client {client_id}")
+            return
+            
+        # Update timestamp to indicate activity
+        self.connection_timestamps[client_id] = time.time()
+        
+        # Get peer connection
+        pc = self.peer_connections[client_id]
+        
+        # Skip if connection is in a state that can't accept candidates
+        if pc.connectionState in ["closed", "failed"] or pc.iceConnectionState in ["closed", "failed"]:
+            logger.warning(f"Ignoring ICE candidate for {client_id} - connection state: {pc.connectionState}")
+            return
+            
+        try:
+            # Parse ICE candidate string manually
+            candidate_str = candidate_dict.get("candidate", "")
+            
+            # Always log ICE candidate info
+            candidate_type = "unknown"
+            if "typ " in candidate_str:
+                candidate_type = candidate_str.split("typ ")[1].split()[0]
+            logger.info(f"ICE candidate from client {client_id}: type={candidate_type}")
+       
+            
+            # The rest of the code is skipped to avoid the error
+            # Original code below is commented out
+    
+            # Extract IP address for network debugging if present
+            if len(candidate_str.split()) >= 5:
+                ip = candidate_str.split()[4]
+                logger.info(f"ICE candidate IP: {ip}")
+            
+            # The format is typically: candidate:foundation component protocol priority ip port type ...
+            # Example: candidate:0 1 UDP 2122252543 192.168.1.100 49923 typ host
+            parts = candidate_str.split()
+            
+            # Extract required components for RTCIceCandidate
+            if len(parts) >= 10 and parts[0].startswith("candidate:"):
+                foundation = parts[0].split(":")[1]
+                component = int(parts[1])
+                protocol = parts[2]
+                priority = int(parts[3])
+                ip = parts[4]
+                port = int(parts[5])
+                # parts[6] should be "typ"
+                candidate_type = parts[7]
+                
+                # Create a fully initialized RTCIceCandidate
+                ice_candidate = RTCIceCandidate(
+                    foundation=foundation,
+                    component=component,
+                    protocol=protocol,
+                    priority=priority,
+                    ip=ip,
+                    port=port,
+                    type=candidate_type,
+                    sdpMid=candidate_dict.get("sdpMid"),
+                    sdpMLineIndex=candidate_dict.get("sdpMLineIndex")
+                )
+                
+                # Run add ICE candidate in a protected way
+                try:
+                    add_task = asyncio.create_task(pc.addIceCandidate(ice_candidate))
+                    await asyncio.wait_for(add_task, timeout=2.0)
+                    logger.info(f"Added ICE candidate for client {client_id}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout adding ICE candidate for {client_id}")
+                except Exception as e:
+                    logger.error(f"Error in addIceCandidate task: {str(e)}")
+            else:
+                logger.warning(f"Invalid ICE candidate format: {candidate_str}")
+
+        except Exception as e:
+            logger.error(f"Error processing ICE candidate: {str(e)}")
+            traceback.print_exc() 

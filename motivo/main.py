@@ -13,6 +13,7 @@ from utils.smpl_utils import qpos_to_smpl, smpl_to_qpose
 from pathlib import Path
 import base64
 from aiortc import RTCIceCandidate
+import time
 
 from env_setup import setup_environment
 from buffer_utils import download_buffer
@@ -142,6 +143,11 @@ async def handle_websocket(websocket):
     client_info = f"{websocket.remote_address[0]}:{websocket.remote_address[1]}" if hasattr(websocket, 'remote_address') else "Unknown"
     print(f"\n=== New WebSocket Connection Established from {client_info} ===")
     
+    # Generate a unique client ID for this connection
+    client_id = f"{client_info}_{int(time.time() * 1000)}"
+    # Store client ID with the websocket for later reference
+    websocket.client_id = client_id
+    
     app_state.ws_manager.connected_clients.add(websocket)
     print(f"Total connections: {len(app_state.ws_manager.connected_clients)}")
     
@@ -152,6 +158,7 @@ async def handle_websocket(websocket):
                 "type": "connection_established",
                 "message": "Successfully connected to WebSocket server",
                 "timestamp": datetime.now().isoformat(),
+                "client_id": client_id,
                 "server_info": {
                     "backend_domain": BACKEND_DOMAIN,
                     "ws_port": WS_PORT
@@ -165,7 +172,7 @@ async def handle_websocket(websocket):
         async for message in websocket:
             try:
                 # Log the raw message for debugging
-                print(f"Received message from {client_info}: {message[:100]}...")
+                #print(f"Received message from {client_info}: {message[:100]}...")
                 
                 data = json.loads(message)
                 
@@ -176,13 +183,13 @@ async def handle_websocket(websocket):
                     
                     if client_id and sdp:
                         # Unconditional WebRTC logging - always log regardless of environment
-                        print(f"[WEBRTC-DIAG] Offer received from client {client_id}")
+                        #print(f"[WEBRTC-DIAG] Offer received from client {client_id}")
                         codec_lines = [line for line in sdp.split('\n') if 'a=rtpmap:' in line]
-                        print(f"[WEBRTC-DIAG] Client codecs: {codec_lines}")
+                        #print(f"[WEBRTC-DIAG] Client codecs: {codec_lines}")
                         
                         # Check if there's a video section in the SDP
                         video_section = "m=video" in sdp
-                        print(f"[WEBRTC-DIAG] SDP contains video section: {video_section}")
+                        #print(f"[WEBRTC-DIAG] SDP contains video section: {video_section}")
                         
                         answer = await app_state.webrtc_manager.handle_offer(client_id, sdp)
                         
@@ -196,9 +203,9 @@ async def handle_websocket(websocket):
                         }))
                         
                         # Always log answer details
-                        print(f"[WEBRTC-DIAG] Answer sent to client {client_id}, type: {answer['type']}")
+                        #print(f"[WEBRTC-DIAG] Answer sent to client {client_id}, type: {answer['type']}")
                         server_codec_lines = [line for line in answer["sdp"].split('\n') if 'a=rtpmap:' in line]
-                        print(f"[WEBRTC-DIAG] Server codecs: {server_codec_lines}")
+                        #print(f"[WEBRTC-DIAG] Server codecs: {server_codec_lines}")
                     continue
                 
                 # Handle new ping messages from client
@@ -249,12 +256,12 @@ async def handle_websocket(websocket):
                             candidate_type = "unknown"
                             if "typ " in candidate_str:
                                 candidate_type = candidate_str.split("typ ")[1].split()[0]
-                            print(f"[WEBRTC-DIAG] ICE candidate from client {client_id}: type={candidate_type}")
+                            #print(f"[WEBRTC-DIAG] ICE candidate from client {client_id}: type={candidate_type}")
                             
                             # Extract IP address for network debugging if present
                             if len(candidate_str.split()) >= 5:
                                 ip = candidate_str.split()[4]
-                                print(f"[WEBRTC-DIAG] ICE candidate IP: {ip}")
+                                #print(f"[WEBRTC-DIAG] ICE candidate IP: {ip}")
                             
                             # The format is typically: candidate:foundation component protocol priority ip port type ...
                             # Example: candidate:0 1 UDP 2122252543 192.168.1.100 49923 typ host
@@ -301,8 +308,22 @@ async def handle_websocket(websocket):
                 await app_state.message_handler.handle_message(websocket, message)
                 
     except websockets.exceptions.ConnectionClosed:
-        print("Client disconnected")
+        print(f"Client {client_info} disconnected")
     finally:
+        # Simple fix: Try to find and close any WebRTC connections for this client
+        # This will help prevent NoneType errors during page reloads
+        try:
+            # Get client address as identifier
+            client_ip = websocket.remote_address[0] if hasattr(websocket, 'remote_address') else None
+            if client_ip:
+                # Look for any connections that might be from this client and close them
+                for client_id in list(app_state.webrtc_manager.peer_connections.keys()):
+                    if client_ip in client_id:
+                        asyncio.create_task(app_state.webrtc_manager.close_peer_connection(client_id))
+                        
+        except Exception as e:
+            print(f"Error during WebRTC cleanup: {str(e)}")
+            
         app_state.ws_manager.connected_clients.discard(websocket)
         print(f"Client disconnected. Total connections: {len(app_state.ws_manager.connected_clients)}")
 
@@ -390,13 +411,6 @@ async def run_simulation():
             is_computing=app_state.message_handler.is_computing_reward
         )
         
-        # Now send the frame WITH overlays to WebRTC - log every 50 frames
-        if frame_count % 50 == 0:
-            print(f"[WEBRTC-DIAG] Sending frame {frame_count} to WebRTC - shape: {frame_with_overlays.shape}")
-            # Log active connections
-            active_connections = sum(1 for pc in app_state.webrtc_manager.peer_connections.values() 
-                                  if pc.connectionState == "connected")
-            print(f"[WEBRTC-DIAG] Active WebRTC connections: {active_connections}/{len(app_state.webrtc_manager.peer_connections)}")
         
         # Run WebRTC frame update in a separate thread to avoid blocking the simulation loop
         # Make a copy of the frame to avoid race conditions
@@ -465,11 +479,19 @@ async def main():
         
         # Try to get from cache first
         cache_key = app_state.context_cache.get_cache_key(default_config)
+        #print(f"DEBUG: Cache key is: {cache_key}")
+        #print(f"DEBUG: Default config is: {json.dumps(default_config, sort_keys=True)}")
         default_z, _ = app_state.context_cache._get_cached_context_impl(cache_key)
-        
+
         if default_z is None:
             print("\nDefault context not found in cache, computing...")
+            # Compute the context
             default_z = await app_state.get_reward_context(default_config)
+            # Save it explicitly to the cache ONLY if it didn't exist before
+            app_state.context_cache._save_to_disk(cache_key, default_z)
+            # Also add to memory cache
+            if len(app_state.context_cache.computation_cache) < app_state.context_cache.max_memory_entries:
+                app_state.context_cache.computation_cache[cache_key] = default_z
         else:
             print("\nUsing cached default context")
             
@@ -477,6 +499,8 @@ async def main():
             raise RuntimeError("Failed to compute initial context")
             
         app_state.message_handler.set_default_z(default_z)
+        
+      
         
         print("\nStarting WebSocket server and simulation...")
         server = await websockets.serve(handle_websocket, "0.0.0.0", WS_PORT)
@@ -494,6 +518,33 @@ async def main():
         await app_state.webrtc_manager.close_all_connections()
         app_state.display_manager.cleanup()
         app_state.thread_pool.shutdown()
+
+# Add a global exception handler for asyncio
+def global_exception_handler(loop, context):
+    # Extract exception and message
+    exception = context.get('exception')
+    message = context.get('message')
+
+    print(f"Exception from global_exception_handler: {exception}")
+    
+    # Check for the specific NoneType errors we want to suppress
+    if exception and isinstance(exception, AttributeError) and "'NoneType' object has no attribute" in str(exception):
+        # Just log it and suppress the error
+        print(f"Suppressed NoneType attribute error: {str(exception)}")
+        return
+    
+    # Also check for the error in the message
+    if message and "'NoneType' object has no attribute" in message:
+        # Just log it and suppress the error
+        print(f"Suppressed NoneType attribute error from message: {message}")
+        return
+        
+    # For all other exceptions, use the default handler
+    loop.default_exception_handler(context)
+
+# Set the exception handler
+loop = asyncio.get_event_loop()
+loop.set_exception_handler(global_exception_handler)
 
 if __name__ == "__main__":
     asyncio.run(main())
