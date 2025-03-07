@@ -9,7 +9,7 @@
   import { io } from 'socket.io-client';
 
   const API_URL = import.meta.env.VITE_API_URL;
-  const FLASK_URL = 'http://localhost:5002';
+  const FLASK_URL = API_URL;
   
   let flaskSocket = null;
 
