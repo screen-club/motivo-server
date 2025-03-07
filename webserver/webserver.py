@@ -5,6 +5,7 @@ import traceback
 from datetime import datetime
 import subprocess
 import ffmpeg
+import time
 
 # Third-party imports
 from flask import Flask, send_from_directory, request, jsonify, send_file
@@ -13,6 +14,9 @@ from anthropic import Anthropic
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 import requests
+from flask_socketio import SocketIO, emit
+from gemini_service import GeminiService
+import threading
 
 # Add these imports at the top
 from flask import Flask, send_from_directory, request, jsonify, send_file
@@ -29,7 +33,7 @@ VITE_API_URL = os.getenv('VITE_API_URL') or 'localhost'
 VITE_API_PORT = os.getenv('VITE_API_PORT') or 5002
 VITE_VIBE_URL = os.getenv('VITE_VIBE_URL') or 5000
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY' or "")
-
+GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY' or "")
 if not ANTHROPIC_API_KEY:
     raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
 
@@ -93,6 +97,170 @@ except Exception as e:
 
 # Add chat history storage
 chat_histories = {}
+
+# Initialize Flask-SocketIO after app initialization
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Initialize Gemini service
+try:
+    gemini_service = GeminiService(port=5002, api_key=GOOGLE_API_KEY)
+    gemini_service.start()
+    print("Gemini service initialized successfully")
+    
+    # Broadcast initial connection status after delay to ensure UI is ready
+    def broadcast_initial_status():
+        time.sleep(3)  # Give service time to connect
+        connected = gemini_service.is_connected()
+        socketio.emit('gemini_connection_status', {
+            'connected': connected,
+            'timestamp': time.time()
+        })
+    
+    threading.Thread(target=broadcast_initial_status, daemon=True).start()
+    
+except Exception as e:
+    print(f"Error initializing Gemini service: {str(e)}")
+    gemini_service = None
+
+# Create a background thread to process Gemini messages
+def process_gemini_messages():
+    """Process incoming messages from Gemini service"""
+    # Create a local logging reference
+    logger = logging.getLogger("webserver.gemini")
+    
+    while True:
+        if gemini_service:
+            def handle_message(message):
+                try:
+                    # Log the received message type for debugging
+                    logger.info(f"Processing Gemini message type: {message.get('type')}")
+                    
+                    # Broadcast message to all connected clients
+                    socketio.emit('gemini_response', {
+                        'type': message.get('type', 'gemini_response'),
+                        'content': message.get('content', ''),
+                        'timestamp': message.get('timestamp', time.time()),
+                        'complete': message.get('complete', False)  # Include completion status
+                    })
+                    logger.info(f"Broadcasted message to clients: {message.get('type')}")
+                except Exception as e:
+                    logger.error(f"Error handling Gemini message: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Process any pending messages with proper error handling
+            try:
+                gemini_service.process_incoming_messages(handle_message)
+            except Exception as e:
+                logger.error(f"Error in Gemini message processing: {str(e)}")
+                import traceback
+                traceback.print_exc()
+        
+        # Small sleep to prevent high CPU usage
+        time.sleep(0.1)
+
+# Start the background thread
+gemini_thread = threading.Thread(target=process_gemini_messages)
+gemini_thread.daemon = True
+gemini_thread.start()
+
+# Socket.IO event handlers
+@socketio.on('connect')
+def handle_connect():
+    """Handle Socket.IO client connection"""
+    print(f"Client connected to Socket.IO: {request.sid}")
+    
+    # Send initial connection status for Gemini
+    if gemini_service:
+        connected = gemini_service.is_connected()
+        emit('gemini_connection_status', {
+            'connected': connected,
+            'timestamp': time.time()
+        })
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle Socket.IO client disconnection"""
+    print(f"Client disconnected from Socket.IO: {request.sid}")
+
+@socketio.on('gemini_connect')
+def handle_gemini_connect():
+    """Handle dedicated Gemini connection"""
+    print(f"Client requesting Gemini connection: {request.sid}")
+    
+    # Send current status immediately
+    if gemini_service:
+        connected = gemini_service.is_connected()
+        emit('gemini_status', {
+            'connected': connected,
+            'timestamp': time.time()
+        })
+
+@socketio.on('gemini_message')
+def handle_gemini_message(data):
+    """Handle text message to Gemini"""
+    if not gemini_service:
+        emit('gemini_error', {
+            'message': 'Gemini service not available',
+            'timestamp': time.time()
+        })
+        return
+    
+    text = data.get('text', '')
+    success = gemini_service.send_text(text)
+    
+    # Acknowledge receipt
+    emit('gemini_message_sent', {
+        'success': success,
+        'timestamp': time.time()
+    })
+
+@socketio.on('gemini_capture')
+def handle_gemini_capture():
+    """Capture frame for Gemini"""
+    if not gemini_service:
+        emit('gemini_error', {
+            'message': 'Gemini service not available',
+            'timestamp': time.time()
+        })
+        return
+    
+    success = gemini_service.capture_frame()
+    
+    # Acknowledge receipt
+    emit('gemini_capture_sent', {
+        'success': success,
+        'timestamp': time.time()
+    })
+
+@socketio.on('check_gemini_connection')
+def handle_check_gemini_connection():
+    """Check and report Gemini connection status"""
+    print("Client requested Gemini connection status")
+    
+    connected = False
+    if gemini_service:
+        connected = gemini_service.is_connected()
+    
+    print(f"Gemini connection status: {connected}")
+    
+    emit('gemini_connection_status', {
+        'connected': connected,
+        'timestamp': time.time()
+    })
+
+@socketio.on('gemini_clear_conversation')
+def handle_gemini_clear_conversation(data):
+    """Handle clear conversation requests"""
+    client_id = data.get('client_id')
+    # For now, we don't need to do anything special here
+    # as the Gemini service doesn't maintain conversation state
+    emit('gemini_response', {
+        'type': 'status',
+        'content': 'Conversation cleared',
+        'success': True,
+        'timestamp': time.time()
+    })
 
 @app.route('/')
 def serve_index():
@@ -400,5 +568,53 @@ def ping():
         "timestamp": datetime.now().isoformat()
     })
 
+# Define the shared frames path (matching the path in main.py)
+STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage'))
+SHARED_FRAMES_DIR = os.path.join(STORAGE_DIR, 'shared_frames')
+GEMINI_FRAME_PATH = os.path.join(SHARED_FRAMES_DIR, 'latest_frame.jpg')
+
+@app.route('/shared_frame', methods=['GET'])
+def get_latest_frame():
+    """Serve the latest frame from the simulation"""
+    try:
+        # Check if file exists and is recent
+        if os.path.exists(GEMINI_FRAME_PATH):
+            # Check timestamp file first
+            timestamp_path = os.path.join(SHARED_FRAMES_DIR, 'timestamp.txt')
+            if os.path.exists(timestamp_path):
+                try:
+                    with open(timestamp_path, 'r') as f:
+                        timestamp = float(f.read().strip())
+                        age = time.time() - timestamp
+                except:
+                    # Fall back to file modification time
+                    age = time.time() - os.path.getmtime(GEMINI_FRAME_PATH)
+            else:
+                age = time.time() - os.path.getmtime(GEMINI_FRAME_PATH)
+                
+            if age > 10:  # If older than 10 seconds
+                return jsonify({
+                    'error': 'Frame is too old', 
+                    'age': age,
+                    'timestamp': datetime.fromtimestamp(time.time() - age).isoformat()
+                }), 404
+                
+            return send_file(GEMINI_FRAME_PATH, mimetype='image/jpeg')
+        else:
+            return jsonify({'error': 'No frame available'}), 404
+    except Exception as e:
+        print(f"Error serving frame: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+# Add a function to broadcast Gemini responses to all clients
+def broadcast_gemini_response(response):
+    """Broadcast Gemini response to all clients"""
+    socketio.emit('gemini_response', response)
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5002, debug=True)
+    try:
+        socketio.run(app, host='0.0.0.0', port=5002, debug=True, allow_unsafe_werkzeug=True)
+    except KeyboardInterrupt:
+        print("Shutting down...")
+        if gemini_service:
+            gemini_service.stop()

@@ -52,7 +52,6 @@ class WebRTCService {
       ...this._logs.slice(0, this.maxLogEntries - 1),
     ];
     connectionLogs.set(this._logs);
-    console.log(`${timestamp}: ${message}`);
   }
 
   // Set video element reference

@@ -37,6 +37,15 @@ API_PORT = os.getenv("VITE_API_PORT", 5000)
 WEBSERVER_PORT = os.getenv("VITE_WEBSERVER_PORT", 5002)
 VITE_WS_URL = os.getenv("VITE_WS_URL", f"ws://{BACKEND_DOMAIN}:{WS_PORT}")
 
+# Add near other global constants
+# Use a shared storage directory at the project root level
+STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), 'storage'))
+SHARED_FRAMES_DIR = os.path.join(STORAGE_DIR, 'shared_frames')
+GEMINI_FRAME_PATH = os.path.join(SHARED_FRAMES_DIR, 'latest_frame.jpg')
+
+# Create the directory structure if it doesn't exist
+os.makedirs(SHARED_FRAMES_DIR, exist_ok=True)
+
 def get_cached_model(model_name: str, cache_dir: str = "./storage/cache") -> FBcprModel:
     """
     Get model from cache if it exists, otherwise download and cache it.
@@ -337,7 +346,7 @@ async def run_simulation():
     
     # Add counter for frame diagnostics
     frame_count = 0
-    black_frame_count = 0
+    last_frame_save_time = 0
     
     while True:
         # Get action and step environment
@@ -411,6 +420,19 @@ async def run_simulation():
             is_computing=app_state.message_handler.is_computing_reward
         )
         
+        # Save frame for Gemini periodically (every 1 second)
+        current_time = time.time()
+        if current_time - last_frame_save_time >= 1.0:
+            try:
+                # Convert from RGB to BGR for OpenCV
+                save_frame = cv2.cvtColor(frame_with_overlays.copy(), cv2.COLOR_RGB2BGR)
+                cv2.imwrite(GEMINI_FRAME_PATH, save_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                # Also save a timestamp file to track when the frame was saved
+                with open(os.path.join(SHARED_FRAMES_DIR, 'timestamp.txt'), 'w') as f:
+                    f.write(str(current_time))
+                last_frame_save_time = current_time
+            except Exception as e:
+                print(f"Error saving frame for Gemini: {str(e)}")
         
         # Run WebRTC frame update in a separate thread to avoid blocking the simulation loop
         # Make a copy of the frame to avoid race conditions
