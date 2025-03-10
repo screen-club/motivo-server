@@ -2,6 +2,9 @@
   import { onMount } from 'svelte';
   import { websocketService } from '../../services/websocketService';
   import { PoseService } from '../../services/poses';
+  import { parameterStore } from '../../stores/parameterStore';
+  import PresetTimelineEnvelope from './PresetTimelineEnvelope.svelte';
+
   
   export let duration = 180;
   export let placedPresets = [];
@@ -22,16 +25,8 @@
   let panStartX = 0;
   let panStartViewport = 0;
 
-  // Resize variables
-  let isResizing = false;
-  let resizingPreset = null;
-  let resizeStartX = 0;
-  let originalWidth = 0;
-  let resizingSide = null; // 'left' or 'right'
-  let resizePresetStartPosition = 0;
-  let presetElements = new Map(); // Map to store references to preset elements
-  let originalSpeedFactor = 1;
-  let originalStartFrame = 0;
+
+  $:console.log($parameterStore)
 
   // Handle duration change
   function handleDurationChange(event) {
@@ -58,9 +53,7 @@
       const frames = Array.isArray(preset.data.pose) ? preset.data.pose.length :
                     Array.isArray(preset.data.qpos) ? preset.data.qpos.length : 1;
       const fps = 30; // Fixed at 30fps as requested
-      const speedFactor = preset.data.speedFactor || 1;
-      const startFrame = preset.data.startFrame || 0;
-      const animationDuration = ((frames - startFrame) / fps) / speedFactor;
+      const animationDuration = frames / fps;
       const width = (animationDuration / viewportDuration) * 100;
       return `${width}%`;
     }
@@ -74,20 +67,7 @@
     const frames = Array.isArray(preset.data.pose) ? preset.data.pose.length :
                   Array.isArray(preset.data.qpos) ? preset.data.qpos.length : 1;
     const fps = 30; // Fixed at 30fps
-    const startFrame = preset.data.startFrame || 0;
-    return (frames - startFrame) / fps;
-  }
-
-  // Store a reference to a preset element
-  function bindPresetElement(element, preset) {
-    if (element) {
-      presetElements.set(preset.id, element);
-    }
-  }
-
-  // Get the element for a preset
-  function getPresetElement(preset) {
-    return presetElements.get(preset.id);
+    return frames / fps;
   }
 
   // Handle zoom functionality
@@ -114,7 +94,7 @@
 
   // Handle panning
   function handlePanStart(event) {
-    if (event.buttons === 1 && !isResizing && !isDraggingPreset) {
+    if (event.buttons === 1 && !isDraggingPreset) {
       isPanning = true;
       panStartX = event.clientX;
       panStartViewport = viewportStart;
@@ -133,115 +113,6 @@
 
   function handlePanEnd() {
     isPanning = false;
-  }
-
-  // Handle resize functionality
-  function handleResizeStart(event, preset, side = 'right') {
-    event.stopPropagation();
-    event.preventDefault();
-    isResizing = true;
-    resizingPreset = preset;
-    resizeStartX = event.clientX;
-    resizingSide = side;
-    resizePresetStartPosition = preset.position;
-    originalSpeedFactor = preset.data?.speedFactor || 1;
-    originalStartFrame = preset.data?.startFrame || 0;
-    
-    const element = getPresetElement(preset);
-    if (element) {
-      originalWidth = element.offsetWidth;
-    }
-  }
-
-  function handleResizeMove(event) {
-    if (!isResizing || !resizingPreset) return;
-    
-    const element = getPresetElement(resizingPreset);
-    if (!element) return;
-    
-    const timelineRect = timelineRef.getBoundingClientRect();
-    const deltaX = event.clientX - resizeStartX;
-    
-    if (resizingSide === 'right') {
-      // Get maximum possible duration for this animation
-      const maxDuration = getMaxAnimationDuration(resizingPreset);
-      const minSpeed = 0.2;  // Slowest allowed speed (5x slower)
-      const maxWidth = (maxDuration / minSpeed) / viewportDuration * timelineRect.width;
-      
-      // For right resize, we allow both positive (enlarging) and negative (shrinking) changes
-      // Calculate new width based on raw deltaX (no dampening for scaling up)
-      let newWidth = originalWidth + deltaX;
-      
-      // Constrain newWidth between minimum and maximum
-      newWidth = Math.max(20, Math.min(newWidth, maxWidth));
-      
-      // Apply the new width to the element
-      element.style.width = `${newWidth}px`;
-      
-      // Calculate new speed factor based on width change
-      const widthRatio = newWidth / originalWidth;
-      const newSpeedFactor = originalSpeedFactor / widthRatio;
-      
-      // Update the preset data if the new speed factor is within allowed range
-      if (newSpeedFactor >= 0.2 && newSpeedFactor <= 5) {
-        resizingPreset.data = {
-          ...resizingPreset.data,
-          speedFactor: newSpeedFactor
-        };
-      }
-      
-      // Update the debug info for better feedback
-      const speedDisplay = document.querySelector('.speed-display');
-      if (speedDisplay) {
-        speedDisplay.textContent = `Speed: ${newSpeedFactor.toFixed(2)}x`;
-      }
-    } else {
-      // Left side - only allow positive deltaX (making element smaller from left)
-      const maxLeftMove = Math.min(originalWidth - 20, resizePresetStartPosition / viewportDuration * timelineRect.width);
-      const leftDeltaX = Math.min(maxLeftMove, Math.max(0, deltaX));
-      
-      // Calculate the new width (smaller than original)
-      const newWidth = Math.max(20, originalWidth - leftDeltaX);
-      element.style.width = `${newWidth}px`;
-      
-      // Move the element to the right
-      const newLeft = ((resizePresetStartPosition - viewportStart) / viewportDuration) * 100 + (leftDeltaX / timelineRect.width) * 100;
-      element.style.left = `${newLeft}%`;
-      
-      // Calculate the new start frame (only allow increasing the start frame)
-      const frames = resizingPreset.data?.pose?.length || 
-                     resizingPreset.data?.qpos?.length || 60;
-      const frameRatio = leftDeltaX / originalWidth;
-      const startFrameChange = Math.floor(frameRatio * frames);
-      const newStartFrame = Math.min(frames - 10, originalStartFrame + startFrameChange);
-      
-      // Update position and start frame
-      resizingPreset.position = resizePresetStartPosition + (leftDeltaX / timelineRect.width) * viewportDuration;
-      resizingPreset.data = {
-        ...resizingPreset.data,
-        startFrame: newStartFrame
-      };
-    }
-  }
-
-  function handleResizeEnd() {
-    if (resizingPreset) {
-      const element = getPresetElement(resizingPreset);
-      if (element) {
-        // Reset the style to let the calculated width take over
-        element.style.width = '';
-        element.style.left = '';
-      }
-      
-      // Force a re-render to ensure all presets show correctly
-      placedPresets = [...placedPresets];
-    }
-    
-    isResizing = false;
-    resizingPreset = null;
-    resizeStartX = 0;
-    originalWidth = 0;
-    resizingSide = null;
   }
   
   // Handle drop for both new presets and moving existing ones
@@ -270,8 +141,7 @@
                         Array.isArray(preset.data.qpos) ? preset.data.qpos.length : 1;
           // Use fixed 30fps
           const fps = 30;
-          const speedFactor = preset.data.speedFactor || 1;
-          presetDuration = (frames / fps) / speedFactor;
+          presetDuration = frames / fps;
         }
 
         dropPosition = Math.min(dropPosition, duration - presetDuration);
@@ -279,12 +149,7 @@
         placedPresets = [...placedPresets, {
           ...preset,
           position: dropPosition,
-          duration: presetDuration,
-          data: {
-            ...preset.data,
-            startFrame: 0, // Initialize startFrame for new presets
-            speedFactor: preset.data?.speedFactor || 1
-          }
+          duration: presetDuration
         }].sort((a, b) => a.position - b.position);
       } catch (error) {
         console.error('Failed to parse dropped preset:', error);
@@ -294,7 +159,7 @@
 
   // Handle timeline click to move playhead
   function handleTimelineClick(event) {
-    if (isResizing || isPanning) return;
+    if (isPanning) return;
     
     const timelineRect = timelineRef.getBoundingClientRect();
     const clickX = event.clientX - timelineRect.left;
@@ -307,27 +172,12 @@
     stopAllAnimations();
     
     placedPresets.forEach(preset => {
-      // Calculate actual end position taking into account resizing
-      const actualDuration = getActualPresetDuration(preset);
-      const presetEnd = preset.position + actualDuration;
+      const presetEnd = preset.position + (preset.duration || 2);
       
       if (currentTime >= preset.position && currentTime < presetEnd) {
         activatePreset(preset);
       }
     });
-  }
-
-  // Calculate the actual duration of a preset after resizing
-  function getActualPresetDuration(preset) {
-    if (preset.data?.pose || preset.data?.qpos) {
-      const frames = Array.isArray(preset.data.pose) ? preset.data.pose.length :
-                    Array.isArray(preset.data.qpos) ? preset.data.qpos.length : 1;
-      const fps = 30; // Fixed at 30fps
-      const speedFactor = preset.data.speedFactor || 1;
-      const startFrame = preset.data.startFrame || 0;
-      return ((frames - startFrame) / fps) / speedFactor;
-    }
-    return preset.duration || 2;
   }
 
   // Handle preset selection
@@ -405,9 +255,7 @@
     currentTime = (Date.now() - startTime) / 1000;
     
     placedPresets.forEach(preset => {
-      // Calculate actual end position taking into account resizing
-      const actualDuration = getActualPresetDuration(preset);
-      const presetEnd = preset.position + actualDuration;
+      const presetEnd = preset.position + (preset.duration || 2);
       
       if (prevTime < preset.position && currentTime >= preset.position) {
         activatePreset(preset);
@@ -431,14 +279,6 @@
   // Activate preset via websocket
   async function activatePreset(preset) {
     try {
-      // Check if currentTime is within the valid range of the resized animation
-      const actualDuration = getActualPresetDuration(preset);
-      const presetEnd = preset.position + actualDuration;
-      
-      if (currentTime < preset.position || currentTime >= presetEnd) {
-        return; // Skip if current time is outside the resized animation bounds
-      }
-      
       if (preset.data?.environmentParams) {
         await websocketService.send({
           type: "update_parameters",
@@ -450,16 +290,15 @@
       if (preset.type === 'pose' || preset.data?.pose) {
         const relativePosition = currentTime - preset.position;
         const fps = 30; // Fixed at 30fps
-        const speedFactor = preset.data.speedFactor || 1;
         
         if (Array.isArray(preset.data.pose)) {
           const elapsedSeconds = relativePosition;
-          const startFrame = Math.floor(elapsedSeconds * fps * speedFactor) + (preset.data.startFrame || 0);
+          const startFrame = Math.floor(elapsedSeconds * fps);
           
           if (!currentAnimations.has(preset.id)) {
             const intervalId = await PoseService.handleAnimationPlayback(
               preset,
-              fps * speedFactor,
+              fps,
               startFrame
             );
             if (intervalId) {
@@ -592,9 +431,6 @@
     on:mousemove={handlePanMove}
     on:mouseup={handlePanEnd}
     on:mouseleave={handlePanEnd}
-    on:mousemove={handleResizeMove}
-    on:mouseup={handleResizeEnd}
-    on:mouseleave={handleResizeEnd}
   >
     <!-- Timeline markers every 10 seconds -->
     {#each generateTimeMarkers() as time}
@@ -625,8 +461,7 @@
             left: {((preset.position - viewportStart) / viewportDuration) * 100}%;
             width: {getPresetWidth(preset)};
           "
-          use:bindPresetElement={preset}
-          draggable={!isResizing}
+          draggable={true}
           on:dragstart={(e) => handlePresetDragStart(e, preset)}
           on:click={(e) => handlePresetClick(e, preset)}
         >
@@ -639,30 +474,12 @@
               muted
             ></video>
           {/if}
-          
-          <!-- Left resize handle -->
-          <div 
-            class="absolute left-0 top-0 w-4 h-full cursor-ew-resize bg-green-500 opacity-20 hover:opacity-50"
-            on:mousedown={(e) => handleResizeStart(e, preset, 'left')}
-          ></div>
-          
-          <!-- Right resize handle -->
-          <div 
-            class="absolute right-0 top-0 w-4 h-full cursor-ew-resize bg-blue-500 opacity-20 hover:opacity-50"
-            on:mousedown={(e) => handleResizeStart(e, preset, 'right')}
-          ></div>
-          
-          <!-- Show start frame/speed info when resizing -->
-          {#if resizingPreset === preset}
-            <div class="absolute -bottom-6 left-0 text-xs bg-black text-white px-1 py-0.5 rounded whitespace-nowrap speed-display">
-              {resizingSide === 'left' ? `Start: ${preset.data?.startFrame || 0}` : `Speed: ${(preset.data?.speedFactor || 1).toFixed(2)}x`}
-            </div>
-          {/if}
         </div>
       {/if}
     {/each}
   </div>
 </div>
+<PresetTimelineEnvelope currentTime={currentTime} />
 <style>
 input[type="range"] {
   -webkit-appearance: none;
