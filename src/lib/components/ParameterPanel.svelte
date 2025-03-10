@@ -3,6 +3,7 @@
   import { websocketService } from '../services/websocketService';
   import ParameterControl from './ParameterControl.svelte';
   import ParameterGroup from './ParameterGroup.svelte';
+  import SetCurrentEnvelope from './Buttons/SetCurrentEnvelope.svelte';
 
   // Subscribe to the store values
   $: parameters = $parameterStore;
@@ -38,6 +39,7 @@
           defaultValue={-9.81}
           on:change={handleParameterChange}
         />
+
         <ParameterControl
           name="density"
           label="Density"
