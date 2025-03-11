@@ -479,7 +479,12 @@
     {/each}
   </div>
 </div>
-<PresetTimelineEnvelope currentTime={currentTime} />
+<PresetTimelineEnvelope 
+  currentTime={currentTime} 
+  duration={duration}
+  viewportStart={viewportStart}
+  viewportDuration={viewportDuration}
+/>
 <style>
 input[type="range"] {
   -webkit-appearance: none;
