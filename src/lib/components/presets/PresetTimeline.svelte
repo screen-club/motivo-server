@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
-  import { websocketService } from '../../services/websocket';
+  import { slide } from 'svelte/transition';
+  import { websocketService } from '../../services/websocketService';
   import { PoseService } from '../../services/poses';
   import { parameterStore } from '../../stores/parameterStore';
   import PresetTimelineEnvelope from './PresetTimelineEnvelope.svelte';
@@ -24,7 +25,9 @@
   let isPanning = false;
   let panStartX = 0;
   let panStartViewport = 0;
-
+  
+  // Add envelope visibility toggle
+  let showEnvelope = false;
 
   $:console.log($parameterStore)
 
@@ -415,6 +418,15 @@
       <span class="text-sm text-gray-600">{duration}s</span>
     </div>
     
+    <!-- Add envelope toggle button -->
+    <button 
+      class="px-3 py-2 {showEnvelope ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'} rounded-md hover:opacity-90"
+      on:click={() => showEnvelope = !showEnvelope}
+      title="Toggle parameter envelope"
+    >
+      {showEnvelope ? '📈 Hide Envelope' : '📈 Show Envelope'}
+    </button>
+    
     <div class="text-sm text-gray-600 ml-auto">
       Current Time: {formatTime(currentTime)} / {formatTime(duration)}
     </div>
@@ -479,12 +491,19 @@
     {/each}
   </div>
 </div>
-<PresetTimelineEnvelope 
-  currentTime={currentTime} 
-  duration={duration}
-  viewportStart={viewportStart}
-  viewportDuration={viewportDuration}
-/>
+
+<!-- Conditionally render the envelope component with transition -->
+{#if showEnvelope}
+  <div transition:slide={{ duration: 300 }}>
+    <PresetTimelineEnvelope 
+      currentTime={currentTime} 
+      duration={duration}
+      viewportStart={viewportStart}
+      viewportDuration={viewportDuration}
+    />
+  </div>
+{/if}
+
 <style>
 input[type="range"] {
   -webkit-appearance: none;
@@ -501,5 +520,4 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 50%;
   cursor: pointer;
 }
-
 </style>
