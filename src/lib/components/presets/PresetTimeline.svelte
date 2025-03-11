@@ -19,6 +19,8 @@
   let selectedPreset = null;
   let currentAnimations = new Map(); // Track running animations
   let isDraggingPreset = null;
+  let envelopeComponent;
+  let envelopes = {};
   
   // Zoom and pan variables
   let zoomLevel = 1;
@@ -32,6 +34,21 @@
   let showEnvelope = false;
 
   $:console.log($parameterStore)
+
+  // Add a watch for the showEnvelope toggle
+  $: if (showEnvelope && envelopeComponent && Object.keys(envelopes).length > 0) {
+    envelopeComponent.loadEnvelopes(envelopes);
+  }
+
+  // Update the button handler
+  function toggleEnvelope() {
+    showEnvelope = !showEnvelope;
+    if (showEnvelope && envelopeComponent && Object.keys(envelopes).length > 0) {
+      setTimeout(() => {
+        envelopeComponent.loadEnvelopes(envelopes);
+      }, 100);
+    }
+  }
 
   // Handle duration change
   function handleDurationChange(event) {
@@ -177,6 +194,12 @@
     }
   }
 
+  // Handle envelope changes
+  function handleEnvelopeChanged(event) {
+    envelopes = event.detail.envelopes;
+    saveTimelineChanges();
+  }
+
   // Function to save timeline changes to the database
   async function saveTimelineChanges() {
     if (!timelineId) return;
@@ -184,7 +207,8 @@
     try {
       const timelineData = {
         duration,
-        placedPresets
+        placedPresets,
+        envelopes
       };
       
       await DbService.updateConfig(timelineId, {
@@ -210,6 +234,11 @@
     }
     
     stopAllAnimations();
+    
+    // Apply envelope values for the current time if available
+    if (showEnvelope && envelopes) {
+      applyEnvelopeValues(currentTime);
+    }
     
     placedPresets.forEach(preset => {
       const presetEnd = preset.position + (preset.duration || 2);
@@ -299,6 +328,11 @@
     const prevTime = currentTime;
     currentTime = (Date.now() - startTime) / 1000;
     
+    // Apply envelope values for the current time if available
+    if (showEnvelope && envelopes) {
+      applyEnvelopeValues(currentTime);
+    }
+    
     placedPresets.forEach(preset => {
       const presetEnd = preset.position + (preset.duration || 2);
       
@@ -319,6 +353,48 @@
     if (isPlaying) {
       animationFrame = requestAnimationFrame(playTimeline);
     }
+  }
+
+  // Add a function to apply envelope values
+  function applyEnvelopeValues(time) {
+    if (!envelopes) return;
+    
+    // For each parameter with envelope data
+    Object.keys(envelopes).forEach(param => {
+      const points = envelopes[param];
+      if (!points || points.length < 2) return;
+      
+      // Get interpolated value at current time
+      const value = getValueAtTime(param, time);
+      
+      // Update parameter store
+      parameterStore.updateParameter(param, value);
+    });
+  }
+
+  // Function to get interpolated value at time
+  function getValueAtTime(param, time) {
+    if (!envelopes[param]) return null;
+    
+    const sortedPoints = [...envelopes[param]].sort((a, b) => a.time - b.time);
+    
+    // Handle edge cases
+    if (time <= sortedPoints[0].time) return sortedPoints[0].value;
+    if (time >= sortedPoints[sortedPoints.length - 1].time) return sortedPoints[sortedPoints.length - 1].value;
+    
+    // Find the two points that surround the current time
+    for (let i = 0; i < sortedPoints.length - 1; i++) {
+      const current = sortedPoints[i];
+      const next = sortedPoints[i + 1];
+      
+      if (time >= current.time && time <= next.time) {
+        // Linear interpolation between points
+        const ratio = (time - current.time) / (next.time - current.time);
+        return current.value + ratio * (next.value - current.value);
+      }
+    }
+    
+    return sortedPoints[0].value; // Fallback
   }
   
   // Activate preset via websocket
@@ -400,7 +476,7 @@
     return markers;
   }
 
-  // Function to load timeline data
+  // Update the loadTimeline function to properly handle envelope loading
   export function loadTimeline(timelineData, id = null) {
     if (id) {
       timelineId = id;
@@ -413,8 +489,16 @@
     if (timelineData?.placedPresets) {
       placedPresets = timelineData.placedPresets;
     }
+    if (timelineData?.envelopes) {
+      envelopes = timelineData.envelopes;
+      // Delay loading envelopes until component is ready
+      setTimeout(() => {
+        if (envelopeComponent) {
+          envelopeComponent.loadEnvelopes(envelopes);
+        }
+      }, 100);
+    }
   }
-  
   // Cleanup on component destroy
   onMount(() => {
     window.addEventListener('keydown', handleKeydown);
@@ -467,12 +551,12 @@
     <!-- Add envelope toggle button -->
     <button 
       class="px-3 py-2 {showEnvelope ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'} rounded-md hover:opacity-90"
-      on:click={() => showEnvelope = !showEnvelope}
+      on:click={toggleEnvelope}
       title="Toggle parameter envelope"
     >
       {showEnvelope ? '📈 Hide Envelope' : '📈 Show Envelope'}
     </button>
-    
+      
     <div class="text-sm text-gray-600 ml-auto">
       Current Time: {formatTime(currentTime)} / {formatTime(duration)}
     </div>
@@ -546,6 +630,9 @@
       duration={duration}
       viewportStart={viewportStart}
       viewportDuration={viewportDuration}
+      timelineId={timelineId}
+      on:envelopeChanged={handleEnvelopeChanged}
+      bind:this={envelopeComponent}
     />
   </div>
 {/if}

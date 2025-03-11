@@ -135,7 +135,8 @@
         type: 'timeline',
         data: {
           duration: timelineComponent.duration,
-          placedPresets: timelineComponent.placedPresets
+          placedPresets: timelineComponent.placedPresets,
+          envelopes: timelineComponent.envelopes // Include envelopes
         }
       };
       

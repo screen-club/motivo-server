@@ -9,9 +9,11 @@
   export let duration = 180;
   export let viewportStart = 0;
   export let viewportDuration = 180;
+  // Add new prop to receive timeline ID
+  export let timelineId = null;
   
   // Internal state
-  let envelopePoints = [];
+  let envelopePoints = {};
   let canvasRef;
   let canvasWidth = 0;
   let canvasHeight = 0;
@@ -36,7 +38,7 @@
   
   // Initialize with current parameter value
   $: {
-    if (envelopePoints.length === 0 && $parameterStore && currentParam) {
+    if (!envelopePoints[currentParam] && $parameterStore && currentParam) {
       initializePoints();
     }
     
@@ -48,7 +50,7 @@
   
   // Update parameter based on envelope
   $: {
-    if (currentTime >= 0 && envelopePoints.length >= 2) {
+    if (currentTime >= 0 && envelopePoints[currentParam]?.length >= 2) {
       const value = getValueAtTime(currentTime);
       updateParameter(value);
     }
@@ -57,10 +59,16 @@
   function initializePoints() {
     // Initialize with at least two points
     const initialValue = $parameterStore[currentParam] || 0;
-    envelopePoints = [
-      { time: 0, value: initialValue },
-      { time: duration, value: initialValue } // Use duration instead of hardcoded 180
-    ];
+    
+    // Create envelope points object if it doesn't exist
+    if (!envelopePoints[currentParam]) {
+      envelopePoints[currentParam] = [
+        { time: 0, value: initialValue },
+        { time: duration, value: initialValue }
+      ];
+      envelopePoints = { ...envelopePoints };
+    }
+    
     redrawCanvas();
   }
   
@@ -70,7 +78,9 @@
   
   function getValueAtTime(time) {
     // Find the surrounding points
-    const sortedPoints = [...envelopePoints].sort((a, b) => a.time - b.time);
+    if (!envelopePoints[currentParam]) return 0;
+    
+    const sortedPoints = [...envelopePoints[currentParam]].sort((a, b) => a.time - b.time);
     
     // Handle edge cases
     if (time <= sortedPoints[0].time) return sortedPoints[0].value;
@@ -91,6 +101,15 @@
     return sortedPoints[0].value; // Fallback
   }
 
+  // Save envelope changes to parent component
+  function saveEnvelopeChanges() {
+    if (timelineId) {
+      dispatch('envelopeChanged', {
+        envelopes: envelopePoints
+      });
+    }
+  }
+
   function handleMouseDown(event) {
     // Only handle left clicks for dragging
     if (event.button !== 0) return;
@@ -101,8 +120,8 @@
     
     // Check if clicked near any existing point
     const pointRadius = 8;
-    for (let i = 0; i < envelopePoints.length; i++) {
-      const point = envelopePoints[i];
+    for (let i = 0; i < envelopePoints[currentParam]?.length || 0; i++) {
+      const point = envelopePoints[currentParam][i];
       // Convert time to x position based on viewport
       const pointX = ((point.time - viewportStart) / viewportDuration) * canvasWidth;
       const pointY = canvasHeight - ((point.value - minValue) / (maxValue - minValue)) * canvasHeight;
@@ -123,12 +142,20 @@
     
     // Make sure it's between the first and last point
     if (time > 0 && time < duration) {
-      envelopePoints = [...envelopePoints, { time, value }];
-      envelopePoints.sort((a, b) => a.time - b.time);
+      if (!envelopePoints[currentParam]) {
+        envelopePoints[currentParam] = [];
+      }
+      
+      envelopePoints[currentParam] = [...envelopePoints[currentParam], { time, value }];
+      envelopePoints[currentParam].sort((a, b) => a.time - b.time);
+      envelopePoints = { ...envelopePoints };
       redrawCanvas();
       
       // Update value at current time after adding a point
       updateParameter(getValueAtTime(currentTime));
+      
+      // Save changes after adding a point
+      saveEnvelopeChanges();
     }
   }
   
@@ -142,11 +169,11 @@
     
     // Check if right-clicked on a point
     const pointRadius = 8;
-    for (let i = 0; i < envelopePoints.length; i++) {
+    for (let i = 0; i < envelopePoints[currentParam]?.length || 0; i++) {
       // Don't allow deleting first or last point
-      if (i === 0 || i === envelopePoints.length - 1) continue;
+      if (i === 0 || i === envelopePoints[currentParam].length - 1) continue;
       
-      const point = envelopePoints[i];
+      const point = envelopePoints[currentParam][i];
       // Convert time to x position based on viewport
       const pointX = ((point.time - viewportStart) / viewportDuration) * canvasWidth;
       const pointY = canvasHeight - ((point.value - minValue) / (maxValue - minValue)) * canvasHeight;
@@ -155,10 +182,14 @@
       
       if (distance <= pointRadius) {
         // Remove the point
-        envelopePoints = envelopePoints.filter((_, index) => index !== i);
+        envelopePoints[currentParam] = envelopePoints[currentParam].filter((_, index) => index !== i);
+        envelopePoints = { ...envelopePoints };
         hoveredPointIndex = -1;
         redrawCanvas();
         updateParameter(getValueAtTime(currentTime));
+        
+        // Save changes after deleting a point
+        saveEnvelopeChanges();
         return;
       }
     }
@@ -170,11 +201,11 @@
     const y = event.clientY - rect.top;
     
     // Handle dragging points
-    if (isDragging && selectedPointIndex !== -1) {
-      const point = { ...envelopePoints[selectedPointIndex] };
+    if (isDragging && selectedPointIndex !== -1 && envelopePoints[currentParam]) {
+      const point = { ...envelopePoints[currentParam][selectedPointIndex] };
       
       // First and last points can only move vertically
-      if (selectedPointIndex > 0 && selectedPointIndex < envelopePoints.length - 1) {
+      if (selectedPointIndex > 0 && selectedPointIndex < envelopePoints[currentParam].length - 1) {
         // Convert x position to time based on viewport
         point.time = Math.max(0, Math.min(duration, 
           viewportStart + (x / canvasWidth) * viewportDuration
@@ -186,7 +217,8 @@
         minValue + ((canvasHeight - y) / canvasHeight) * (maxValue - minValue)
       ));
       
-      envelopePoints[selectedPointIndex] = point;
+      envelopePoints[currentParam][selectedPointIndex] = point;
+      envelopePoints = { ...envelopePoints };
       redrawCanvas();
       
       // To reduce WebSocket traffic, we'll only update during dragging every 100ms
@@ -201,8 +233,8 @@
     let foundHoveredPoint = false;
     const pointRadius = 8;
     
-    for (let i = 0; i < envelopePoints.length; i++) {
-      const point = envelopePoints[i];
+    for (let i = 0; i < envelopePoints[currentParam]?.length || 0; i++) {
+      const point = envelopePoints[currentParam][i];
       // Convert time to x position based on viewport
       const pointX = ((point.time - viewportStart) / viewportDuration) * canvasWidth;
       const pointY = canvasHeight - ((point.value - minValue) / (maxValue - minValue)) * canvasHeight;
@@ -228,6 +260,9 @@
     if (isDragging) {
       // Update parameter when done dragging
       updateParameter(getValueAtTime(currentTime));
+      
+      // Save changes after finishing a drag
+      saveEnvelopeChanges();
     }
     
     isDragging = false;
@@ -235,7 +270,7 @@
   }
   
   function redrawCanvas() {
-    if (!canvasRef) return;
+    if (!canvasRef || !envelopePoints[currentParam]) return;
     
     const ctx = canvasRef.getContext('2d');
     ctx.clearRect(0, 0, canvasWidth, canvasHeight);
@@ -278,7 +313,7 @@
     }
     
     // Sort points by time
-    const sortedPoints = [...envelopePoints].sort((a, b) => a.time - b.time);
+    const sortedPoints = [...envelopePoints[currentParam]].sort((a, b) => a.time - b.time);
     
     // Draw envelope line - but only for points visible in viewport
     ctx.beginPath();
@@ -395,12 +430,14 @@
   }
   
   // Watch for duration changes
-  $: if (duration) {
+  $: if (duration && envelopePoints[currentParam]) {
     // Update the last point if it was at the end of the timeline
-    const lastPoint = envelopePoints.find(p => p.time === envelopePoints.sort((a, b) => b.time - a.time)[0].time);
+    const lastPoint = envelopePoints[currentParam].find(p => p.time === envelopePoints[currentParam].sort((a, b) => b.time - a.time)[0].time);
     if (lastPoint && Math.abs(lastPoint.time - (duration - viewportDuration)) < 1) {
       lastPoint.time = duration;
+      envelopePoints = { ...envelopePoints };
       redrawCanvas();
+      saveEnvelopeChanges();
     }
   }
   
@@ -438,6 +475,20 @@
   // Redraw when time changes
   $: if (currentTime !== undefined) {
     redrawCanvas();
+  }
+  
+  // Load existing envelope data
+  export function loadEnvelopes(envelopesData) {
+    if (envelopesData) {
+      envelopePoints = { ...envelopesData };
+      
+      // Initialize the current parameter if it doesn't exist in loaded data
+      if (currentParam && !envelopePoints[currentParam]) {
+        initializePoints();
+      }
+      
+      redrawCanvas();
+    }
   }
 </script>
 
