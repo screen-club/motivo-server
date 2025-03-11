@@ -4,11 +4,13 @@
   import { websocketService } from '../../services/websocketService';
   import { PoseService } from '../../services/poses';
   import { parameterStore } from '../../stores/parameterStore';
+  import { DbService } from '../../services/db';
   import PresetTimelineEnvelope from './PresetTimelineEnvelope.svelte';
 
   
   export let duration = 180;
   export let placedPresets = [];
+  export let timelineId = null;
   let isPlaying = false;
   let timelineRef;
   let currentTime = 0;
@@ -36,6 +38,11 @@
     duration = parseInt(event.target.value);
     viewportDuration = duration / zoomLevel;
     placedPresets = placedPresets.filter(preset => preset.position <= duration);
+    
+    // Save changes if timeline is loaded
+    if (timelineId) {
+      saveTimelineChanges();
+    }
   }
   
   // Handle drag over
@@ -134,6 +141,11 @@
         .map(p => p === isDraggingPreset ? { ...p, position: dropPosition } : p)
         .sort((a, b) => a.position - b.position);
       isDraggingPreset = null;
+      
+      // Save timeline changes after moving a preset
+      if (timelineId) {
+        saveTimelineChanges();
+      }
     } else {
       try {
         const preset = JSON.parse(event.dataTransfer.getData('preset'));
@@ -154,9 +166,34 @@
           position: dropPosition,
           duration: presetDuration
         }].sort((a, b) => a.position - b.position);
+        
+        // Save timeline changes after adding a new preset
+        if (timelineId) {
+          saveTimelineChanges();
+        }
       } catch (error) {
         console.error('Failed to parse dropped preset:', error);
       }
+    }
+  }
+
+  // Function to save timeline changes to the database
+  async function saveTimelineChanges() {
+    if (!timelineId) return;
+    
+    try {
+      const timelineData = {
+        duration,
+        placedPresets
+      };
+      
+      await DbService.updateConfig(timelineId, {
+        data: timelineData
+      });
+      
+      console.log('Timeline updated successfully');
+    } catch (error) {
+      console.error('Failed to save timeline changes:', error);
     }
   }
 
@@ -195,6 +232,11 @@
       stopPresetAnimation(selectedPreset);
       placedPresets = placedPresets.filter(p => p !== selectedPreset);
       selectedPreset = null;
+      
+      // Save timeline changes after deleting a preset
+      if (timelineId) {
+        saveTimelineChanges();
+      }
     }
   }
 
@@ -359,7 +401,11 @@
   }
 
   // Function to load timeline data
-  export function loadTimeline(timelineData) {
+  export function loadTimeline(timelineData, id = null) {
+    if (id) {
+      timelineId = id;
+    }
+    
     if (timelineData?.duration) {
       duration = timelineData.duration;
       viewportDuration = duration / zoomLevel;

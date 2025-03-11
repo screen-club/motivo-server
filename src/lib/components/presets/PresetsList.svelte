@@ -46,7 +46,7 @@
 
       if (preset.type === 'timeline') {
         if (timelineComponent) {
-          timelineComponent.loadTimeline(preset.data);
+          timelineComponent.loadTimeline(preset.data, preset.id); // Pass the timeline ID
         }
         
         if (preset.data?.placedPresets) {
