@@ -303,30 +303,12 @@
   });
 
   function initializeFrameUpdater() {
-    let retryDelay = 33;
-    const maxDelay = 2000;
-    const backoffFactor = 1.5;
+    // Use a static image instead of trying to fetch from server
+    const placeholderImage = '/vite.svg';
+    videoBuffer.updateFrame(placeholderImage);
     
-    const updateFrame = async () => {
-      try {
-        const currentUrl = `${apiUrl}/amjpeg?${Date.now()}`;
-        
-        const response = await fetch(currentUrl, { method: 'HEAD' });
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        videoBuffer.updateFrame(currentUrl);
-        retryDelay = 33;
-      } catch (error) {
-        console.warn('Failed to fetch frame:', error);
-        retryDelay = Math.min(retryDelay * backoffFactor, maxDelay);
-      }
-      
-      setTimeout(updateFrame, retryDelay);
-    };
-    
-    updateFrame();
+    // No need for continuous updates when using a static image
+    // This prevents the 404 errors completely
   }
 
   onDestroy(() => {

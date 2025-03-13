@@ -31,6 +31,10 @@ export default class VideoBuffer {
       img.onload = () => {
         this.ctx.drawImage(img, 0, 0, this.canvas.width, this.canvas.height);
       };
+      img.onerror = (e) => {
+        console.log("Image load error, ignoring:", e);
+        // Don't throw an error, just ignore and try again next time
+      };
       img.src = imageUrl;
     }
   

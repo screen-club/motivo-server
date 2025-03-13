@@ -1,44 +1,76 @@
 import json
 import numpy as np
 import torch
-from datetime import datetime
 import os
 import traceback
-from typing import Dict, Any, Optional
-from frame_utils import FrameRecorder
-from reward_context import compute_reward_context
 import asyncio
+import logging
+from datetime import datetime
 from pathlib import Path
+from typing import Dict, Any, Optional
+
+from core.config import config
+from utils.frame_utils import FrameRecorder
+from rewards.reward_context import compute_reward_context
+
+logger = logging.getLogger('message_handler')
 
 class MessageHandler:
+    """Handles incoming WebSocket messages and routes them to appropriate handlers"""
+    
     def __init__(self, model, env, ws_manager, context_cache):
+        # Core components
         self.model = model
         self.env = env
         self.ws_manager = ws_manager
         self.context_cache = context_cache
         self.buffer_data = None  # Will be set by AppState
+        
+        # State tracking
         self.current_z = None
         self.active_rewards = None
-        self.active_poses = None  # Track active poses
-        self.current_reward_config = None  # Track current reward configuration
+        self.active_poses = None
+        self.current_reward_config = None
         self.is_computing_reward = False
         self.default_z = None
         self.frame_recorder = None
         
-        # Environment variables
-        self.backend_domain = os.getenv("VITE_BACKEND_DOMAIN", "localhost")
-        self.webserver_port = os.getenv("VITE_WEBSERVER_PORT", 5002)
-        self.ws_port = os.getenv("VITE_WS_PORT", 8765)
-        self.api_port = os.getenv("VITE_API_PORT", 5000)
+        # Environment variables from config
+        self.backend_domain = config.backend_domain
+        self.webserver_port = config.webserver_port
+        self.ws_port = config.ws_port
+        self.api_port = config.api_port
+
+        # Set up command handlers map
+        self.command_handlers = {
+            "mix_pose_reward": self.handle_mix_pose_reward,
+            "debug_model_info": self.handle_debug_model_info,
+            "request_reward": self.handle_request_reward,
+            "clean_rewards": self.handle_clean_rewards,
+            "update_parameters": self.handle_update_parameters,
+            "load_pose_smpl": self.handle_load_pose_smpl,
+            "start_recording": self.handle_start_recording,
+            "stop_recording": self.handle_stop_recording,
+            "load_pose": self.handle_load_pose,
+            "clear_active_rewards": self.handle_clear_active_rewards,
+            "update_reward": self.handle_update_reward,
+            "get_current_context": self.handle_get_current_context,
+            "load_npz_context": self.handle_load_npz_context,
+        }
+        
+        logger.info("Message handler initialized")
 
     def set_buffer_data(self, buffer_data):
         """Set the buffer data needed for reward computation"""
         self.buffer_data = buffer_data
+        logger.info("Buffer data set in message handler")
 
     async def get_reward_context(self, reward_config):
         """Compute reward context"""
         try:
             self.is_computing_reward = True
+            logger.info("Computing reward context...")
+            
             # Create a wrapper function that includes all required arguments
             async def compute_wrapper(config):
                 return await asyncio.to_thread(
@@ -52,41 +84,32 @@ class MessageHandler:
             return z
         finally:
             self.is_computing_reward = False
+            logger.info("Reward context computation complete")
 
     async def handle_message(self, websocket, message: str) -> None:
+        """Main message handler that routes to specific command handlers"""
         try:
             data = json.loads(message)
             message_type = data.get("type", "")
             
-            # Map message types to handler methods
-            handlers = {
-                "mix_pose_reward": self.handle_mix_pose_reward,
-                "debug_model_info": self.handle_debug_model_info,
-                "request_reward": self.handle_request_reward,
-                "clean_rewards": self.handle_clean_rewards,
-                "update_parameters": self.handle_update_parameters,
-                "load_pose_smpl": self.handle_load_pose_smpl,
-                "start_recording": self.handle_start_recording,
-                "stop_recording": self.handle_stop_recording,
-                "load_pose": self.handle_load_pose,
-                "clear_active_rewards": self.handle_clear_active_rewards,
-                "update_reward": self.handle_update_reward,
-                "get_current_context": self.handle_get_current_context,
-                "load_npz_context": self.handle_load_npz_context,
-            }
-            
-            handler = handlers.get(message_type)
+            # Get the appropriate handler for this message type
+            handler = self.command_handlers.get(message_type)
             if handler:
+                logger.debug(f"Handling message of type: {message_type}")
                 await handler(websocket, data)
             else:
-                print(f"Unknown message type: {message_type}")
+                logger.warning(f"Unknown message type: {message_type}")
                 
         except json.JSONDecodeError:
-            print("Error: Invalid JSON message")
+            logger.error("Invalid JSON message received")
             await websocket.send(json.dumps({"error": "Invalid JSON"}))
+        except Exception as e:
+            logger.error(f"Error handling message: {str(e)}")
+            traceback.print_exc()
 
     async def handle_start_recording(self, websocket, data: Dict[str, Any]) -> None:
-        print("Starting recording...")
+        """Start recording frames"""
+        logger.info("Starting recording...")
         self.frame_recorder = FrameRecorder()
         self.frame_recorder.recording = True
         response = {
@@ -94,33 +117,32 @@ class MessageHandler:
             "status": "started",
             "timestamp": datetime.now().isoformat()
         }
-        print("Starting recording, recorder state:", self.frame_recorder.recording)
+        logger.info(f"Recording started, recorder state: {self.frame_recorder.recording}")
         await websocket.send(json.dumps(response))
 
     async def handle_stop_recording(self, websocket, data: Dict[str, Any]) -> None:
-        print("Stopping recording...")
+        """Stop recording and save frames"""
+        logger.info("Stopping recording...")
         if self.frame_recorder and self.frame_recorder.recording:
             try:
-                print(f"Frames recorded: {len(self.frame_recorder.frames)}")
+                logger.info(f"Frames recorded: {len(self.frame_recorder.frames)}")
                 
                 # Create a unique filename for the zip
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 zip_filename = f"recording_{timestamp}.zip"
                 
-                # Use path relative to motivo directory
-                downloads_dir = os.path.join(os.path.dirname(__file__), 'downloads')
-                zip_path = os.path.join(downloads_dir, zip_filename)
+                # Use downloads dir from config
+                from core.config import config
+                zip_path = os.path.join(config.downloads_dir, zip_filename)
                 
-                # Ensure downloads directory exists
-                os.makedirs(downloads_dir, exist_ok=True)
-                print(f"Saving recording to: {zip_path}")
+                logger.info(f"Saving recording to: {zip_path}")
                 
                 # Save the recording and get the zip path
                 self.frame_recorder.end_record(zip_path)
                 
                 # Create download URL using WEBSERVER_PORT
                 download_url = f"http://{self.backend_domain}:{self.webserver_port}/downloads/{zip_filename}"
-                print(f"Download URL created: {download_url}")
+                logger.info(f"Download URL created: {download_url}")
                 
                 response = {
                     "type": "recording_status",
@@ -128,11 +150,10 @@ class MessageHandler:
                     "downloadUrl": download_url,
                     "timestamp": datetime.now().isoformat()
                 }
-                print(f"Sending response: {response}")
                 await websocket.send(json.dumps(response))
                 self.frame_recorder = None
             except Exception as e:
-                print(f"Error stopping recording: {str(e)}")
+                logger.error(f"Error stopping recording: {str(e)}")
                 traceback.print_exc()
                 
                 error_response = {
@@ -144,33 +165,33 @@ class MessageHandler:
                 await websocket.send(json.dumps(error_response))
 
     async def handle_load_pose(self, websocket, data: Dict[str, Any]) -> None:
+        """Load pose configuration from qpos data"""
         try:
-            print("\nLoading pose configuration...")
+            logger.info("Loading pose configuration...")
             goal_qpos = np.array(data.get("pose", []))
-            print(f"Received pose array length: {len(goal_qpos)}")
-            print(f"First few values: {goal_qpos[:5]}")
+            logger.info(f"Received pose array length: {len(goal_qpos)}")
             
             if len(goal_qpos) != 76:  # Expect 76 values for qpos
                 raise ValueError(f"Invalid pose length: {len(goal_qpos)}, expected 76")
             
             # Reset environment with new pose
-            print("Setting physics...")
+            logger.info("Setting physics...")
             self.env.unwrapped.set_physics(
                 qpos=goal_qpos,  # Use all 76 values for qpos
                 qvel=np.zeros(75)  # Use 75 zeros for qvel
             )
             
-            print("Getting observation...")
+            logger.info("Getting observation...")
             goal_obs = torch.tensor(
                 self.env.unwrapped.get_obs()["proprio"].reshape(1, -1),
                 device=self.model.cfg.device,
                 dtype=torch.float32
             )
-            print(f"Observation shape: {goal_obs.shape}")
+            logger.info(f"Observation shape: {goal_obs.shape}")
             
             # Use goal inference to get context
             inference_type = data.get("inference_type", "goal")
-            print(f"Using inference type: {inference_type}")
+            logger.info(f"Using inference type: {inference_type}")
             
             if inference_type == "goal":
                 z = self.model.goal_inference(next_obs=goal_obs)
@@ -178,7 +199,7 @@ class MessageHandler:
                 z = self.model.tracking_inference(next_obs=goal_obs)
             else:
                 # If unsupported type, default to goal inference
-                print(f"Warning: Unsupported inference type '{inference_type}', defaulting to goal inference")
+                logger.warning(f"Unsupported inference type '{inference_type}', defaulting to goal inference")
                 z = self.model.goal_inference(next_obs=goal_obs)
             
             # Update current context
@@ -191,7 +212,7 @@ class MessageHandler:
                 "inference_type": inference_type
             }
             
-            print("Context updated successfully")
+            logger.info("Context updated successfully")
             
             # Get cache file path if we have a current reward config
             cache_file = None
@@ -208,11 +229,11 @@ class MessageHandler:
                 "cache_file": str(cache_file) if cache_file else None
             }
             await websocket.send(json.dumps(response))
-            print("Success response sent")
+            logger.info("Success response sent")
             
         except Exception as e:
             error_msg = f"Error loading pose: {str(e)}"
-            print(error_msg)
+            logger.error(error_msg)
             traceback.print_exc()
             
             response = {
@@ -224,12 +245,13 @@ class MessageHandler:
             await websocket.send(json.dumps(response))
 
     async def handle_clear_active_rewards(self, websocket, data: Dict[str, Any]) -> None:
-        print("\nClearing active rewards...")
+        """Clear all active rewards and return to default context"""
+        logger.info("Clearing active rewards...")
         self.active_rewards = None
         self.current_reward_config = None  # Clear current reward config
         self.active_poses = None  # Also clear active poses
         self.current_z = self.default_z
-        print("Active rewards cleared ✅")
+        logger.info("Active rewards cleared ✅")
         
         response = {
             "type": "rewards_cleared",
@@ -239,47 +261,39 @@ class MessageHandler:
         await websocket.send(json.dumps(response))
 
     async def handle_update_reward(self, websocket, data: Dict[str, Any]) -> None:
+        """Update parameters for a specific reward"""
         try:
             reward_index = data.get("index")
             new_parameters = data.get("parameters")
             
-            print("\n=== Processing Reward Update ===")
-            print(f"Reward Index: {reward_index}")
-            print(f"Incoming parameters: {json.dumps(new_parameters, indent=2)}")
+            logger.info(f"Processing reward update for index {reward_index}")
+            logger.debug(f"New parameters: {json.dumps(new_parameters, indent=2)}")
             
             if self.active_rewards and 'rewards' in self.active_rewards:
-                print("\nCurrent active rewards before update:")
-                print(json.dumps(self.active_rewards, indent=2))
-                
                 # Convert string numbers to float for numeric parameters
                 for key, value in new_parameters.items():
                     try:
                         if isinstance(value, (list, tuple)):
-                            print(f"Converting sequence {key}: {value} to float")
+                            logger.debug(f"Converting sequence {key}: {value} to float")
                             new_parameters[key] = float(value[0])
                         elif isinstance(value, str):
-                            print(f"Converting string {key}: {value} to float")
+                            logger.debug(f"Converting string {key}: {value} to float")
                             new_parameters[key] = float(value)
                         elif isinstance(value, bool):
-                            print(f"Keeping boolean {key}: {value}")
+                            logger.debug(f"Keeping boolean {key}: {value}")
                             continue
                         else:
-                            print(f"Converting {key}: {value} ({type(value)}) to float")
+                            logger.debug(f"Converting {key}: {value} ({type(value)}) to float")
                             new_parameters[key] = float(value)
                     except (ValueError, TypeError) as e:
-                        print(f"⚠️ Warning: Could not convert {key}={value}: {str(e)}")
+                        logger.warning(f"Could not convert {key}={value}: {str(e)}")
                         continue
-                
-                print(f"\nConverted parameters: {json.dumps(new_parameters, indent=2)}")
                 
                 # Update the specific reward's parameters
                 self.active_rewards['rewards'][reward_index].update(new_parameters)
                 self.current_reward_config = self.active_rewards  # Update current reward config
                 
-                print("\nActive rewards after update:")
-                print(json.dumps(self.active_rewards, indent=2))
-                
-                print("\nRecomputing context...")
+                logger.info("Recomputing context...")
                 z, _ = await self.context_cache.get_cached_context(
                     self.active_rewards,
                     self.get_reward_context
@@ -293,14 +307,12 @@ class MessageHandler:
                     "timestamp": datetime.now().isoformat()
                 }
                 await websocket.send(json.dumps(response))
-                print("\n✅ Update successful - Response sent")
+                logger.info("Update successful")
                 
         except Exception as e:
-            error_msg = f"❌ Error updating reward: {str(e)}"
-            print("\n=== Error Details ===")
-            print(error_msg)
+            error_msg = f"Error updating reward: {str(e)}"
+            logger.error(error_msg)
             traceback.print_exc()
-            print("===================")
             
             response = {
                 "type": "reward_updated",
@@ -311,8 +323,9 @@ class MessageHandler:
             await websocket.send(json.dumps(response))
 
     async def handle_mix_pose_reward(self, websocket, data: Dict[str, Any]) -> None:
+        """Mix pose-based and reward-based behaviors"""
         try:
-            print("\nMixing pose and reward behaviors...")
+            logger.info("Mixing pose and reward behaviors...")
             goal_qpos = np.array(data.get("pose", []))
             reward_config = data.get("reward", {})
             mix_weight = data.get("mix_weight", 0.5)
@@ -337,6 +350,7 @@ class MessageHandler:
             
             # Interpolate between contexts
             self.current_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
+            logger.info(f"Mixed contexts with weight {mix_weight}")
             
             response = {
                 "type": "mix_updated",
@@ -348,7 +362,7 @@ class MessageHandler:
             
         except Exception as e:
             error_msg = f"Error mixing behaviors: {str(e)}"
-            print(error_msg)
+            logger.error(error_msg)
             
             response = {
                 "type": "mix_updated",
@@ -359,6 +373,7 @@ class MessageHandler:
             await websocket.send(json.dumps(response))
 
     async def handle_debug_model_info(self, websocket, data: Dict[str, Any]) -> None:
+        """Send debug information about model state"""
         stats = self.ws_manager.get_stats()
         response = {
             "type": "debug_model_info",
@@ -368,12 +383,14 @@ class MessageHandler:
             **stats
         }
         await self.ws_manager.broadcast(response)
+        logger.debug("Sent debug model info")
 
     async def handle_request_reward(self, websocket, data: Dict[str, Any]) -> None:
-        print("\n=== Processing Reward Combination ===")
+        """Process reward combination requests"""
+        logger.info("Processing reward combination request")
         
         if self.is_computing_reward:
-            print("⚠️ Reward computation already in progress, request ignored")
+            logger.warning("Reward computation already in progress, request ignored")
             response = {
                 "type": "reward",
                 "status": "computing_in_progress",
@@ -386,12 +403,13 @@ class MessageHandler:
         try:
             # Check if reward config is empty
             if not data.get('reward', {}).get('rewards'):
-                print("\nNo rewards in configuration - treating as clean rewards")
+                logger.info("No rewards in configuration - treating as clean rewards")
                 await self.handle_clean_rewards(websocket, data)
                 return
                 
             self.active_rewards = data['reward']
             self.current_reward_config = data['reward']
+            logger.info("Computing context for new reward configuration")
             z, _ = await self.context_cache.get_cached_context(
                 self.active_rewards, 
                 self.get_reward_context
@@ -406,13 +424,11 @@ class MessageHandler:
             }
             await websocket.send(json.dumps(response))
             
-            print(f"\nStatus:")
-            print(f"Active Rewards: {json.dumps(self.active_rewards['rewards'], indent=2)}")
-            print(f"Cached Computations: {len(self.context_cache.computation_cache)}")
-            print("=== End Processing ===\n")
+            logger.info(f"Active Rewards: {len(self.active_rewards['rewards'])}")
+            logger.info(f"Cached Computations: {len(self.context_cache.computation_cache)}")
 
         except Exception as e:
-            print(f"Error processing reward request: {str(e)}")
+            logger.error(f"Error processing reward request: {str(e)}")
             response = {
                 "type": "reward",
                 "status": "error",
@@ -424,13 +440,14 @@ class MessageHandler:
             
             
     async def handle_clean_rewards(self, websocket, data: Dict[str, Any]) -> None:
-        print("\nCleaning active rewards...")
+        """Reset all rewards and environment state"""
+        logger.info("Cleaning active rewards...")
         
         self.current_z = self.default_z
         self.active_rewards = None
         
         observation, _ = self.env.reset()
-        print("Environment reset completed")
+        logger.info("Environment reset completed")
         
         debug_info = {
             "type": "debug_model_info",
@@ -448,7 +465,9 @@ class MessageHandler:
         await websocket.send(json.dumps(response))
 
     async def handle_update_parameters(self, websocket, data: Dict[str, Any]) -> None:
+        """Update environment parameters"""
         new_params = data.get("parameters", {})
+        logger.info("Updating environment parameters")
         self.env.update_parameters(new_params)
         
         response = {
@@ -459,8 +478,9 @@ class MessageHandler:
         await websocket.send(json.dumps(response))
 
     async def handle_load_pose_smpl(self, websocket, data: Dict[str, Any]) -> None:
+        """Load pose from SMPL format data"""
         try:
-            print("\nProcessing SMPL pose as goal...")
+            logger.info("Processing SMPL pose as goal...")
             smpl_pose = np.array(data.get("pose", []))
             smpl_trans = np.array(data.get("trans", [0, 0, 0.91437225]))
             model_type = data.get("model", "smpl")
@@ -523,7 +543,7 @@ class MessageHandler:
                 "qpos": goal_qpos.tolist()
             }
             
-            print("Context updated successfully")
+            logger.info("Context updated successfully")
             
             response = {
                 "type": "pose_loaded",
@@ -536,7 +556,7 @@ class MessageHandler:
             
         except Exception as e:
             error_msg = f"Error processing SMPL pose: {str(e)}"
-            print(error_msg)
+            logger.error(error_msg)
             
             response = {
                 "type": "pose_loaded",
@@ -549,7 +569,7 @@ class MessageHandler:
     async def handle_get_current_context(self, websocket, data: Dict[str, Any]) -> None:
         """Handle request for current context information"""
         try:
-            print("\nGetting current context information...")
+            logger.info("Getting current context information...")
             
             # Get cache file path if we have a current reward config
             cache_file = None
@@ -581,11 +601,11 @@ class MessageHandler:
             }
             
             await websocket.send(json.dumps(response))
-            print("Current context information sent ✅")
+            logger.info("Current context information sent")
             
         except Exception as e:
             error_msg = f"Error getting current context: {str(e)}"
-            print(error_msg)
+            logger.error(error_msg)
             traceback.print_exc()
             
             response = {
@@ -596,17 +616,10 @@ class MessageHandler:
             }
             await websocket.send(json.dumps(response))
 
-    def get_current_z(self) -> Optional[torch.Tensor]:
-        return self.current_z
-
-    def set_default_z(self, z: torch.Tensor) -> None:
-        self.default_z = z
-        self.current_z = z
-
     async def handle_load_npz_context(self, websocket, data: Dict[str, Any]) -> None:
         """Handle loading context directly from an NPZ file"""
         try:
-            print("\nLoading context from NPZ file...")
+            logger.info("Loading context from NPZ file...")
             npz_path = data.get("npz_path")
             
             if not npz_path:
@@ -616,7 +629,7 @@ class MessageHandler:
             try:
                 npz_data = np.load(npz_path)
                 z = torch.from_numpy(npz_data['z']).to(device=self.model.cfg.device, dtype=torch.float32)
-                print(f"Loaded context tensor of shape {z.shape} from {npz_path}")
+                logger.info(f"Loaded context tensor of shape {z.shape} from {npz_path}")
                 
                 # Update current context
                 self.current_z = z
@@ -626,9 +639,9 @@ class MessageHandler:
                 if Path(npz_path).parent == cache_dir:
                     # This is a cached reward config, try to find the original config
                     hash_value = Path(npz_path).stem
-                    print(f"NPZ file is from cache, hash: {hash_value}")
+                    logger.info(f"NPZ file is from cache, hash: {hash_value}")
                 else:
-                    print("NPZ file is not from cache directory")
+                    logger.info("NPZ file is not from cache directory")
                 
                 response = {
                     "type": "npz_context_loaded",
@@ -642,11 +655,11 @@ class MessageHandler:
                 raise ValueError(f"Failed to load NPZ file: {str(e)}")
             
             await websocket.send(json.dumps(response))
-            print("Context loaded successfully ✅")
+            logger.info("Context loaded successfully")
             
         except Exception as e:
             error_msg = f"Error loading NPZ context: {str(e)}"
-            print(error_msg)
+            logger.error(error_msg)
             traceback.print_exc()
             
             response = {
@@ -655,4 +668,14 @@ class MessageHandler:
                 "error": error_msg,
                 "timestamp": datetime.now().isoformat()
             }
-            await websocket.send(json.dumps(response)) 
+            await websocket.send(json.dumps(response))
+
+    def get_current_z(self) -> Optional[torch.Tensor]:
+        """Get the current context tensor"""
+        return self.current_z
+
+    def set_default_z(self, z: torch.Tensor) -> None:
+        """Set the default context tensor"""
+        self.default_z = z
+        self.current_z = z
+        logger.info("Default context set")
