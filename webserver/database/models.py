@@ -1,9 +1,18 @@
 from peewee import *
 import json
+import os
 from playhouse.migrate import SqliteMigrator, migrate
 
-# Database configuration
-db = SqliteDatabase('storage/db.db', pragmas={'foreign_keys': 1})
+# Get the path to the public storage directory
+from pathlib import Path
+PUBLIC_STORAGE_DIR = str(Path(__file__).resolve().parents[3] / 'public' / 'storage')
+
+# Database configuration - store the database in public/storage/db
+DB_DIR = os.path.join(PUBLIC_STORAGE_DIR, 'db')
+os.makedirs(DB_DIR, exist_ok=True)
+db_path = os.path.join(DB_DIR, 'database.db')
+
+db = SqliteDatabase(db_path, pragmas={'foreign_keys': 1})
 
 class BaseModel(Model):
     class Meta:
@@ -91,7 +100,9 @@ class Content(BaseModel):
         except Exception as e:
             db.rollback()  # Ensure transaction is rolled back on error
             raise e
-    def deleteItem(self, id):
+            
+    @classmethod
+    def delete_item(cls, id):
         with db.connection_context():
             query = Content.delete().where(Content.id == id)
             query.execute()

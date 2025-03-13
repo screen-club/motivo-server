@@ -11,9 +11,12 @@ def save_frame_data(frame, qpos, qvel, env=None, smpl_data=None):
     """
     Save current frame image and state data with bone ordering information
     """
+    # Get config for paths
+    from core.config import config
+    
     # Create output directory with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = os.path.join("captured_frames", timestamp)
+    output_dir = os.path.join(config.captured_frames_dir, timestamp)
     os.makedirs(output_dir, exist_ok=True)
     
     # Save image
@@ -165,8 +168,9 @@ class FrameRecorder:
     def end_record(self, zip_path=None):
         """End recording and save frames to a zip file"""
         if not zip_path:
+            from core.config import config
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            zip_path = f"downloads/recording_{timestamp}.zip"
+            zip_path = os.path.join(config.downloads_dir, f"recording_{timestamp}.zip")
         
         os.makedirs(os.path.dirname(zip_path), exist_ok=True)
         

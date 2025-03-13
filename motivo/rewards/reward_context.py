@@ -3,7 +3,7 @@ import torch
 from humenv import rewards as humenv_rewards
 from humenv.env import make_from_name
 from metamotivo.wrappers.humenvbench import relabel
-from task_rewards import (
+from rewards.task_rewards import (
     StayUprightReward,
     HeadHeightReward,
     PelvisHeightReward,
@@ -23,7 +23,7 @@ from task_rewards import (
     RightFootForwardDistanceReward,
     print_available_rewards
 )
-from behaviour_rewards import (
+from rewards.behaviour_rewards import (
     StandingReward,
     UprightReward,
     MovementControlReward,
@@ -38,7 +38,7 @@ from behaviour_rewards import (
     StableStandingReward,
     NaturalWalkingReward
 )
-from position_rewards import PositionReward, PositionTarget
+from rewards.position_rewards import PositionReward, PositionTarget
 import inspect
 import sys
 from contextlib import nullcontext

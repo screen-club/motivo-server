@@ -13,7 +13,10 @@ class RewardContextCache:
     def __init__(self, max_memory_entries=100, cache_dir=None, model=None, env=None, buffer_data=None):
         self.computation_cache = {}
         self.max_memory_entries = max_memory_entries
-        self.cache_dir = cache_dir or Path(os.path.expanduser('./storage/.motivo/cache'))
+        
+        # Use the cache_dir from config if available, otherwise use default
+        from core.config import config
+        self.cache_dir = cache_dir or Path(config.cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         # LRU cache for frequently accessed items

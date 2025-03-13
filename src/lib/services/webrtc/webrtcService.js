@@ -264,9 +264,28 @@ class WebRTCService {
       }
     };
     
-    // ICE candidate handling - we don't send ICE candidates to avoid server errors
+    // ICE candidate handling - send candidates to the server
     this.peerConnection.onicecandidate = (event) => {
-      // Explicitly do nothing - don't send ICE candidates to server
+      if (event.candidate) {
+        // Send ICE candidate to server 
+        websocketService.send({
+          type: "webrtc_ice",
+          candidate: {
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+            candidate: event.candidate.candidate,
+            type: event.candidate.type,
+            foundation: event.candidate.foundation,
+            protocol: event.candidate.protocol,
+            ip: event.candidate.ip,
+            port: event.candidate.port,
+            priority: event.candidate.priority,
+            component: event.candidate.component || 0
+          },
+          client_id: this.clientId
+        });
+        this.logger.log("Sent ICE candidate to server");
+      }
     };
     
     // Connection state monitoring
