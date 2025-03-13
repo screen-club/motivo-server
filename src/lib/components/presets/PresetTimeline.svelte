@@ -1,13 +1,16 @@
 <script>
   import { onMount } from 'svelte';
+  import { slide } from 'svelte/transition';
   import { websocketService } from '../../services/websocket';
   import { PoseService } from '../../services/poses';
   import { parameterStore } from '../../stores/parameterStore';
+  import { DbService } from '../../services/db';
   import PresetTimelineEnvelope from './PresetTimelineEnvelope.svelte';
 
   
   export let duration = 180;
   export let placedPresets = [];
+  export let timelineId = null;
   let isPlaying = false;
   let timelineRef;
   let currentTime = 0;
@@ -16,6 +19,8 @@
   let selectedPreset = null;
   let currentAnimations = new Map(); // Track running animations
   let isDraggingPreset = null;
+  let envelopeComponent;
+  let envelopes = {};
   
   // Zoom and pan variables
   let zoomLevel = 1;
@@ -24,15 +29,37 @@
   let isPanning = false;
   let panStartX = 0;
   let panStartViewport = 0;
-
+  
+  // Add envelope visibility toggle
+  let showEnvelope = false;
 
   $:console.log($parameterStore)
+
+  // Add a watch for the showEnvelope toggle
+  $: if (showEnvelope && envelopeComponent && Object.keys(envelopes).length > 0) {
+    envelopeComponent.loadEnvelopes(envelopes);
+  }
+
+  // Update the button handler
+  function toggleEnvelope() {
+    showEnvelope = !showEnvelope;
+    if (showEnvelope && envelopeComponent && Object.keys(envelopes).length > 0) {
+      setTimeout(() => {
+        envelopeComponent.loadEnvelopes(envelopes);
+      }, 100);
+    }
+  }
 
   // Handle duration change
   function handleDurationChange(event) {
     duration = parseInt(event.target.value);
     viewportDuration = duration / zoomLevel;
     placedPresets = placedPresets.filter(preset => preset.position <= duration);
+    
+    // Save changes if timeline is loaded
+    if (timelineId) {
+      saveTimelineChanges();
+    }
   }
   
   // Handle drag over
@@ -131,6 +158,11 @@
         .map(p => p === isDraggingPreset ? { ...p, position: dropPosition } : p)
         .sort((a, b) => a.position - b.position);
       isDraggingPreset = null;
+      
+      // Save timeline changes after moving a preset
+      if (timelineId) {
+        saveTimelineChanges();
+      }
     } else {
       try {
         const preset = JSON.parse(event.dataTransfer.getData('preset'));
@@ -151,9 +183,41 @@
           position: dropPosition,
           duration: presetDuration
         }].sort((a, b) => a.position - b.position);
+        
+        // Save timeline changes after adding a new preset
+        if (timelineId) {
+          saveTimelineChanges();
+        }
       } catch (error) {
         console.error('Failed to parse dropped preset:', error);
       }
+    }
+  }
+
+  // Handle envelope changes
+  function handleEnvelopeChanged(event) {
+    envelopes = event.detail.envelopes;
+    saveTimelineChanges();
+  }
+
+  // Function to save timeline changes to the database
+  async function saveTimelineChanges() {
+    if (!timelineId) return;
+    
+    try {
+      const timelineData = {
+        duration,
+        placedPresets,
+        envelopes
+      };
+      
+      await DbService.updateConfig(timelineId, {
+        data: timelineData
+      });
+      
+      console.log('Timeline updated successfully');
+    } catch (error) {
+      console.error('Failed to save timeline changes:', error);
     }
   }
 
@@ -170,6 +234,11 @@
     }
     
     stopAllAnimations();
+    
+    // Apply envelope values for the current time if available
+    if (showEnvelope && envelopes) {
+      applyEnvelopeValues(currentTime);
+    }
     
     placedPresets.forEach(preset => {
       const presetEnd = preset.position + (preset.duration || 2);
@@ -192,6 +261,11 @@
       stopPresetAnimation(selectedPreset);
       placedPresets = placedPresets.filter(p => p !== selectedPreset);
       selectedPreset = null;
+      
+      // Save timeline changes after deleting a preset
+      if (timelineId) {
+        saveTimelineChanges();
+      }
     }
   }
 
@@ -254,6 +328,11 @@
     const prevTime = currentTime;
     currentTime = (Date.now() - startTime) / 1000;
     
+    // Apply envelope values for the current time if available
+    if (showEnvelope && envelopes) {
+      applyEnvelopeValues(currentTime);
+    }
+    
     placedPresets.forEach(preset => {
       const presetEnd = preset.position + (preset.duration || 2);
       
@@ -274,6 +353,48 @@
     if (isPlaying) {
       animationFrame = requestAnimationFrame(playTimeline);
     }
+  }
+
+  // Add a function to apply envelope values
+  function applyEnvelopeValues(time) {
+    if (!envelopes) return;
+    
+    // For each parameter with envelope data
+    Object.keys(envelopes).forEach(param => {
+      const points = envelopes[param];
+      if (!points || points.length < 2) return;
+      
+      // Get interpolated value at current time
+      const value = getValueAtTime(param, time);
+      
+      // Update parameter store
+      parameterStore.updateParameter(param, value);
+    });
+  }
+
+  // Function to get interpolated value at time
+  function getValueAtTime(param, time) {
+    if (!envelopes[param]) return null;
+    
+    const sortedPoints = [...envelopes[param]].sort((a, b) => a.time - b.time);
+    
+    // Handle edge cases
+    if (time <= sortedPoints[0].time) return sortedPoints[0].value;
+    if (time >= sortedPoints[sortedPoints.length - 1].time) return sortedPoints[sortedPoints.length - 1].value;
+    
+    // Find the two points that surround the current time
+    for (let i = 0; i < sortedPoints.length - 1; i++) {
+      const current = sortedPoints[i];
+      const next = sortedPoints[i + 1];
+      
+      if (time >= current.time && time <= next.time) {
+        // Linear interpolation between points
+        const ratio = (time - current.time) / (next.time - current.time);
+        return current.value + ratio * (next.value - current.value);
+      }
+    }
+    
+    return sortedPoints[0].value; // Fallback
   }
   
   // Activate preset via websocket
@@ -355,8 +476,12 @@
     return markers;
   }
 
-  // Function to load timeline data
-  export function loadTimeline(timelineData) {
+  // Update the loadTimeline function to properly handle envelope loading
+  export function loadTimeline(timelineData, id = null) {
+    if (id) {
+      timelineId = id;
+    }
+    
     if (timelineData?.duration) {
       duration = timelineData.duration;
       viewportDuration = duration / zoomLevel;
@@ -364,8 +489,16 @@
     if (timelineData?.placedPresets) {
       placedPresets = timelineData.placedPresets;
     }
+    if (timelineData?.envelopes) {
+      envelopes = timelineData.envelopes;
+      // Delay loading envelopes until component is ready
+      setTimeout(() => {
+        if (envelopeComponent) {
+          envelopeComponent.loadEnvelopes(envelopes);
+        }
+      }, 100);
+    }
   }
-  
   // Cleanup on component destroy
   onMount(() => {
     window.addEventListener('keydown', handleKeydown);
@@ -415,6 +548,15 @@
       <span class="text-sm text-gray-600">{duration}s</span>
     </div>
     
+    <!-- Add envelope toggle button -->
+    <button 
+      class="px-3 py-2 {showEnvelope ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'} rounded-md hover:opacity-90"
+      on:click={toggleEnvelope}
+      title="Toggle parameter envelope"
+    >
+      {showEnvelope ? '📈 Hide Envelope' : '📈 Show Envelope'}
+    </button>
+      
     <div class="text-sm text-gray-600 ml-auto">
       Current Time: {formatTime(currentTime)} / {formatTime(duration)}
     </div>
@@ -479,7 +621,22 @@
     {/each}
   </div>
 </div>
-<PresetTimelineEnvelope currentTime={currentTime} />
+
+<!-- Conditionally render the envelope component with transition -->
+{#if showEnvelope}
+  <div transition:slide={{ duration: 300 }}>
+    <PresetTimelineEnvelope 
+      currentTime={currentTime} 
+      duration={duration}
+      viewportStart={viewportStart}
+      viewportDuration={viewportDuration}
+      timelineId={timelineId}
+      on:envelopeChanged={handleEnvelopeChanged}
+      bind:this={envelopeComponent}
+    />
+  </div>
+{/if}
+
 <style>
 input[type="range"] {
   -webkit-appearance: none;
@@ -496,5 +653,4 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 50%;
   cursor: pointer;
 }
-
 </style>

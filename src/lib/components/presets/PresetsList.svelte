@@ -46,7 +46,7 @@
 
       if (preset.type === 'timeline') {
         if (timelineComponent) {
-          timelineComponent.loadTimeline(preset.data);
+          timelineComponent.loadTimeline(preset.data, preset.id); // Pass the timeline ID
         }
         
         if (preset.data?.placedPresets) {
@@ -135,7 +135,8 @@
         type: 'timeline',
         data: {
           duration: timelineComponent.duration,
-          placedPresets: timelineComponent.placedPresets
+          placedPresets: timelineComponent.placedPresets,
+          envelopes: timelineComponent.envelopes // Include envelopes
         }
       };
       
