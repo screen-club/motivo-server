@@ -1,6 +1,8 @@
 import { writable } from "svelte/store";
 import { websocketService } from "../services/websocketService";
 
+export const currentParamName = writable("none");
+
 const DEFAULT_PARAMETERS = {
   gravity: -9.81,
   density: 1.2,
