@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { slide } from 'svelte/transition';
-  import { websocketService } from '../../services/websocketService';
+  import { websocketService } from '../../services/websocket';
   import { PoseService } from '../../services/poses';
   import { parameterStore } from '../../stores/parameterStore';
   import { DbService } from '../../services/db';
