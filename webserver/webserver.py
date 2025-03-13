@@ -6,6 +6,7 @@ from datetime import datetime
 import subprocess
 import ffmpeg
 import time
+import re  # For user agent parsing
 
 # Third-party imports
 from flask import Flask, send_from_directory, request, jsonify, send_file
@@ -24,6 +25,9 @@ from flask_cors import CORS
 import json
 from dotenv import load_dotenv
 from sqliteHander import Content, initialize_database
+
+# Record server start time
+SERVER_START_TIME = time.time()
 
 # Load environment variables
 load_dotenv()
@@ -78,6 +82,10 @@ import logging
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
+# Create a custom logger for client connections
+client_logger = logging.getLogger('client_connections')
+client_logger.setLevel(logging.INFO)
+
 CORS(app, resources={
     r"/*": {
         "origins": ["*"],
@@ -100,6 +108,35 @@ chat_histories = {}
 
 # Initialize Flask-SocketIO after app initialization
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Client tracking
+active_clients = {}
+connection_requests_count = 0
+last_status_log_time = 0
+STATUS_LOG_INTERVAL = 10  # Only log status checks every 10 seconds
+
+# Helper function to extract client info
+def get_client_info():
+    """Extract useful client information from request"""
+    sid = request.sid
+    ip = request.remote_addr or 'unknown'
+    user_agent = request.headers.get('User-Agent', 'Unknown')
+    
+    # Try to extract browser name
+    browser = 'Unknown'
+    if user_agent:
+        # Simple browser detection
+        browser_match = re.search(r'(Chrome|Safari|Firefox|Edge|Opera)[/\s]([0-9.]+)', user_agent)
+        if browser_match:
+            browser = browser_match.group(1)
+    
+    return {
+        'sid': sid,
+        'ip': ip,
+        'browser': browser,
+        'user_agent': user_agent,
+        'connected_at': time.time()
+    }
 
 # Initialize Gemini service
 try:
@@ -168,7 +205,20 @@ gemini_thread.start()
 @socketio.on('connect')
 def handle_connect():
     """Handle Socket.IO client connection"""
-    print(f"Client connected to Socket.IO: {request.sid}")
+    client_info = get_client_info()
+    client_id = client_info['sid']
+    
+    # Store client info
+    active_clients[client_id] = client_info
+    
+    # Only log unique IPs to reduce noise
+    ip_count = sum(1 for c in active_clients.values() if c['ip'] == client_info['ip'])
+    if ip_count == 1:
+        # First connection from this IP
+        client_logger.info(f"[CLIENT] New client connected from {client_info['ip']} ({client_info['browser']})")
+    else:
+        # Reconnection from same IP - only log at debug level
+        client_logger.debug(f"[CLIENT] Client reconnected from {client_info['ip']} ({client_info['browser']}) - {ip_count} connections from this IP")
     
     # Send initial connection status for Gemini
     if gemini_service:
@@ -181,12 +231,32 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle Socket.IO client disconnection"""
-    print(f"Client disconnected from Socket.IO: {request.sid}")
+    client_id = request.sid
+    
+    if client_id in active_clients:
+        client_info = active_clients.pop(client_id)
+        
+        # Count remaining connections from this IP
+        ip_count = sum(1 for c in active_clients.values() if c['ip'] == client_info['ip'])
+        
+        if ip_count == 0:
+            # Last connection from this IP
+            client_logger.info(f"[CLIENT] Client disconnected from {client_info['ip']} ({client_info['browser']})")
+        else:
+            # Still have other connections from this IP
+            client_logger.debug(f"[CLIENT] Client session ended from {client_info['ip']} - {ip_count} remaining connections")
 
 @socketio.on('gemini_connect')
 def handle_gemini_connect():
     """Handle dedicated Gemini connection"""
-    print(f"Client requesting Gemini connection: {request.sid}")
+    global connection_requests_count
+    connection_requests_count += 1
+    
+    # Log periodically or on first request
+    if connection_requests_count <= 1 or connection_requests_count % 10 == 0:
+        client_id = request.sid
+        client_info = active_clients.get(client_id, {'ip': 'unknown', 'browser': 'unknown'})
+        client_logger.info(f"[CLIENT] Gemini connection request from {client_info['ip']} ({connection_requests_count} total requests)")
     
     # Send current status immediately
     if gemini_service:
@@ -207,6 +277,10 @@ def handle_gemini_message(data):
         return
     
     text = data.get('text', '')
+    client_id = request.sid
+    client_info = active_clients.get(client_id, {'ip': 'unknown', 'browser': 'unknown'})
+    
+    client_logger.info(f"[CLIENT] Message from {client_info['ip']}: {text[:30]}...")
     success = gemini_service.send_text(text)
     
     # Acknowledge receipt
@@ -236,18 +310,32 @@ def handle_gemini_capture():
 @socketio.on('check_gemini_connection')
 def handle_check_gemini_connection():
     """Check and report Gemini connection status"""
-    print("Client requested Gemini connection status")
+    global last_status_log_time
+    current_time = time.time()
+    
+    # Rate limit logging of status checks
+    if current_time - last_status_log_time > STATUS_LOG_INTERVAL:
+        client_logger.debug(f"[CLIENT] Connection status requested, active clients: {len(active_clients)}")
+        last_status_log_time = current_time
     
     connected = False
     if gemini_service:
         connected = gemini_service.is_connected()
     
-    print(f"Gemini connection status: {connected}")
-    
     emit('gemini_connection_status', {
         'connected': connected,
         'timestamp': time.time()
     })
+
+# Get active client count
+def get_active_client_count():
+    """Get count of active clients, grouped by IP to represent real users"""
+    if not active_clients:
+        return 0
+        
+    # Count unique IPs
+    unique_ips = set(client['ip'] for client in active_clients.values())
+    return len(unique_ips)
 
 @socketio.on('gemini_clear_conversation')
 def handle_gemini_clear_conversation(data):
@@ -610,6 +698,63 @@ def get_latest_frame():
 def broadcast_gemini_response(response):
     """Broadcast Gemini response to all clients"""
     socketio.emit('gemini_response', response)
+
+# Add a connection status endpoint
+@app.route('/api/connection-status', methods=['GET'])
+def get_connection_status():
+    """Return connection status information for monitoring"""
+    try:
+        # Get unique client count
+        unique_ips = set(client['ip'] for client in active_clients.values())
+        clients_by_browser = {}
+        for client in active_clients.values():
+            browser = client.get('browser', 'Unknown')
+            if browser not in clients_by_browser:
+                clients_by_browser[browser] = 0
+            clients_by_browser[browser] += 1
+        
+        # Get Gemini service status
+        gemini_status = {
+            'connected': False,
+            'state': 'not_initialized',
+            'uptime': 0
+        }
+        
+        if gemini_service:
+            gemini_status['connected'] = gemini_service.is_connected()
+            gemini_status['state'] = getattr(gemini_service, 'connection_state', 'unknown')
+            
+            # Calculate uptime if available
+            if hasattr(gemini_service, 'last_connection_attempt') and gemini_service.is_connected():
+                gemini_status['uptime'] = time.time() - gemini_service.last_connection_attempt
+            
+            # Get detailed health if available
+            if hasattr(gemini_service, 'connection_health'):
+                gemini_status.update(gemini_service.connection_health())
+        
+        # Calculate actual server uptime
+        server_uptime = time.time() - SERVER_START_TIME
+        
+        return jsonify({
+            'server': {
+                'started_at': SERVER_START_TIME,
+                'uptime': server_uptime,
+                'uptime_formatted': f"{int(server_uptime // 3600)}h {int((server_uptime % 3600) // 60)}m {int(server_uptime % 60)}s"
+            },
+            'clients': {
+                'active_connections': len(active_clients),
+                'unique_users': len(unique_ips),
+                'by_browser': clients_by_browser,
+                'unique_ips': list(unique_ips)
+            },
+            'gemini': gemini_status,
+            'timestamp': time.time()
+        })
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        }), 500
 
 if __name__ == '__main__':
     try:

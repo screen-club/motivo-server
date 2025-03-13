@@ -49,6 +49,11 @@ class GeminiService:
         self.shared_frames_dir = os.path.join(self.storage_dir, 'shared_frames')
         self.gemini_frame_path = os.path.join(self.shared_frames_dir, 'latest_frame.jpg')
         
+        # Connection state tracking
+        self.connection_state = "disconnected"
+        self.last_connection_attempt = 0
+        self.connection_attempts = 0
+        
         logger.info(f"Gemini service initialized with port {port}")
     
     def start(self):
@@ -81,11 +86,15 @@ class GeminiService:
         
         while self.running:
             try:
-                logger.info(f"Connecting to Gemini API at {self.uri}")
+                self.connection_attempts += 1
+                self.last_connection_attempt = time.time()
+                self.connection_state = "connecting"
+                logger.info(f"[CONNECTIVITY] Connecting to Gemini API (attempt #{self.connection_attempts}, retry delay: {retry_delay}s)")
                 
                 # Verify API key is set
                 if not self.api_key:
-                    logger.error("Cannot connect to Gemini: API key is not set")
+                    logger.error("[CONNECTIVITY] Cannot connect to Gemini: API key is not set")
+                    self.connection_state = "failed"
                     self._broadcast_connection_status(False)
                     await asyncio.sleep(5)
                     continue
@@ -105,13 +114,14 @@ class GeminiService:
                         ping_interval=30,
                         ping_timeout=10
                     )
-                    logger.info("WebSocket connection established successfully")
+                    logger.info("[CONNECTIVITY] WebSocket connection established successfully")
                 except Exception as conn_err:
-                    logger.error(f"Failed to establish WebSocket connection: {str(conn_err)}")
-                    traceback.print_exc()
+                    logger.error(f"[CONNECTIVITY] Failed to establish WebSocket connection: {str(conn_err)}")
+                    self.connection_state = "failed"
                     self._broadcast_connection_status(False)
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, max_retry_delay)
+                    logger.info(f"[CONNECTIVITY] Will retry connection in {retry_delay} seconds")
                     continue
                 
                 with self.ws_lock:
@@ -135,32 +145,38 @@ class GeminiService:
                         }
                     }
                     
-                    logger.info(f"Sending setup message: {setup_msg}")
+                    logger.info(f"[CONNECTIVITY] Sending setup message to initialize Gemini connection")
                     await self.ws.send(json.dumps(setup_msg))
                     
                     # Wait for response with timeout
                     raw_response = await asyncio.wait_for(self.ws.recv(), timeout=10)
                     setup_response = json.loads(raw_response)
-                    logger.info(f"Gemini API setup complete: {setup_response}")
+                    logger.info(f"[CONNECTIVITY] Gemini API setup complete and ready for messages")
                     
                     # Broadcast successful connection
+                    self.connection_state = "connected"
+                    self.connection_attempts = 0
                     self._broadcast_connection_status(True)
                 except asyncio.TimeoutError:
-                    logger.error("Timeout waiting for setup response from Gemini")
+                    logger.error("[CONNECTIVITY] Timeout waiting for setup response from Gemini")
                     await self.ws.close()
                     self.ws = None
+                    self.connection_state = "timeout"
                     self._broadcast_connection_status(False)
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, max_retry_delay)
+                    logger.info(f"[CONNECTIVITY] Will retry connection in {retry_delay} seconds")
                     continue
                 except Exception as setup_err:
-                    logger.error(f"Error during Gemini setup: {str(setup_err)}")
+                    logger.error(f"[CONNECTIVITY] Error during Gemini setup: {str(setup_err)}")
                     traceback.print_exc()
                     await self.ws.close()
                     self.ws = None
+                    self.connection_state = "setup_failed"
                     self._broadcast_connection_status(False)
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, max_retry_delay)
+                    logger.info(f"[CONNECTIVITY] Will retry connection in {retry_delay} seconds")
                     continue
                 
                 # Process messages with better error handling
@@ -170,13 +186,16 @@ class GeminiService:
                         self._process_incoming_messages()
                     )
                 except websockets.exceptions.ConnectionClosed as closed_err:
-                    logger.warning(f"Gemini WebSocket connection closed with code {closed_err.code}: {closed_err.reason}")
+                    logger.warning(f"[CONNECTIVITY] Gemini WebSocket connection closed with code {closed_err.code}: {closed_err.reason}")
+                    self.connection_state = "closed"
                 except Exception as process_err:
-                    logger.error(f"Error processing messages: {str(process_err)}")
+                    logger.error(f"[CONNECTIVITY] Error processing messages: {str(process_err)}")
+                    self.connection_state = "error"
                     traceback.print_exc()
                 
             except Exception as e:
-                logger.error(f"Unexpected error in Gemini connection: {str(e)}")
+                logger.error(f"[CONNECTIVITY] Unexpected error in Gemini connection: {str(e)}")
+                self.connection_state = "error"
                 traceback.print_exc()
                 
             finally:
@@ -184,15 +203,18 @@ class GeminiService:
                 with self.ws_lock:
                     if self.ws:
                         try:
+                            logger.info("[CONNECTIVITY] Closing WebSocket connection")
                             await self.ws.close()
                         except:
-                            pass
+                            logger.warning("[CONNECTIVITY] Error when closing WebSocket connection")
                         self.ws = None
                 
                 # Notify of disconnection
+                self.connection_state = "disconnected"
                 self._broadcast_connection_status(False)
                 
                 # Wait before reconnecting
+                logger.info(f"[CONNECTIVITY] Will attempt reconnection in {retry_delay} seconds")
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, max_retry_delay)
     
@@ -236,19 +258,20 @@ class GeminiService:
         current_response = ""  # Buffer to accumulate text chunks
         turn_in_progress = False
         
+        logger.info("[CONNECTIVITY] Now listening for incoming messages from Gemini")
+        
         while self.running and self.ws:
             try:
                 # Receive message from Gemini
                 logger.debug("Waiting for response from Gemini...")
                 raw_response = await self.ws.recv()
                 logger.info("Received raw response from Gemini")
-                logger.debug(f"Full raw response: {raw_response}")
+               
                 
                 # Parse JSON response
                 try:
                     response = json.loads(raw_response)
-                    logger.info(f"Full response structure: {json.dumps(response, indent=2)}")
-                    logger.debug(f"Response keys: {list(response.keys())}")
+                    
                 except json.JSONDecodeError as json_err:
                     logger.error(f"Failed to parse JSON response: {str(json_err)}")
                     logger.debug(f"Invalid JSON: {raw_response[:100]}...")
@@ -266,7 +289,6 @@ class GeminiService:
                 # Check for serverContent which contains the model's response
                 if "serverContent" in response:
                     server_content = response["serverContent"]
-                    logger.debug(f"Server content: {json.dumps(server_content, indent=2)}")
                     
                     # Check for turn completion
                     if server_content.get("turnComplete", False):
@@ -286,19 +308,16 @@ class GeminiService:
                             for part in model_turn["parts"]:
                                 if "text" in part:
                                     text_content = part["text"]
-                                    logger.info(f"Found text content in modelTurn: {text_content[:50]}...")
                                     turn_in_progress = True
                                     break
                 
                 # Accumulate text content if present
                 if text_content:
                     current_response += text_content
-                    logger.info(f"Current accumulated response: {current_response[:50]}...")
                 
                 # Send the response when we get a complete turn or significant chunk
                 if (text_content and len(text_content) > 10) or turn_complete:
                     if current_response:
-                        logger.info(f"Sending message to queue: {current_response[:50]}...")
                         self.incoming_queue.put({
                             "type": "gemini_response",
                             "content": current_response,
@@ -328,8 +347,9 @@ class GeminiService:
                 if "error" in response:
                     logger.error(f"Gemini API error: {response.get('error')}")
             
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("Gemini WebSocket connection closed")
+            except websockets.exceptions.ConnectionClosed as ws_err:
+                logger.warning(f"[CONNECTIVITY] Gemini WebSocket connection closed: {ws_err.code} - {ws_err.reason}")
+                self.connection_state = "closed"
                 break
             except Exception as e:
                 logger.error(f"Error processing incoming message: {str(e)}")
@@ -403,10 +423,10 @@ class GeminiService:
                 return False
                 
             # Check if the frame is recent enough
-            file_age = time.time() - os.path.getmtime(self.gemini_frame_path)
-            if file_age > 10:  # If older than 10 seconds
-                logger.warning(f"Frame is too old ({file_age:.1f} seconds)")
-                return False
+            #file_age = time.time() - os.path.getmtime(self.gemini_frame_path)
+            #if file_age > 10:  # If older than 10 seconds
+                #logger.warning(f"Frame is too old ({file_age:.1f} seconds)")
+                #return False
                 
             # Read the frame file
             with open(self.gemini_frame_path, 'rb') as f:
@@ -444,8 +464,22 @@ class GeminiService:
             connected = self.ws is not None
         
         # Log the status check
-        logger.debug(f"Gemini connection status checked: {connected}")
+        uptime = time.time() - self.last_connection_attempt if self.connection_state == "connected" else 0
+        logger.debug(f"[CONNECTIVITY] Gemini connection status: {self.connection_state}, connected={connected}, uptime={uptime:.1f}s")
         return connected
+    
+    def connection_health(self):
+        """Return detailed connection health information"""
+        with self.ws_lock:
+            connected = self.ws is not None
+        
+        return {
+            "connected": connected,
+            "state": self.connection_state,
+            "attempts": self.connection_attempts,
+            "last_attempt": self.last_connection_attempt,
+            "uptime": time.time() - self.last_connection_attempt if connected else 0
+        }
     
     def process_incoming_messages(self, callback):
         """Process any incoming messages and call the provided callback"""
@@ -482,14 +516,17 @@ class GeminiService:
         """Close the WebSocket connection"""
         with self.ws_lock:
             if self.ws:
+                logger.info("[CONNECTIVITY] Explicitly closing Gemini WebSocket connection")
                 await self.ws.close()
-                self.ws = None 
+                self.ws = None
+                self.connection_state = "closed"
     
     def _broadcast_connection_status(self, connected):
         """Broadcast connection status to all clients via socketio"""
         try:
             # Log the status change
-            logger.info(f"Broadcasting Gemini connection status: {connected}")
+            state_description = "connected" if connected else self.connection_state
+            logger.info(f"[CONNECTIVITY] Broadcasting Gemini connection status: {state_description}")
             
             # Import socketio directly from webserver to avoid circular imports
             from webserver import socketio
@@ -497,8 +534,9 @@ class GeminiService:
             # Use socketio directly without Flask's emit
             socketio.emit('gemini_connection_status', {
                 'connected': connected,
+                'state': self.connection_state,
                 'timestamp': time.time()
             })
         except Exception as e:
-            logger.error(f"Error broadcasting connection status: {str(e)}")
+            logger.error(f"[CONNECTIVITY] Error broadcasting connection status: {str(e)}")
 
