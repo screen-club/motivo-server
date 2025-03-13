@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { fade } from 'svelte/transition';
   import { DbService } from '../../services/db';
-  import { websocketService } from '../../services/websocketService';
+  import { websocketService } from '../../services/websocket';
   import { parameterStore } from '../../stores/parameterStore';
   import { PoseService } from '../../services/poses';
   import PresetTimeline from './PresetTimeline.svelte';

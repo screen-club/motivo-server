@@ -1,11 +1,11 @@
 <script>
-  import { websocketService } from '../services/websocketService';
+  import { websocketService } from '../services/websocket';
   import { onMount, onDestroy } from 'svelte';
   import { v4 as uuidv4 } from 'uuid';
   import { rewardStore } from '../stores/rewardStore';
   import { chatStore } from '../stores/chatStore';
-  import { webrtcService } from '../services/webrtcService';
-  import geminiSocketService from '../services/geminiSocketService';
+  import { webrtcService } from '../services/webrtc';
+  import geminiSocketService from '../services/gemini';
   import MarkdownIt from 'markdown-it';
   
   // Import LLM components

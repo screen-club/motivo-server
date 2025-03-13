@@ -1,9 +1,10 @@
 <script>
-  import { parameterStore } from '../stores/parameterStore';
-  import { websocketService } from '../services/websocketService';
+  import { parameterStore } from '../../stores/parameterStore';
+  import { websocketService } from '../../services/websocket';
   import ParameterControl from './ParameterControl.svelte';
   import ParameterGroup from './ParameterGroup.svelte';
-  import SetCurrentEnvelope from './Buttons/SetCurrentEnvelope.svelte';
+  // Remove envelope button for simplification
+  //import ParameterEnvelopeButton from './ParameterEnvelopeButton.svelte';
 
   // Subscribe to the store values
   $: parameters = $parameterStore;
@@ -21,11 +22,11 @@
   }
 </script>
 
-<div class="w-96 py-4">
-  <div class="bg-white rounded-lg shadow-lg p-4">
-    <h1 class="text-lg font-bold mb-4 text-gray-800">Environment Parameters</h1>
+<div class="w-full py-2">
+  <div class="bg-white rounded-lg shadow-sm p-4">
+    <h2 class="text-lg font-semibold mb-4">Environment Parameters</h2>
     
-    <div class="space-y-3">
+    <div class="space-y-4">
       <!-- Basic Parameters -->
       <ParameterGroup columns={2}>
         <ParameterControl
@@ -96,7 +97,7 @@
         />
       </ParameterGroup>
 
-      <div class="flex gap-2">
+      <div class="flex gap-2 mt-6">
         <button 
           on:click={() => parameterStore.reset()}
           class="flex-1 bg-gray-600 text-white px-3 py-2 text-sm rounded hover:bg-gray-700 transition-colors"
@@ -112,4 +113,4 @@
       </div>
     </div>
   </div>
-</div> 
+</div>

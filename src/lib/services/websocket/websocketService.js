@@ -295,10 +295,10 @@ class WebSocketService {
 
   notifyStores() {
     // Update stores with new socket instance
-    import("../stores/parameterStore").then((module) => {
+    import("../../stores/parameterStore").then((module) => {
       module.parameterStore.setSocket(this.socket);
     });
-    import("../stores/rewardStore").then((module) => {
+    import("../../stores/rewardStore").then((module) => {
       module.rewardStore.setSocket(this.socket);
     });
   }

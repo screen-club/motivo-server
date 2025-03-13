@@ -1,5 +1,5 @@
 <script>
-    import { websocketService } from "../services/websocketService";
+    import { websocketService } from "../services/websocket";
     import { onMount, onDestroy } from "svelte";
     const apiUrl = import.meta.env.VITE_API_URL;
   

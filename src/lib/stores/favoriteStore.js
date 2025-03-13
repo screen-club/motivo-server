@@ -1,6 +1,6 @@
 import { writable } from "svelte/store";
 import { rewardStore } from "./rewardStore";
-import { websocketService } from "../services/websocketService";
+import { websocketService } from "../services/websocket";
 
 function createFavoriteStore() {
   // Initialize from localStorage

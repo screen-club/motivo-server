@@ -1,4 +1,4 @@
-import { websocketService } from './websocketService';
+import { websocketService } from './websocket';
 
 export class PoseService {
     static currentAnimation = null;

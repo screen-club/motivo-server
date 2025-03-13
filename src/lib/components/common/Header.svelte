@@ -1,10 +1,10 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { websocketService } from '../services/websocket';
+  import { websocketService } from '../../services/websocket';
   import { writable } from 'svelte/store';
   import { Link } from "svelte-routing";
-  import { location } from "../stores/routeStore";
-  import { versionInfo } from '../stores/versionStore';
+  import { location } from "../../stores/routeStore";
+  import { versionInfo } from '../../stores/versionStore';
 
   export let title = "Liminal Motivo Server";
   

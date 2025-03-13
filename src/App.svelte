@@ -1,9 +1,9 @@
 <script>
   import { Router, Link, Route } from "svelte-routing";
   import { onMount, onDestroy } from "svelte";
-  import { websocketService } from "./lib/services/websocketService";
+  import { websocketService } from "./lib/services/websocket";
   import Header from './lib/components/Header.svelte';
-  import LiveFeed from './lib/components/LiveFeed.svelte';
+  import LiveFeed from './lib/components/LiveFeed';
   import Home from './lib/pages/Home.svelte';
   import About from './lib/pages/About.svelte';
   import Control from './lib/pages/Control.svelte';

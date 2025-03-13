@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-    import { websocketService } from '../services/websocketService';
+    import { websocketService } from '../services/websocket';
     import { wsSendPose } from '../services/poses';
   const apiUrl = import.meta.env.VITE_API_URL;
   let savedPoses = [];

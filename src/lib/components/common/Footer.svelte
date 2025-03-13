@@ -1,8 +1,8 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { websocketService } from '../services/websocket';
+  import { websocketService } from '../../services/websocket';
   import { writable } from 'svelte/store';
-  import { versionInfo } from '../stores/versionStore';
+  import { versionInfo } from '../../stores/versionStore';
 
   const connectedClients = writable(0);
   const uniqueClients = writable(0);

@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { websocketService } from '../../services/websocketService';
+  import { websocketService } from '../../services/websocket';
   import { PoseService } from '../../services/poses';
   import { parameterStore } from '../../stores/parameterStore';
   import PresetTimelineEnvelope from './PresetTimelineEnvelope.svelte';

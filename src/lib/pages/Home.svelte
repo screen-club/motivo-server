@@ -1,8 +1,8 @@
 <script>
   import { onMount, onDestroy } from "svelte";
-  import { websocketService, computingStatus } from "../services/websocketService";
+  import { websocketService, computingStatus } from "../services/websocket";
   import { writable } from "svelte/store";
-  import LiveFeed from "../components/LiveFeed.svelte";
+  import LiveFeed from "../components/LiveFeed";
   import VibePanel from "../components/VibePanel.svelte";
   import SmplPoseLoader from "../components/SmplPoseLoader.svelte";
 

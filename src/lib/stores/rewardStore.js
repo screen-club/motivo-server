@@ -1,5 +1,5 @@
 import { writable } from "svelte/store";
-import { websocketService } from "../services/websocketService";
+import { websocketService } from "../services/websocket";
 import { v4 as uuidv4 } from "uuid";
 
 // Define reward types and their parameters

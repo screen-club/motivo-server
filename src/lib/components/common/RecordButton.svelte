@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { websocketService } from '../services/websocket';
+  import { websocketService } from '../../services/websocket';
   
   const { socket } = $props<{ socket: WebSocket }>();
   

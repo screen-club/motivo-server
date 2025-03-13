@@ -1,5 +1,5 @@
 <script>
-  import { websocketService } from "../services/websocketService";
+  import { websocketService } from "../services/websocket";
 
   // Props
   export let pose = [];

@@ -1,14 +1,14 @@
 <script>
     import { onMount, onDestroy } from 'svelte';
-    import LiveFeed from '../components/LiveFeed.svelte';
-    import ParameterPanel from '../components/ParameterPanel.svelte';
-    import RewardPanel from '../components/RewardPanel.svelte';
+    import LiveFeed from '../components/LiveFeed';
+    import ParameterPanel from '../components/parameters/ParameterPanel.svelte';
+    import RewardPanel from '../components/rewards/RewardPanel.svelte';
     import RecordButton from '../components/RecordButton.svelte';
     import FavoritesOverview from '../components/FavoritesOverview.svelte';
-    import ActiveRewardsPanel from '../components/ActiveRewardsPanel.svelte';
+    import ActiveRewardsPanel from '../components/rewards/ActiveRewardsPanel.svelte';
     import { parameterStore } from '../stores/parameterStore';
     import { rewardStore } from '../stores/rewardStore';
-    import { websocketService } from '../services/websocketService';
+    import { websocketService } from '../services/websocket';
     import VibePanel from '../components/VibePanel.svelte';
     import { favoriteStore } from '../stores/favoriteStore';
     import LLM from '../components/LLM.svelte';

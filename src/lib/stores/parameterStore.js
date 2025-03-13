@@ -1,5 +1,5 @@
 import { writable } from "svelte/store";
-import { websocketService } from "../services/websocketService";
+import { websocketService } from "../services/websocket";
 
 export const currentParamName = writable("none");
 
