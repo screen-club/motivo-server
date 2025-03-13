@@ -18,6 +18,7 @@ class PositionTarget:
     z: Optional[float] = None
     weight: float = 1.0
     margin: float = 0.2
+    sigmoid: str = "linear"  # Added sigmoid parameter for customizing reward shape
 
 @dataclasses.dataclass
 class PositionReward(humenv_rewards.RewardFunction):
@@ -38,42 +39,23 @@ class PositionReward(humenv_rewards.RewardFunction):
             current_pos = data.xpos[model.body(body_name).id].copy()
             axis_rewards = []
 
-            # Check each axis
-            if target.x is not None:
-                x_reward = rewards.tolerance(
-                    abs(current_pos[0] - target.x),
-                    bounds=(0, target.margin),
-                    margin=target.margin,
-                    value_at_margin=0.01,
-                    sigmoid="linear"
-                )
-                # Handle both tensor and float return types
-                x_reward = x_reward.item() if hasattr(x_reward, 'item') else float(x_reward)
-                axis_rewards.append(x_reward)
-
-            if target.y is not None:
-                y_reward = rewards.tolerance(
-                    abs(current_pos[1] - target.y),
-                    bounds=(0, target.margin),
-                    margin=target.margin,
-                    value_at_margin=0.01,
-                    sigmoid="linear"
-                )
-                # Handle both tensor and float return types
-                y_reward = y_reward.item() if hasattr(y_reward, 'item') else float(y_reward)
-                axis_rewards.append(y_reward)
-
-            if target.z is not None:
-                z_reward = rewards.tolerance(
-                    abs(current_pos[2] - target.z),
-                    bounds=(0, target.margin),
-                    margin=target.margin,
-                    value_at_margin=0.01,
-                    sigmoid="linear"
-                )
-                # Handle both tensor and float return types
-                z_reward = z_reward.item() if hasattr(z_reward, 'item') else float(z_reward)
-                axis_rewards.append(z_reward)
+            # Check each axis - refactored to reduce duplication
+            for i, (axis_val, target_val) in enumerate([
+                (current_pos[0], target.x),
+                (current_pos[1], target.y),
+                (current_pos[2], target.z)
+            ]):
+                if target_val is not None:
+                    reward = rewards.tolerance(
+                        abs(axis_val - target_val),
+                        bounds=(0, target.margin),
+                        margin=target.margin,
+                        value_at_margin=0.01,
+                        sigmoid=target.sigmoid
+                    )
+                    # Handle both tensor and float return types
+                    reward = reward.item() if hasattr(reward, 'item') else float(reward)
+                    axis_rewards.append(reward)
 
             if axis_rewards:
                 # Multiplicative combination of axis rewards
@@ -112,8 +94,8 @@ class PositionReward(humenv_rewards.RewardFunction):
     def reward_from_name(name: str) -> Optional["humenv_rewards.RewardFunction"]:
         """
         Parse reward configuration from name string.
-        Format: position-{body1}-x{val}-y{val}-z{val}-w{val}_{body2}...
-        Example: position-Head-x1.5-z1.7-w1.0_L_Hand-x0.5-y0.3-z1.2-w0.8
+        Format: position-{body1}-x{val}-y{val}-z{val}-w{val}-m{val}-s{sigmoid}_{body2}...
+        Example: position-Head-x1.5-z1.7-w1.0-m0.3-slinear_L_Hand-x0.5-y0.3-z1.2-w0.8
         """
         if not name.startswith("position-"):
             return None
@@ -124,10 +106,16 @@ class PositionReward(humenv_rewards.RewardFunction):
             
             for part in parts:
                 configs = part.split("-")
+                if len(configs) < 2:
+                    print(f"Warning: Invalid body part config: {part}")
+                    continue
+                    
                 body_name = configs[0]
                 target = PositionTarget()
                 
                 for config in configs[1:]:
+                    if not config:
+                        continue
                     if config.startswith("x"):
                         target.x = float(config[1:])
                     elif config.startswith("y"):
@@ -136,9 +124,18 @@ class PositionReward(humenv_rewards.RewardFunction):
                         target.z = float(config[1:])
                     elif config.startswith("w"):
                         target.weight = float(config[1:])
+                    elif config.startswith("m"):
+                        target.margin = float(config[1:])
+                    elif config.startswith("s"):
+                        target.sigmoid = config[1:]
                 
                 targets[body_name] = target
 
+            # Validate that we have at least one target
+            if not targets:
+                print(f"Warning: No valid targets found in: {name}")
+                return None
+                
             return PositionReward(targets=targets)
 
         except (ValueError, IndexError) as e:
@@ -164,8 +161,8 @@ class PositionReward(humenv_rewards.RewardFunction):
         """Print usage instructions."""
         print("\nPositionReward Usage:")
         print("\nMethod 1 - String format:")
-        print("position-{body}-x{val}-y{val}-z{val}-w{val}_{body2}...")
-        print("Example: position-Head-x1.5-z1.7-w1.0_L_Hand-x0.5-y0.3-z1.2-w0.8")
+        print("position-{body}-x{val}-y{val}-z{val}-w{val}-m{margin}-s{sigmoid}_{body2}...")
+        print("Example: position-Head-x1.5-z1.7-w1.0-m0.3-slinear_L_Hand-x0.5-y0.3-z1.2-w0.8")
         
         print("\nMethod 2 - Direct creation:")
         print("""
@@ -184,4 +181,5 @@ reward = PositionReward.create({
         print("\nParameters:")
         print("- x, y, z: target positions (optional)")
         print("- weight: importance (default: 1.0)")
-        print("- margin: tolerance (default: 0.2)") 
+        print("- margin: tolerance (default: 0.2)")
+        print("- sigmoid: reward shape ('linear', 'quadratic', etc.) (default: 'linear')") 

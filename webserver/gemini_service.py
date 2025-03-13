@@ -54,12 +54,20 @@ class GeminiService:
         self.last_connection_attempt = 0
         self.connection_attempts = 0
         
+        # System instructions
+        self.system_instructions = None
+        self.system_instructions_path = os.path.join(self.base_dir, 'webserver', 'system_instructions.txt')
+        
         logger.info(f"Gemini service initialized with port {port}")
     
     def start(self):
         """Start the Gemini service"""
         if self.thread is None:
             self.running = True
+            
+            # Load system instructions if available
+            self.load_system_instructions()
+            
             self.thread = threading.Thread(target=self._run_async_loop)
             self.thread.daemon = True
             self.thread.start()
@@ -90,6 +98,10 @@ class GeminiService:
                 self.last_connection_attempt = time.time()
                 self.connection_state = "connecting"
                 logger.info(f"[CONNECTIVITY] Connecting to Gemini API (attempt #{self.connection_attempts}, retry delay: {retry_delay}s)")
+                
+                # Reload system instructions on each connection attempt
+                logger.info("[CONNECTIVITY] Reloading system instructions before connection attempt")
+                self.load_system_instructions()
                 
                 # Verify API key is set
                 if not self.api_key:
@@ -137,13 +149,26 @@ class GeminiService:
                             "model": f"models/{self.model}",
                             "generationConfig": {
                                 "responseModalities": ["TEXT"],  # Only request text responses
+                                "responseMimeType": "application/json",  # Request JSON output
                                 "temperature": 0.7,
                                 "topP": 0.95,
                                 "topK": 40,
-                                "maxOutputTokens": 8192  # Allow for longer responses
+                                "maxOutputTokens": 8192,  # Allow for longer responses
+                                
                             }
                         }
                     }
+                    
+                    # Add system instructions with the correct format
+                    if self.system_instructions:
+                        setup_msg["setup"]["systemInstruction"] = {
+                            "parts": [
+                                {
+                                    "text": self.system_instructions
+                                }
+                            ]
+                        }
+                        logger.info(f"[CONNECTIVITY] Added system instructions to setup message ({len(self.system_instructions)} chars)")
                     
                     logger.info(f"[CONNECTIVITY] Sending setup message to initialize Gemini connection")
                     await self.ws.send(json.dumps(setup_msg))
@@ -539,4 +564,149 @@ class GeminiService:
             })
         except Exception as e:
             logger.error(f"[CONNECTIVITY] Error broadcasting connection status: {str(e)}")
+    
+    def load_system_instructions(self, path=None):
+        """Load system instructions from a file"""
+        try:
+            # Use default path if none provided
+            file_path = path or self.system_instructions_path
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                logger.warning(f"System instructions file not found at {file_path}")
+                return False
+                
+            # Read the file
+            with open(file_path, 'r') as f:
+                self.system_instructions = f.read()
+                
+            logger.info(f"Loaded system instructions from {file_path}, length: {len(self.system_instructions)} chars")
+            return True
+        except Exception as e:
+            logger.error(f"Error loading system instructions: {str(e)}")
+            return False
+    
+    def set_system_instructions(self, instructions):
+        """Set system instructions directly from string"""
+        try:
+            if not instructions:
+                logger.warning("Empty system instructions provided")
+                return False
+                
+            self.system_instructions = instructions
+            logger.info(f"Set system instructions, length: {len(self.system_instructions)} chars")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting system instructions: {str(e)}")
+            return False
+    
+    def send_text_with_system_instructions(self, text, client_id=None):
+        """Send text message with system instructions to Gemini API"""
+        if not self.running:
+            logger.warning("Cannot send text - service not running")
+            return False
+        
+        # Check if we have a connection
+        with self.ws_lock:
+            if not self.ws:
+                logger.warning("Cannot send text - no WebSocket connection")
+                return False
+        
+        try:
+            # Format the message according to Gemini Multimodal Live API documentation
+            # Include system instructions if available
+            msg = {
+                "clientContent": {
+                    "turns": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "text": text
+                                }
+                            ]
+                        }
+                    ],
+                    "turn_complete": True
+                }
+            }
+            
+            # Add system instructions if available
+            if self.system_instructions:
+                msg["clientContent"]["systemInstruction"] = {
+                    "parts": [
+                        {
+                            "text": self.system_instructions
+                        }
+                    ]
+                }
+                logger.info("Added system instructions to message")
+            
+            # Add to queue and log
+            self.outgoing_queue.put(msg)
+            logger.info(f"Queued text message with system instructions for Gemini: {text[:50]}...")
+            
+            # If we only have one client, store this client ID for response routing
+            if client_id:
+                self.client_sessions[client_id] = {
+                    "last_message": text,
+                    "timestamp": time.time()
+                }
+                logger.debug(f"Associated message with client ID: {client_id}")
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error sending text message with system instructions: {str(e)}")
+            traceback.print_exc()
+            return False
+    
+    def set_json_system_instructions(self):
+        """Set system instructions specifically for JSON output"""
+        try:
+            # Start with the base system instructions
+            base_instructions = self.system_instructions or ""
+            
+            # Add JSON-specific formatting instructions
+            json_instructions = f"""
+{base_instructions}
+
+VERY IMPORTANT INSTRUCTIONS:
+1. Your MUST ONLY output valid JSON, no other text
+2. DO NOT include any explanations, comments, or markdown formatting in your response
+3. DO NOT include ```json or ``` around your response
+4. Your output must be a complete, valid JSON object that can be parsed directly
+5. If you don't have enough information, still return valid JSON with appropriate defaults
+6. MANDATORY: YOU MUST ONLY RETURN JSON, NOT COMMENTS, NO MARKDOWN, NO OTHER TEXT, ONLY JSON
+
+Example of a good response:
+{{
+  "rewards": [
+    {{
+      "name": "position",
+      "targets": [
+        {{
+          "body": "L_Hand",
+          "x": 0.0,
+          "y": 0.2,
+          "z": 1.6,
+          "weight": 1.2,
+          "margin": 0.15
+        }}
+      ],
+      "upright_weight": 0.2,
+      "control_weight": 0.2
+    }}
+  ],
+  "weights": [1.0],
+  "combinationType": "geometric"
+}}
+"""
+            
+            # Set the enhanced instructions
+            self.system_instructions = json_instructions
+            logger.info(f"Set JSON-specific system instructions, length: {len(json_instructions)} chars")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting JSON system instructions: {str(e)}")
+            return False
 

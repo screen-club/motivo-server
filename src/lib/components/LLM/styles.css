@@ -1,0 +1,53 @@
+/* LLM component styles */
+
+/* Fade-out animation for snapshot status indicator */
+.animate-fade-out {
+  animation: fadeOut 3s;
+}
+
+@keyframes fadeOut {
+  0% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Markdown rendering styles */
+:global(.markdown-streaming pre) {
+  border-left: 2px solid #9333ea; /* Purple border for code blocks in streaming state */
+}
+
+:global(.markdown-streaming code) {
+  background-color: rgba(147, 51, 234, 0.1);
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+}
+
+:global(.markdown-complete pre) {
+  background-color: #f3f4f6;
+  padding: 1em;
+  border-radius: 0.375rem;
+  overflow-x: auto;
+}
+
+:global(.markdown-complete code) {
+  background-color: rgba(0, 0, 0, 0.05);
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+}
+
+:global(.markdown-streaming ul, .markdown-streaming ol, .markdown-complete ul, .markdown-complete ol) {
+  padding-left: 1.5em;
+}
+
+/* Preview styles */
+.preview {
+  font-size: 0.85rem;
+  color: #6b7280;
+  background-color: #f3f4f6;
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  border-left: 2px solid #9333ea;
+  max-height: 80px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}

@@ -1,3 +1,6 @@
+# ============================================================================
+# IMPORTS
+# ============================================================================
 # Standard library imports
 import os
 import uuid
@@ -6,55 +9,42 @@ from datetime import datetime
 import subprocess
 import ffmpeg
 import time
-import re  # For user agent parsing
+import re
+import json
+import threading
+import logging
 
 # Third-party imports
 from flask import Flask, send_from_directory, request, jsonify, send_file
 from flask_cors import CORS
-from anthropic import Anthropic
+from flask_socketio import SocketIO, emit
 from werkzeug.utils import secure_filename
+from anthropic import Anthropic
 from dotenv import load_dotenv
 import requests
-from flask_socketio import SocketIO, emit
-from gemini_service import GeminiService
-import threading
 
-# Add these imports at the top
-from flask import Flask, send_from_directory, request, jsonify, send_file
-from flask_cors import CORS
-import json
-from dotenv import load_dotenv
+# Local imports
+from gemini_service import GeminiService
 from sqliteHander import Content, initialize_database
 
-# Record server start time
-SERVER_START_TIME = time.time()
-
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
 # Load environment variables
 load_dotenv()
 
-# use os to get environment variables
+# Environment variables
 VITE_API_URL = os.getenv('VITE_API_URL') or 'localhost'
 VITE_API_PORT = os.getenv('VITE_API_PORT') or 5002
 VITE_VIBE_URL = os.getenv('VITE_VIBE_URL') or 5000
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY' or "")
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY' or "")
+
 if not ANTHROPIC_API_KEY:
     raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
 
-# Initialize Anthropic client with API key
-try:
-    anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
-    print("Successfully initialized Anthropic client")
-except Exception as e:
-    print(f"Error initializing Anthropic client: {str(e)}")
-
-
-# Add this after loading environment variables
-try:
-    initialize_database()
-    print("Database initialized successfully")
-except Exception as e:
-    print(f"Error initializing database: {e}")
+# Record server start time
+SERVER_START_TIME = time.time()
 
 # Define storage paths
 STORAGE_BASE = 'storage/video'
@@ -67,25 +57,24 @@ for folder in [RAW_VIDEO_FOLDER, TRIMMED_VIDEO_FOLDER, RENDERS_FOLDER]:
     if not os.path.exists(folder):
         os.makedirs(folder)
 
+# Define the shared frames path
+STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage'))
+SHARED_FRAMES_DIR = os.path.join(STORAGE_DIR, 'shared_frames')
+GEMINI_FRAME_PATH = os.path.join(SHARED_FRAMES_DIR, 'latest_frame.jpg')
+
 ALLOWED_EXTENSIONS = {'mp4', 'webm', 'ogg'}
+STATUS_LOG_INTERVAL = 10  # Only log status checks every 10 seconds
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+# Initialize Flask app
 app = Flask(__name__)
 app.config['RAW_VIDEO_FOLDER'] = RAW_VIDEO_FOLDER
 app.config['TRIMMED_VIDEO_FOLDER'] = TRIMMED_VIDEO_FOLDER
 app.config['RENDERS_FOLDER'] = RENDERS_FOLDER
 
-# Disable Flask's default logging
-import logging
-log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
-
-# Create a custom logger for client connections
-client_logger = logging.getLogger('client_connections')
-client_logger.setLevel(logging.INFO)
-
+# Configure CORS
 CORS(app, resources={
     r"/*": {
         "origins": ["*"],
@@ -94,28 +83,53 @@ CORS(app, resources={
     }
 })
 
-# Load system instructions at startup
+# Initialize Flask-SocketIO
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Setup logging
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+client_logger = logging.getLogger('client_connections')
+client_logger.setLevel(logging.INFO)
+
+# Initialize services
 try:
+    # Initialize Anthropic client
+    anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
+    print("Successfully initialized Anthropic client")
+    
+    # Initialize database
+    initialize_database()
+    print("Database initialized successfully")
+    
+    # Load system instructions
     with open('system_instructions.txt', 'r', encoding='utf-8') as f:
         SYSTEM_INSTRUCTIONS = f.read()
     print("Successfully loaded system instructions")
+    
+    # Initialize Gemini service
+    gemini_service = GeminiService(port=5002, api_key=GOOGLE_API_KEY)
+    gemini_service.start()
+    print("Gemini service initialized successfully")
+    
 except Exception as e:
-    print(f"Error loading system instructions: {str(e)}")
-    raise
+    print(f"Initialization error: {str(e)}")
+    traceback.print_exc()
+    gemini_service = None
 
-# Add chat history storage
+# Global state
 chat_histories = {}
-
-# Initialize Flask-SocketIO after app initialization
-socketio = SocketIO(app, cors_allowed_origins="*")
-
-# Client tracking
 active_clients = {}
 connection_requests_count = 0
 last_status_log_time = 0
-STATUS_LOG_INTERVAL = 10  # Only log status checks every 10 seconds
 
-# Helper function to extract client info
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+def allowed_file(filename):
+    """Check if file extension is allowed"""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 def get_client_info():
     """Extract useful client information from request"""
     sid = request.sid
@@ -138,28 +152,31 @@ def get_client_info():
         'connected_at': time.time()
     }
 
-# Initialize Gemini service
-try:
-    gemini_service = GeminiService(port=5002, api_key=GOOGLE_API_KEY)
-    gemini_service.start()
-    print("Gemini service initialized successfully")
-    
-    # Broadcast initial connection status after delay to ensure UI is ready
-    def broadcast_initial_status():
-        time.sleep(3)  # Give service time to connect
-        connected = gemini_service.is_connected()
-        socketio.emit('gemini_connection_status', {
-            'connected': connected,
-            'timestamp': time.time()
-        })
-    
-    threading.Thread(target=broadcast_initial_status, daemon=True).start()
-    
-except Exception as e:
-    print(f"Error initializing Gemini service: {str(e)}")
-    gemini_service = None
+def get_active_client_count():
+    """Get count of active clients, grouped by IP to represent real users"""
+    if not active_clients:
+        return 0
+        
+    # Count unique IPs
+    unique_ips = set(client['ip'] for client in active_clients.values())
+    return len(unique_ips)
 
-# Create a background thread to process Gemini messages
+def broadcast_gemini_response(response):
+    """Broadcast Gemini response to all clients"""
+    socketio.emit('gemini_response', response)
+
+# ============================================================================
+# BACKGROUND TASKS
+# ============================================================================
+def broadcast_initial_status():
+    """Broadcast initial Gemini connection status after delay"""
+    time.sleep(3)  # Give service time to connect
+    connected = gemini_service.is_connected()
+    socketio.emit('gemini_connection_status', {
+        'connected': connected,
+        'timestamp': time.time()
+    })
+
 def process_gemini_messages():
     """Process incoming messages from Gemini service"""
     # Create a local logging reference
@@ -196,12 +213,17 @@ def process_gemini_messages():
         # Small sleep to prevent high CPU usage
         time.sleep(0.1)
 
-# Start the background thread
+# Start background threads
+if gemini_service:
+    threading.Thread(target=broadcast_initial_status, daemon=True).start()
+
 gemini_thread = threading.Thread(target=process_gemini_messages)
 gemini_thread.daemon = True
 gemini_thread.start()
 
-# Socket.IO event handlers
+# ============================================================================
+# SOCKETIO EVENT HANDLERS
+# ============================================================================
 @socketio.on('connect')
 def handle_connect():
     """Handle Socket.IO client connection"""
@@ -280,13 +302,46 @@ def handle_gemini_message(data):
     client_id = request.sid
     client_info = active_clients.get(client_id, {'ip': 'unknown', 'browser': 'unknown'})
     
-    client_logger.info(f"[CLIENT] Message from {client_info['ip']}: {text[:30]}...")
     success = gemini_service.send_text(text)
     
     # Acknowledge receipt
     emit('gemini_message_sent', {
         'success': success,
         'timestamp': time.time()
+    })
+
+@socketio.on('gemini_message_with_system')
+def handle_gemini_message_with_system(data):
+    """Handle text message to Gemini with system instructions"""
+    if not gemini_service:
+        emit('gemini_error', {
+            'message': 'Gemini service not available',
+            'timestamp': time.time()
+        })
+        return
+    
+    text = data.get('text', '')
+    client_id = request.sid
+    client_info = active_clients.get(client_id, {'ip': 'unknown', 'browser': 'unknown'})
+    
+    # Check if custom system instructions are provided
+    custom_instructions = data.get('system_instructions', None)
+    if custom_instructions:
+        # Temporarily set system instructions
+        original_instructions = gemini_service.system_instructions
+        gemini_service.set_system_instructions(custom_instructions)
+        success = gemini_service.send_text_with_system_instructions(text, client_id)
+        # Restore original instructions
+        gemini_service.set_system_instructions(original_instructions)
+    else:
+        # Use default loaded system instructions
+        success = gemini_service.send_text_with_system_instructions(text, client_id)
+    
+    # Acknowledge receipt
+    emit('gemini_message_sent', {
+        'success': success,
+        'timestamp': time.time(),
+        'with_system': True
     })
 
 @socketio.on('gemini_capture')
@@ -327,22 +382,10 @@ def handle_check_gemini_connection():
         'timestamp': time.time()
     })
 
-# Get active client count
-def get_active_client_count():
-    """Get count of active clients, grouped by IP to represent real users"""
-    if not active_clients:
-        return 0
-        
-    # Count unique IPs
-    unique_ips = set(client['ip'] for client in active_clients.values())
-    return len(unique_ips)
-
 @socketio.on('gemini_clear_conversation')
 def handle_gemini_clear_conversation(data):
     """Handle clear conversation requests"""
     client_id = data.get('client_id')
-    # For now, we don't need to do anything special here
-    # as the Gemini service doesn't maintain conversation state
     emit('gemini_response', {
         'type': 'status',
         'content': 'Conversation cleared',
@@ -350,6 +393,11 @@ def handle_gemini_clear_conversation(data):
         'timestamp': time.time()
     })
 
+# ============================================================================
+# FLASK ROUTE HANDLERS
+# ============================================================================
+
+# Static routes
 @app.route('/')
 def serve_index():
     return send_from_directory('dist', 'index.html')
@@ -358,6 +406,7 @@ def serve_index():
 def serve_static(path):
     return send_from_directory('dist', path)
 
+# Media routes
 @app.route('/amjpeg', methods=['GET'])
 def serve_image():
     try:
@@ -370,6 +419,59 @@ def serve_image():
         print(f"Error serving image: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/shared_frame', methods=['GET'])
+def get_latest_frame():
+    """Serve the latest frame from the simulation"""
+    try:
+        # Check if file exists and is recent
+        if os.path.exists(GEMINI_FRAME_PATH):
+            return send_file(GEMINI_FRAME_PATH, mimetype='image/jpeg')
+        else:
+            return jsonify({'error': 'No frame available'}), 404
+    except Exception as e:
+        print(f"Error serving frame: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/video/<string:video_type>/<path:filename>')
+def serve_video(video_type, filename):
+    try:
+        if video_type == 'raw':
+            folder = RAW_VIDEO_FOLDER
+        elif video_type == 'trimmed':
+            folder = TRIMMED_VIDEO_FOLDER
+        elif video_type == 'renders':
+            folder = RENDERS_FOLDER
+        else:
+            return jsonify({'error': 'Invalid video type'}), 400
+            
+        folder_path = os.path.abspath(folder)
+        filename = filename.rstrip('/')
+        file_path = os.path.join(folder_path, filename)
+        
+        if not os.path.exists(file_path):
+            return jsonify({'error': 'File not found'}), 404
+            
+        if not os.path.commonprefix([folder_path, os.path.abspath(file_path)]) == folder_path:
+            return jsonify({'error': 'Invalid path'}), 403
+            
+        return send_file(file_path)
+        
+    except Exception as e:
+        print(f"Error serving video: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/downloads/<path:filename>')
+def download_file(filename):
+    try:
+        downloads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../motivo/downloads'))
+        print(f"Looking for file in: {downloads_dir}")
+        os.makedirs(downloads_dir, exist_ok=True)
+        return send_from_directory(downloads_dir, filename)
+    except Exception as e:
+        print(f"Error serving download file: {str(e)}")
+        return jsonify({'error': str(e)}), 404
+
+# API routes
 @app.route('/generate-reward', methods=['POST'])
 def generate_reward():
     print("\n=== New Request ===")
@@ -422,17 +524,6 @@ def generate_reward():
         print(f"Error in generate_reward: {str(e)}")
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
-
-@app.route('/downloads/<path:filename>')
-def download_file(filename):
-    try:
-        downloads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../motivo/downloads'))
-        print(f"Looking for file in: {downloads_dir}")
-        os.makedirs(downloads_dir, exist_ok=True)
-        return send_from_directory(downloads_dir, filename)
-    except Exception as e:
-        print(f"Error serving download file: {str(e)}")
-        return jsonify({'error': str(e)}), 404
 
 @app.route('/upload-video', methods=['POST'])
 def upload_video():
@@ -549,34 +640,6 @@ def upload_video():
         traceback.print_exc()  # Print full traceback
         return jsonify({"error": str(e)}), 500
 
-@app.route('/video/<string:video_type>/<path:filename>')
-def serve_video(video_type, filename):
-    try:
-        if video_type == 'raw':
-            folder = RAW_VIDEO_FOLDER
-        elif video_type == 'trimmed':
-            folder = TRIMMED_VIDEO_FOLDER
-        elif video_type == 'renders':
-            folder = RENDERS_FOLDER
-        else:
-            return jsonify({'error': 'Invalid video type'}), 400
-            
-        folder_path = os.path.abspath(folder)
-        filename = filename.rstrip('/')
-        file_path = os.path.join(folder_path, filename)
-        
-        if not os.path.exists(file_path):
-            return jsonify({'error': 'File not found'}), 404
-            
-        if not os.path.commonprefix([folder_path, os.path.abspath(file_path)]) == folder_path:
-            return jsonify({'error': 'Invalid path'}), 403
-            
-        return send_file(file_path)
-        
-    except Exception as e:
-        print(f"Error serving video: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/clear-chat', methods=['POST'])
 def clear_chat():
     try:
@@ -588,11 +651,7 @@ def clear_chat():
         print(f"Error clearing chat: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/version', methods=['GET'])
-def get_version():
-    return jsonify({'version': '1.0.0'})
-
-#### DATABASE STUFF ####
+# Database routes
 @app.route('/api/conf', methods=['GET'])
 def get_configs():
     try:
@@ -646,7 +705,11 @@ def delete_config(config_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# Add a simple ping endpoint for connectivity testing
+# Utility routes
+@app.route('/api/version', methods=['GET'])
+def get_version():
+    return jsonify({'version': '1.0.0'})
+
 @app.route('/api/ping', methods=['GET'])
 def ping():
     """Simple endpoint for testing connectivity"""
@@ -656,50 +719,93 @@ def ping():
         "timestamp": datetime.now().isoformat()
     })
 
-# Define the shared frames path (matching the path in main.py)
-STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage'))
-SHARED_FRAMES_DIR = os.path.join(STORAGE_DIR, 'shared_frames')
-GEMINI_FRAME_PATH = os.path.join(SHARED_FRAMES_DIR, 'latest_frame.jpg')
-
-@app.route('/shared_frame', methods=['GET'])
-def get_latest_frame():
-    """Serve the latest frame from the simulation"""
+@app.route('/api/generate-position', methods=['POST'])
+def generate_position():
+    """Generate a position configuration using Gemini and system instructions"""
     try:
-        # Check if file exists and is recent
-        if os.path.exists(GEMINI_FRAME_PATH):
-            # Check timestamp file first
-            timestamp_path = os.path.join(SHARED_FRAMES_DIR, 'timestamp.txt')
-            if os.path.exists(timestamp_path):
-                try:
-                    with open(timestamp_path, 'r') as f:
-                        timestamp = float(f.read().strip())
-                        age = time.time() - timestamp
-                except:
-                    # Fall back to file modification time
-                    age = time.time() - os.path.getmtime(GEMINI_FRAME_PATH)
+        if not gemini_service:
+            return jsonify({'error': 'Gemini service not available'}), 503
+        
+        # Get the prompt from the request
+        data = request.json
+        if not data or 'prompt' not in data:
+            return jsonify({'error': 'Missing prompt in request'}), 400
+        
+        prompt = data['prompt']
+        
+        # Load the system instructions file if needed
+        if not gemini_service.system_instructions:
+            success = gemini_service.load_system_instructions()
+            if not success:
+                return jsonify({'error': 'Failed to load system instructions'}), 500
+        
+        # Create a unique ID for this request to track the response
+        request_id = str(uuid.uuid4())
+        
+        # Send the text with system instructions
+        modified_prompt = f'Generate a position configuration that achieves this pose: "{prompt}"'
+        success = gemini_service.send_text_with_system_instructions(modified_prompt, request_id)
+        
+        if not success:
+            return jsonify({'error': 'Failed to send request to Gemini API'}), 500
+        
+        # Wait for the response with a timeout
+        start_time = time.time()
+        response = None
+        timeout = 20  # seconds
+        
+        while time.time() - start_time < timeout:
+            # Process incoming messages
+            latest_responses = []
+            
+            def collect_response(msg):
+                nonlocal response
+                # Check if it's a text response
+                if msg.get('type') == 'gemini_response':
+                    latest_responses.append(msg)
+                    # If the response is complete, save it
+                    if msg.get('complete', False):
+                        response = msg.get('content', '')
+            
+            # Process any messages that came in
+            gemini_service.process_incoming_messages(collect_response)
+            
+            # If we have a response, break out of the loop
+            if response:
+                break
+            
+            # Sleep briefly to avoid maxing out CPU
+            time.sleep(0.1)
+        
+        # Check if we got a response
+        if not response:
+            return jsonify({'error': 'Timed out waiting for response'}), 504
+        
+        # Try to parse the response as JSON
+        try:
+            # Extract JSON from the response if needed (sometimes the model might output extra text)
+            import re
+            json_match = re.search(r'(\{[\s\S]*\})', response)
+            if json_match:
+                json_str = json_match.group(1)
+                position_data = json.loads(json_str)
             else:
-                age = time.time() - os.path.getmtime(GEMINI_FRAME_PATH)
+                position_data = json.loads(response)
                 
-            if age > 10:  # If older than 10 seconds
-                return jsonify({
-                    'error': 'Frame is too old', 
-                    'age': age,
-                    'timestamp': datetime.fromtimestamp(time.time() - age).isoformat()
-                }), 404
-                
-            return send_file(GEMINI_FRAME_PATH, mimetype='image/jpeg')
-        else:
-            return jsonify({'error': 'No frame available'}), 404
+            return jsonify({
+                'success': True,
+                'position': position_data
+            })
+        except json.JSONDecodeError as e:
+            return jsonify({
+                'error': 'Failed to parse JSON response',
+                'raw_response': response,
+                'message': str(e)
+            }), 422
+        
     except Exception as e:
-        print(f"Error serving frame: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-# Add a function to broadcast Gemini responses to all clients
-def broadcast_gemini_response(response):
-    """Broadcast Gemini response to all clients"""
-    socketio.emit('gemini_response', response)
-
-# Add a connection status endpoint
 @app.route('/api/connection-status', methods=['GET'])
 def get_connection_status():
     """Return connection status information for monitoring"""
@@ -756,6 +862,9 @@ def get_connection_status():
             'traceback': traceback.format_exc()
         }), 500
 
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
 if __name__ == '__main__':
     try:
         socketio.run(app, host='0.0.0.0', port=5002, debug=True, allow_unsafe_werkzeug=True)

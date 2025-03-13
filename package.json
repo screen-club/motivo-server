@@ -16,6 +16,7 @@
     "vite": "^6.0.5"
   },
   "dependencies": {
+    "markdown-it": "^14.1.0",
     "socket.io-client": "^4.8.1",
     "svelte-routing": "^2.13.0",
     "uuid": "^11.0.5"
