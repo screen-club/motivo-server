@@ -11,12 +11,20 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from webserver.core.server import server
 
-# Configure logging
+# Configure logging with reduced verbosity
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # Set default level to WARNING to reduce verbosity
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+
+# Only keep INFO level for critical components
 logger = logging.getLogger('main')
+logger.setLevel(logging.INFO)
+
+# Set specific loggers to WARNING or higher
+logging.getLogger('engineio.server').setLevel(logging.WARNING)
+logging.getLogger('socketio.server').setLevel(logging.WARNING)
+logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
 def main():
     """Main function"""

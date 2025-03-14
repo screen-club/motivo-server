@@ -29,17 +29,18 @@ class GeminiSocketService {
 
     try {
       this.socket = io(this.flaskUrl, {
-        transports: ["websocket"],
-        reconnectionAttempts: 100, // Increase reconnection attempts
+        transports: ["websocket", "polling"], // Allow polling as fallback
+        reconnectionAttempts: 100,
         reconnectionDelay: 1000,
         timeout: 20000,
-        autoConnect: true, // Ensure auto-connect is enabled
-        forceNew: true, // Force a new connection
+        autoConnect: true,
+        forceNew: false, // Don't force new to allow socket.io to manage connections
       });
 
       this.socket.on("connect", () => {
         console.log("GeminiSocketService: Connected to Flask Socket.IO", {
           id: this.socket.id,
+          transport: this.socket.io.engine.transport.name,
         });
         this.connected = true;
         geminiConnected.set(true);
@@ -78,18 +79,8 @@ class GeminiSocketService {
             image_timestamp: data.image_timestamp,
           };
 
-          if (data.complete && data.image_path) {
-            console.log(
-              "GeminiSocketService: Complete response includes image:",
-              data.image_path
-            );
-          }
-
           geminiResponses.update((responses) => [...responses, response]);
-        } else {
         }
-
-        // Log the number of message handlers
 
         // Notify all handlers
         this.messageHandlers.forEach((handler) => {

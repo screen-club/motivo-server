@@ -40,8 +40,17 @@ class WebServer:
         self.app = Flask(__name__, static_folder=config.public_dir)
         CORS(self.app)
         
-        # Initialize Socket.IO
-        self.socketio = SocketIO(self.app, cors_allowed_origins="*", async_mode="threading")
+        # Initialize Socket.IO with improved configuration
+        self.socketio = SocketIO(
+            self.app,
+            cors_allowed_origins="*",
+            async_mode="threading",
+            logger=False,  # Disable Socket.IO logging
+            engineio_logger=False,  # Disable Engine.IO logging
+            ping_timeout=30,
+            ping_interval=25,
+            max_http_buffer_size=5 * 1024 * 1024
+        )
         
         # Initialize database
         initialize_database()
@@ -431,25 +440,25 @@ class WebServer:
                                 "message": content,
                                 "content": content,
                                 "complete": complete,
-                                "id": data.get('id')  # Use the original request ID for continuity
+                                "id": data.get('id')  # This data['id'] may be the wrong reference
                             }
+                            
+                            # Use the message_id from the Gemini message for consistency
+                            if message.get("message_id"):
+                                response_data["id"] = message.get("message_id")
                             
                             # Include image information if present in the message
                             if "image_path" in message:
-                                # Use the image path directly from the message
+                                # Make sure to use the same field names the frontend expects
                                 response_data["image_path"] = message["image_path"]
-                                response_data["image_timestamp"] = message.get("image_timestamp")
-                                response_data["timestamp_str"] = message.get("timestamp_str")
-                                
-                                # Log the message ID with the image path
-                                message_id_for_log = message.get("message_id", "unknown")
-                                logger.info(f"Sending response for message {message_id_for_log} with image_path: {message['image_path']}")
-                            else:
-                                logger.warning(f"Missing image_path in Gemini response - frontend may not display image")
+                                response_data["image_timestamp"] = message.get("image_timestamp", time.time())
+                                response_data["timestamp_str"] = message.get("timestamp_str", time.strftime('%d/%m/%Y %H:%M:%S'))
+                            
+                            # Add message ID to response for frontend tracking
+                            response_data["message_id"] = message.get("message_id", "unknown")
                             
                             # Emit the response with all information
                             emit('gemini_response', response_data)
-                            logger.info(f"Emitted gemini_response with data: {response_data}")
                     except Exception as e:
                         logger.error(f"Error handling Gemini response: {str(e)}")
                 
@@ -491,18 +500,16 @@ class WebServer:
                                     # Include human-readable timestamp if available
                                     if "timestamp_str" in message:
                                         response_data["timestamp_str"] = message["timestamp_str"]
+                                    else:
+                                        response_data["timestamp_str"] = time.strftime('%d/%m/%Y %H:%M:%S')
                                     
-                                    # Log that we're sending an image path
-                                    message_id_for_log = message.get("message_id", "unknown")
-                                    logger.info(f"Broadcasting response for message {message_id_for_log} with image: {message['image_path']}")
-                                else:
-                                    logger.warning("No image path in response for background processor")
+                                    # Add message ID to response for frontend tracking
+                                    response_data["message_id"] = message.get("message_id", "unknown")
                                 
                                 # Emit the complete response to all clients
                                 self.socketio.emit('gemini_response', response_data)
                         except Exception as e:
                             logger.error(f"Error handling response in background thread: {str(e)}")
-                            traceback.print_exc()  # Add traceback for more detailed error info
                     
                     # Process any pending responses
                     self.gemini_service.process_incoming_messages(handle_response)
