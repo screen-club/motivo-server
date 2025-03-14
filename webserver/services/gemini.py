@@ -15,6 +15,7 @@ from pathlib import Path
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gemini_service")
+logger.setLevel(logging.WARNING)  # Only log warnings and errors
 
 class GeminiService:
     """Service for interacting with Google's Gemini API via WebSockets"""
@@ -276,6 +277,9 @@ class GeminiService:
                         "timestamp_str": capture_info["timestamp_str"]
                     }
             
+            # Store the message ID for tracking - don't override the passed message_id
+            session["last_message_id"] = message_id
+            
             return True
         except Exception as e:
             logger.error(f"Error sending message: {str(e)}")
@@ -521,10 +525,16 @@ class GeminiService:
                         client_id = client_ids[0]
                         session = self.client_sessions.get(client_id, {})
                         current_message_id = session.get("last_message_id")
-                        if current_message_id:
-                            logger.info(f"Starting to process response for message ID: {current_message_id}")
+                        logger.info(f"Starting to process response for message ID: {current_message_id}")
+                        
+                        # Debug log to check if we have images for this message ID
+                        if "message_images" in session:
+                            if current_message_id in session["message_images"]:
+                                logger.info(f"Found image for message ID {current_message_id} in session")
+                            else:
+                                logger.warning(f"No image found for message ID {current_message_id} in session. Available message IDs: {list(session['message_images'].keys())}")
                         else:
-                            logger.warning("No message ID found in client session")
+                            logger.warning(f"No message_images found in session for client {client_id}")
                 
                 # Extract text content based on the Gemini Multimodal Live API structure
                 text_content = None
@@ -573,26 +583,23 @@ class GeminiService:
                         }
                         
                         # Get image data directly from client session if available
-                        if client_ids:
+                        if client_ids:  # Remove turn_complete check to include image in all responses
                             client_id = client_ids[0]
                             if client_id in self.client_sessions:
                                 session = self.client_sessions[client_id]
                                 
                                 # Try to find the message-specific image first
-                                if current_message_id and "message_images" in session and current_message_id in session["message_images"]:
+                                if "message_images" in session and current_message_id in session["message_images"]:
                                     img_info = session["message_images"][current_message_id]
                                     response_data["image_path"] = img_info["path"]
                                     response_data["image_timestamp"] = img_info["timestamp"]
                                     response_data["timestamp_str"] = img_info["timestamp_str"]
-                                    logger.info(f"Using message-specific image in response: {img_info['path']}")
                                     
-                                    # Clean up this message image entry once used
+                                    # Only clean up this message image entry once the complete message is sent
                                     if turn_complete:
                                         session["message_images"].pop(current_message_id, None)
-                                elif "message_images" in session:
-                                    logger.warning(f"Message ID {current_message_id} not found in message_images. Available IDs: {list(session['message_images'].keys())}")
                                 else:
-                                    logger.warning("No message_images dictionary in session")
+                                    logger.warning(f"No image found for message ID {current_message_id} when sending response")
                         
                         # Add client info if available
                         if len(client_ids) == 1:

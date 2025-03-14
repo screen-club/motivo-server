@@ -21,13 +21,15 @@ export function createGeminiClient(
     apiUrl = url;
     try {
       flaskSocket = io(apiUrl, {
-        transports: ["websocket"],
+        transports: ["websocket", "polling"], // Allow polling fallback if websocket fails
         reconnectionAttempts: 10,
         reconnectionDelay: 1000,
         timeout: 20000,
+        forceNew: false, // Don't force new connection to allow socket.io manager to reuse connections
       });
 
       flaskSocket.on("connect", () => {
+        console.log("GeminiClient: Connected to Gemini service");
         isConnected = true;
         flaskSocket.emit("gemini_connect");
       });
@@ -36,11 +38,13 @@ export function createGeminiClient(
         isConnected = data.connected;
       });
 
-      flaskSocket.on("connect_error", () => {
+      flaskSocket.on("connect_error", (error) => {
+        console.error("GeminiClient: Connection error", error.message);
         isConnected = false;
       });
 
       flaskSocket.on("disconnect", () => {
+        console.log("GeminiClient: Disconnected from Gemini service");
         isConnected = false;
       });
 
@@ -96,9 +100,9 @@ export function createGeminiClient(
           // First, clear rewards but preserve the environment context (current_z)
           websocketService.send({
             type: "clear_active_rewards",
-            preserve_z: true
+            preserve_z: true,
           });
-          
+
           // Clean local rewards store for UI
           rewardStore.cleanRewardsLocal();
 
@@ -106,22 +110,19 @@ export function createGeminiClient(
           const addToExisting = true; // Always add to existing (empty but preserved environment)
           if (structuredResponse.result) {
             // Enable batch mode for multiple rewards
-            const hasMultipleRewards = 
-              structuredResponse.result.rewards && 
+            const hasMultipleRewards =
+              structuredResponse.result.rewards &&
               structuredResponse.result.rewards.length > 1;
-            
-            if (hasMultipleRewards) {
-              console.log(`Batch processing ${structuredResponse.result.rewards.length} rewards from Gemini`);
-            }
-            
+
             // Mark all rewards as auto_capture to ensure they preserve the environment
             if (structuredResponse.result.rewards) {
-              structuredResponse.result.rewards = structuredResponse.result.rewards.map(reward => ({
-                ...reward,
-                auto_capture: true
-              }));
+              structuredResponse.result.rewards =
+                structuredResponse.result.rewards.map((reward) => ({
+                  ...reward,
+                  auto_capture: true,
+                }));
             }
-            
+
             processRewards(
               structuredResponse.result,
               rewardStore,
@@ -159,9 +160,9 @@ export function createGeminiClient(
             // First, clear rewards but preserve the environment context (current_z)
             websocketService.send({
               type: "clear_active_rewards",
-              preserve_z: true
+              preserve_z: true,
             });
-            
+
             // Clean local rewards store for UI
             rewardStore.cleanRewardsLocal();
 
@@ -169,22 +170,19 @@ export function createGeminiClient(
             const addToExisting = true; // Always add to existing (empty but preserved environment)
             if (structuredResponse.result) {
               // Enable batch mode for multiple rewards
-              const hasMultipleRewards = 
-                structuredResponse.result.rewards && 
+              const hasMultipleRewards =
+                structuredResponse.result.rewards &&
                 structuredResponse.result.rewards.length > 1;
-              
-              if (hasMultipleRewards) {
-                console.log(`Batch processing ${structuredResponse.result.rewards.length} rewards from Gemini`);
-              }
-              
+
               // Mark all rewards as auto_capture to ensure they preserve the environment
               if (structuredResponse.result.rewards) {
-                structuredResponse.result.rewards = structuredResponse.result.rewards.map(reward => ({
-                  ...reward,
-                  auto_capture: true
-                }));
+                structuredResponse.result.rewards =
+                  structuredResponse.result.rewards.map((reward) => ({
+                    ...reward,
+                    auto_capture: true,
+                  }));
               }
-              
+
               processRewards(
                 structuredResponse.result,
                 rewardStore,
@@ -258,30 +256,6 @@ export function createGeminiClient(
     // If Socket.IO seems connected, emit a check
     if (socketConnected) {
       flaskSocket.emit("gemini_connect");
-
-      // Do an additional HTTP status check to verify the server is truly responsive
-      fetch(`${apiUrl}/api/gemini_status`)
-        .then((response) => {
-          if (response.ok) {
-            return response.json();
-          } else {
-            throw new Error(`API responded with status ${response.status}`);
-          }
-        })
-        .then((status) => {
-          isConnected = status.socketio_connected && status.connected;
-        })
-        .catch((error) => {
-          console.error("Gemini API health check failed:", error);
-          // If HTTP check fails but socket appears connected, the connection might be stale
-          if (socketConnected) {
-            console.warn(
-              "Socket appears connected but HTTP check failed - connection may be stale"
-            );
-            flaskSocket.disconnect(); // Force disconnect to trigger reconnection
-            flaskSocket.connect(); // Attempt immediate reconnection
-          }
-        });
     }
 
     return socketConnected;
@@ -289,38 +263,27 @@ export function createGeminiClient(
 
   const sendMessage = (message, options = {}) => {
     if (flaskSocket && flaskSocket.connected) {
-      console.log("Sending message to Gemini, starting snapshot sequence");
+      console.log("Sending message to Gemini");
 
       // Use a Promise to handle the asynchronous operations
       return new Promise(async (resolve) => {
         try {
-          // Capture frame
-          console.log("Requesting frame capture...");
-          const frameCaptureResult = await captureFrame();
-          console.log("Frame capture completed:", frameCaptureResult.success);
+          // Generate a unique message ID if not provided
+          const messageId = options.id || uuidFn();
 
-          // Log the frame URL if successful
-          if (frameCaptureResult.success && frameCaptureResult.frameUrl) {
-            console.log("Frame URL:", frameCaptureResult.frameUrl);
-          } else {
-            console.warn(
-              "Frame capture failed or timed out:",
-              frameCaptureResult.error || "Unknown reason"
-            );
-          }
+          // Capture frame
+          const frameCaptureResult = await captureFrame();
 
           // Now send the message with image
-          console.log("Sending message with image to Gemini");
-            
           try {
             flaskSocket.emit("gemini_message", {
               message,
+              id: messageId, // Include explicit message ID
               add_to_existing: options.add_to_existing || false,
               include_image: options.include_image !== false,
               frame_url: frameCaptureResult?.frameUrl,
-              auto_correct: options.auto_correct || false
+              auto_correct: options.auto_correct || false,
             });
-            console.log("Message sent successfully to Gemini");
             resolve(true);
           } catch (error) {
             console.error("Error sending message:", error);
@@ -361,42 +324,34 @@ export function createGeminiClient(
               clearTimeout(responseTimeout);
               cleanup();
 
-              console.log("Received message from capture frame:", data);
-
               // Resolve with success/error based on response status
-              if (data.status === "success") {
+              if (data.status === "success" && data.frame_path) {
                 // Extract the image URL
                 const frameUrl = data.frame_path;
-                
+
                 // Construct the full URL that the backend can access
-                // The API_URL environment variable should be something like "http://localhost:5000"
-                const baseUrl = import.meta.env.VITE_API_URL || window.location.origin;
-                
+                const baseUrl =
+                  import.meta.env.VITE_API_URL || window.location.origin;
+
                 // Ensure frameUrl starts with a slash
-                // The server expects a URL path that starts with a slash, followed by
-                // the path relative to the server's static folder, which is usually "public"
-                
-                // The URL should look like "/storage/shared_frames/filename.jpg" 
-                const formattedUrl = frameUrl.startsWith('/') ? frameUrl : `/${frameUrl}`;
-                
+                const formattedUrl = frameUrl.startsWith("/")
+                  ? frameUrl
+                  : `/${frameUrl}`;
+
                 // For debugging: create a complete URL that could be accessed in a browser
                 const fullUrl = `${baseUrl}${formattedUrl}`;
-                
-                console.log("Frame captured successfully, URL (relative):", frameUrl);
-                console.log("Frame URL (full):", fullUrl);
-                
+
                 // Return both URLs
-                resolve({ 
-                  success: true, 
-                  frameUrl: frameUrl,  // Keep the original for backward compatibility
-                  fullUrl: fullUrl     // Add the full URL that the backend can access
+                resolve({
+                  success: true,
+                  frameUrl: formattedUrl, // Use the properly formatted URL
+                  fullUrl: fullUrl, // Add the full URL that the backend can access
                 });
               } else {
-                console.warn(
-                  "Frame capture failed:",
-                  data.error || "Unknown error"
-                );
-                resolve({ success: false, error: data.error });
+                resolve({
+                  success: false,
+                  error: data.error || "Missing frame_path",
+                });
               }
             }
           };

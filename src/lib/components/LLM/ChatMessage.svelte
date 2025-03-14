@@ -8,7 +8,10 @@
   export let structuredResponse = null;
   
   onMount(() => {
-  
+    // Log when we receive a message with an image
+    if (message.role === 'assistant' && (message.imagePath || message.image_path)) {
+      console.log('ChatMessage: Message contains image:', message.imagePath || message.image_path);
+    }
   });
 </script>
 
@@ -66,36 +69,35 @@
             </div>
           <!-- Show full content and image when complete -->
           {:else}
-            <!-- Show image if available (check both property naming conventions) -->
-            {#if message.imagePath || message.image_path}
-              <div class="mb-3 border rounded-lg overflow-hidden" style="max-width: 200px; float: right; margin-left: 10px;">
-                <div class="bg-gray-100 text-xs text-gray-500 px-2 py-1">
-                 
-                  {#if message.timestamp_str}
-                    <div class="text-right text-xs">{message.timestamp_str}</div>
-                  {:else if message.imageTimestamp || message.image_timestamp}
-                    <div class="text-right text-xs">
+            <!-- Container for content and image with flex layout -->
+            <div class="flex flex-row gap-4">
+              <!-- Text content on the left -->
+              <div class="flex-1 text-gray-800">
+                {message.content}
+              </div>
+              
+              <!-- Image on the right side if available -->
+              {#if message.imagePath || message.image_path}
+                <div class="shrink-0 border rounded-md overflow-hidden shadow-sm" style="max-width: 140px;">
+                  <img 
+                    src={message.imagePath || message.image_path} 
+                    alt="Input for Gemini" 
+                    class="w-full h-auto" 
+                    style="max-height: 120px; object-fit: cover;" 
+                  />
+                  <div class="bg-gray-50 text-[10px] text-gray-500 px-1.5 py-0.5 text-right">
+                    {#if message.timestamp_str}
+                      {message.timestamp_str}
+                    {:else if message.imageTimestamp || message.image_timestamp}
                       {new Date((message.imageTimestamp || message.image_timestamp) * 1000)
                         .toLocaleDateString('en-GB', {
                           day: '2-digit',
                           month: '2-digit',
                           year: 'numeric',
-                          hour: '2-digit', 
-                          minute: '2-digit',
-                          second: '2-digit'
-                        }).replace(',', '')}
-                    </div>
-                  {/if}
+                        })}
+                    {/if}
+                  </div>
                 </div>
-                <img src={message.imagePath || message.image_path} alt="Input for Gemini" 
-                     class="max-w-full h-auto" style="max-height: 150px; object-fit: contain;" />
-              </div>
-            {/if}
-            <div class="text-gray-800">
-              {#if structuredResponse && structuredResponse.explanation}
-                {structuredResponse.explanation}
-              {:else}
-                {message.content}
               {/if}
             </div>
           {/if}
