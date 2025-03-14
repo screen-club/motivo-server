@@ -4,6 +4,7 @@
   export let isProcessing = false;
   export let selectedModel = 'claude';
   export let onSubmit;
+  export let addToExisting = false;
   
   function handleKeydown(event) {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -15,6 +16,13 @@
 
 <div class="border-t p-4">
   <div class="max-w-4xl mx-auto">
+    <div class="mb-2 flex justify-end">
+      <label class="inline-flex items-center text-sm text-gray-600">
+        <input type="checkbox" bind:checked={addToExisting} class="form-checkbox h-4 w-4 text-blue-600">
+        <span class="ml-2">Add to existing rewards</span>
+      </label>
+    </div>
+    
     <form 
       on:submit|preventDefault={onSubmit}
       class="flex gap-4 items-end"

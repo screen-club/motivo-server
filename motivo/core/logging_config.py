@@ -33,6 +33,11 @@ def setup_logging(debug=False):
     create_logger('webrtc', level)
     create_logger('rewards', level)
     
+    # Set higher log levels for noisy third-party libraries
+    logging.getLogger('aioice.ice').setLevel(logging.WARNING)  # Suppress ICE candidate logs
+    logging.getLogger('aioice').setLevel(logging.WARNING)
+    logging.getLogger('aiortc').setLevel(logging.WARNING)
+    
     return logger
 
 def create_logger(name, level):

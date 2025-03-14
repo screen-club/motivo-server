@@ -2,6 +2,7 @@ import torch
 import logging
 from pathlib import Path
 from metamotivo.fb_cpr.huggingface import FBcprModel
+import humenv
 
 from core.config import config
 from utils.buffer_utils import download_buffer
@@ -68,3 +69,29 @@ def get_cached_model(model_name: str, cache_dir: str = None) -> FBcprModel:
         model.save_pretrained(str(model_cache_path))
     
     return model
+
+    """
+    Run reward evaluation on the model.
+    
+    Args:
+        model: The reward-wrapped model
+        tasks: List of tasks to evaluate
+        num_contexts: Number of contexts to use
+        num_envs: Number of environments to run
+        num_episodes: Number of episodes per evaluation
+        
+    Returns:
+        Evaluation scores
+    """
+    logger.info(f"Running reward evaluation on tasks: {tasks}")
+    reward_eval = humenv.bench.RewardEvaluation(
+        tasks=tasks,
+        env_kwargs={"state_init": "Default"},
+        num_contexts=num_contexts,
+        num_envs=num_envs,
+        num_episodes=num_episodes
+    )
+    
+    scores = reward_eval.run(model)
+    logger.info(f"Evaluation complete. Scores: {scores}")
+    return scores

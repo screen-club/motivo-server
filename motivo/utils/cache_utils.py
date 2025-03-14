@@ -106,9 +106,14 @@ class RewardContextCache:
         
         return None, None
     
-    async def get_cached_context(self, reward_config: Dict[str, Any], compute_fn) -> tuple[Any, Path | None]:
+    async def get_cached_context(self, reward_config: Dict[str, Any], compute_fn, use_batch_key=None) -> tuple[Any, Path | None]:
         """Get context from cache or compute new one with improved caching"""
-        cache_key = self.get_cache_key(reward_config)
+        # If batch key is provided, use it instead of computing the normal cache key
+        if use_batch_key:
+            cache_key = use_batch_key
+            print(f"\nUsing custom batch key: {cache_key}")
+        else:
+            cache_key = self.get_cache_key(reward_config)
         
         # Try to get from cache (memory or disk)
         cached_z, cache_file = self._get_cached_context_impl(cache_key)
@@ -130,6 +135,22 @@ class RewardContextCache:
         self._get_cached_context_impl(cache_key)
         
         return z, cache_file
+        
+    def precompute_reward_combination(self, reward_config, batch_key):
+        """
+        Prepares a batch computation for multiple rewards.
+        This ensures that multiple rewards are computed as a single unit.
+        """
+        # Create a special entry in the cache that will be used for this batch
+        print(f"\nPreparing batch computation for {len(reward_config.get('rewards', []))} rewards")
+        print(f"Using batch key: {batch_key}")
+        
+        # We don't actually store anything in the cache yet
+        # The actual computation will happen in get_cached_context
+        # This is just to let the method know we want to use batch processing
+        
+        # Important: Don't pre-populate the cache with None as it causes errors when accessing .device
+        # Let the cache get populated with a real tensor during actual computation
     
     def clear_cache(self) -> None:
         """Clear all caches"""

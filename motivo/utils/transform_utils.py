@@ -7,6 +7,47 @@ from torch.nn import functional as F
 from scipy.spatial.transform import Rotation as sRot
 from scipy.ndimage import gaussian_filter1d
 
+def get_rotation_matrix_from_pelvis(model, data, name="Pelvis"):
+    """
+    Extract the rotation matrix of the humanoid's pelvis to define its local coordinate system.
+    
+    Args:
+        model: MjModel object
+        data: MjData object
+        name: Name of the body to use as reference (default: "Pelvis")
+    
+    Returns:
+        rotation_matrix: 3x3 rotation matrix defining the humanoid's orientation
+    """
+    try:
+        body_id = model.body(name).id
+        rotation_matrix = data.xmat[body_id].reshape(3, 3).copy()
+        return rotation_matrix
+    except:
+        # Fallback to identity matrix if body not found
+        return np.eye(3)
+
+def transform_point_to_local_frame(point, origin, rotation_matrix):
+    """
+    Transform a point from global coordinates to the local coordinate frame
+    defined by an origin and rotation matrix.
+    
+    Args:
+        point: 3D point in global coordinates
+        origin: Origin of the local coordinate frame
+        rotation_matrix: 3x3 rotation matrix defining the orientation
+        
+    Returns:
+        local_point: Point transformed to local coordinates
+    """
+    # Translate to origin
+    translated = point - origin
+    
+    # Apply inverse rotation (transpose for rotation matrices)
+    local_point = rotation_matrix.T @ translated
+    
+    return local_point
+
 
 def smpl_mat_to_aa(poses):
     poses_aa = []

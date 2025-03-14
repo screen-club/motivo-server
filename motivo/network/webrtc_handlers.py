@@ -16,6 +16,14 @@ async def handle_webrtc_offer(websocket, data):
     
     if not client_id or not sdp:
         logger.warning("Invalid WebRTC offer: missing client_id or sdp")
+        # Send error response to client
+        await websocket.send(json.dumps({
+            "type": "error",
+            "error": "invalid_offer",
+            "message": "Missing client_id or sdp in offer",
+            "client_id": client_id,
+            "timestamp": datetime.now().isoformat()
+        }))
         return
         
     logger.debug(f"Processing WebRTC offer from client {client_id}")
@@ -30,7 +38,11 @@ async def handle_webrtc_offer(websocket, data):
             "sdp": sdp
         }
         
+        # Process offer without enforcing a tight timeout
         answer = await app_state.webrtc_manager.create_peer_connection(client_id, offer)
+        
+        if not answer:
+            raise Exception("Failed to create peer connection")
         
         # Send the answer back
         await websocket.send(json.dumps({
@@ -41,19 +53,48 @@ async def handle_webrtc_offer(websocket, data):
             "timestamp": datetime.now().isoformat()
         }))
         logger.debug(f"Sent WebRTC answer to client {client_id}")
+        
+        # Send connection stats for debugging
+        stats = app_state.webrtc_manager.get_connection_stats()
+        await websocket.send(json.dumps({
+            "type": "webrtc_stats",
+            "stats": stats,
+            "client_id": client_id,
+            "timestamp": datetime.now().isoformat()
+        }))
+            
     except Exception as e:
         logger.error(f"Error handling WebRTC offer: {str(e)}")
+        traceback.print_exc()
+        
+        # Send error response to client
+        await websocket.send(json.dumps({
+            "type": "error",
+            "error": "connection_failed",
+            "message": f"Failed to create WebRTC connection: {str(e)}",
+            "client_id": client_id,
+            "timestamp": datetime.now().isoformat()
+        }))
 
 async def handle_ice_candidate(websocket, data):
     """Handle ICE candidate message from client"""
     client_id = data.get("client_id")
     candidate_dict = data.get("candidate")
     
-    if not all([client_id, candidate_dict]):
-        logger.warning("Invalid ICE candidate: missing data")
+    if not client_id:
+        logger.warning("Invalid ICE candidate: missing client_id")
         return
     
-    logger.debug(f"Received ICE candidate for client {client_id}")
+    # Handle empty candidate case gracefully - this is normal for end-of-candidates
+    if not candidate_dict or (isinstance(candidate_dict, dict) and not candidate_dict.get("candidate", "")):
+        logger.debug(f"Received empty ICE candidate for client {client_id} - likely end-of-candidates")
+        return
+    
+    # Check if candidate is valid before logging detailed message
+    if isinstance(candidate_dict, dict) and candidate_dict.get("candidate"):
+        logger.debug(f"Received ICE candidate for client {client_id}")
+    else:
+        logger.debug(f"Received non-standard ICE candidate format for client {client_id}")
     
     try:
         # Pass the candidate directly to the WebRTC manager
@@ -62,7 +103,8 @@ async def handle_ice_candidate(websocket, data):
         if result:
             logger.debug(f"Successfully added ICE candidate for client {client_id}")
         else:
-            logger.warning(f"Failed to add ICE candidate for client {client_id}")
+            # Downgrade from warning to debug since this can be normal
+            logger.debug(f"Could not add ICE candidate for client {client_id}")
             
     except Exception as e:
         logger.error(f"Error handling ICE candidate: {str(e)}")

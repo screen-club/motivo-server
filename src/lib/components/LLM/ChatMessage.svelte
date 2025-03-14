@@ -1,10 +1,15 @@
 <!-- ChatMessage.svelte -->
 <script>
   import { getLastLines } from './utils.js';
+  import { onMount } from 'svelte';
   
   export let message;
   export let selectedModel;
   export let structuredResponse = null;
+  
+  onMount(() => {
+  
+  });
 </script>
 
 <div class="flex gap-2 {message.role === 'assistant' ? 'bg-gray-50' : message.role === 'system' ? 'bg-gray-100' : ''} p-4 rounded-lg">
@@ -53,13 +58,39 @@
       <div class="space-y-2">
         <!-- For Gemini assistant messages -->
         {#if selectedModel === 'gemini'}
+          
           <!-- Show preview for streaming messages -->
           {#if message.streaming}
             <div class="preview">
               {getLastLines(message.content, 3)}
             </div>
-          <!-- Show only explanation text when complete -->
+          <!-- Show full content and image when complete -->
           {:else}
+            <!-- Show image if available (check both property naming conventions) -->
+            {#if message.imagePath || message.image_path}
+              <div class="mb-3 border rounded-lg overflow-hidden" style="max-width: 200px; float: right; margin-left: 10px;">
+                <div class="bg-gray-100 text-xs text-gray-500 px-2 py-1">
+                 
+                  {#if message.timestamp_str}
+                    <div class="text-right text-xs">{message.timestamp_str}</div>
+                  {:else if message.imageTimestamp || message.image_timestamp}
+                    <div class="text-right text-xs">
+                      {new Date((message.imageTimestamp || message.image_timestamp) * 1000)
+                        .toLocaleDateString('en-GB', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                          hour: '2-digit', 
+                          minute: '2-digit',
+                          second: '2-digit'
+                        }).replace(',', '')}
+                    </div>
+                  {/if}
+                </div>
+                <img src={message.imagePath || message.image_path} alt="Input for Gemini" 
+                     class="max-w-full h-auto" style="max-height: 150px; object-fit: contain;" />
+              </div>
+            {/if}
             <div class="text-gray-800">
               {#if structuredResponse && structuredResponse.explanation}
                 {structuredResponse.explanation}

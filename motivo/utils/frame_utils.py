@@ -6,6 +6,9 @@ import pickle
 from datetime import datetime
 from utils.smpl_utils import qpos_to_smpl, SMPL_BONE_ORDER_NAMES
 import zipfile
+import logging
+
+logger = logging.getLogger('frame_utils')
 
 def save_frame_data(frame, qpos, qvel, env=None, smpl_data=None):
     """
@@ -150,6 +153,88 @@ def save_frame_data(frame, qpos, qvel, env=None, smpl_data=None):
         json.dump(pose_data, f, indent=2)
     
     print(f"Saved frame and state data to: {output_dir}")
+
+def save_shared_frame(frame, resize_width=640):
+    """Save a frame to the shared_frames directory for use by the webserver
+    
+    Args:
+        frame: RGB image array
+        resize_width: Width to resize the image to (preserves aspect ratio)
+    
+    Returns:
+        Path to the saved frame
+    """
+    from core.config import config
+    
+    try:
+        # Create directory if it doesn't exist
+        os.makedirs(config.shared_frames_dir, exist_ok=True)
+        
+        # Resize image while preserving aspect ratio
+        h, w = frame.shape[:2]
+        aspect_ratio = h / w
+        new_width = resize_width
+        new_height = int(new_width * aspect_ratio)
+        
+        # Resize the image
+        resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+        
+        # Convert RGB to BGR for OpenCV
+        bgr_frame = cv2.cvtColor(resized_frame, cv2.COLOR_RGB2BGR)
+        
+        # Generate a unique timestamp-based filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        unique_filename = f"frame_{timestamp}.jpg"
+        
+        # Save image with unique filename
+        frame_path = os.path.join(config.shared_frames_dir, unique_filename)
+        cv2.imwrite(frame_path, bgr_frame)
+        
+        # Also save as latest_frame.jpg for backwards compatibility
+        latest_frame_path = os.path.join(config.shared_frames_dir, 'latest_frame.jpg')
+        cv2.imwrite(latest_frame_path, bgr_frame)
+        
+        # Save timestamp
+        timestamp_path = os.path.join(config.shared_frames_dir, 'timestamp.txt')
+        with open(timestamp_path, 'w') as f:
+            f.write(datetime.now().isoformat())
+        
+        # Cleanup old files, keeping only the 30 most recent ones
+        cleanup_old_frames(config.shared_frames_dir, max_files=30)
+        
+        logger.info(f"Saved shared frame: {frame_path} ({new_width}x{new_height})")
+        return frame_path
+    
+    except Exception as e:
+        logger.error(f"Error saving shared frame: {str(e)}")
+        return None
+
+def cleanup_old_frames(directory, max_files=30):
+    """Cleanup old frame files, keeping only the most recent ones
+    
+    Args:
+        directory: Directory containing frame files
+        max_files: Maximum number of files to keep (excluding latest_frame.jpg and timestamp.txt)
+    """
+    try:
+        # Get all jpg files except latest_frame.jpg
+        files = [os.path.join(directory, f) for f in os.listdir(directory) 
+                if f.endswith('.jpg') and f != 'latest_frame.jpg']
+        
+        # Sort files by modification time (oldest first)
+        files.sort(key=os.path.getmtime)
+        
+        # Remove oldest files if we have too many
+        files_to_remove = len(files) - max_files
+        if files_to_remove > 0:
+            for i in range(files_to_remove):
+                if i < len(files):  # Safety check
+                    os.remove(files[i])
+                    logger.info(f"Removed old frame: {files[i]}")
+    
+    except Exception as e:
+        logger.error(f"Error cleaning up old frames: {str(e)}")
+        # Don't raise exception - this is a maintenance operation that shouldn't break the main function
 
 class FrameRecorder:
     def __init__(self):

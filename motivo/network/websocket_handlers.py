@@ -24,6 +24,10 @@ async def handle_websocket(websocket):
     app_state.ws_manager.connected_clients.add(websocket)
     logger.info(f"Total connections: {len(app_state.ws_manager.connected_clients)}")
     
+    # Configure WebSocket connection with longer ping timeout
+    if hasattr(websocket, 'protocol'):
+        websocket.protocol.ping_timeout = 60  # Increase ping timeout to 60 seconds
+    
     try:
         # Send welcome message
         await send_welcome_message(websocket, client_id)
@@ -32,8 +36,10 @@ async def handle_websocket(websocket):
         async for message in websocket:
             await process_message(websocket, message, client_info)
                 
-    except websockets.exceptions.ConnectionClosed:
-        logger.info(f"Client {client_info} disconnected")
+    except websockets.exceptions.ConnectionClosed as e:
+        logger.info(f"Client {client_info} disconnected: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error in websocket handler for {client_info}: {str(e)}")
     finally:
         await handle_client_disconnect(websocket, client_info)
 

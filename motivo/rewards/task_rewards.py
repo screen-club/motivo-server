@@ -9,6 +9,32 @@ import inspect
 import sys
 import humenv
 
+# Define the transformation functions directly here to avoid complex imports
+def get_rotation_matrix_from_pelvis(model, data, name="Pelvis"):
+    """
+    Extract the rotation matrix of the humanoid's pelvis to define its local coordinate system.
+    """
+    try:
+        body_id = model.body(name).id
+        rotation_matrix = data.xmat[body_id].reshape(3, 3).copy()
+        return rotation_matrix
+    except:
+        # Fallback to identity matrix if body not found
+        return np.eye(3)
+
+def transform_point_to_local_frame(point, origin, rotation_matrix):
+    """
+    Transform a point from global coordinates to the local coordinate frame
+    defined by an origin and rotation matrix.
+    """
+    # Translate to origin
+    translated = point - origin
+    
+    # Apply inverse rotation (transpose for rotation matrices)
+    local_point = rotation_matrix.T @ translated
+    
+    return local_point
+
 '''
 Model Body Names:
 - world
@@ -129,7 +155,7 @@ class HeadHeightReward(humenv_rewards.RewardFunction):
         data: mujoco.MjData,
     ) -> float:
         head_height = get_xpos(model, data, name="Head")[-1]
-        print(f"Head height: {head_height}, Target: {self.target_height}")
+        #print(f"Head height: {head_height}, Target: {self.target_height}")
         return rewards.tolerance(
             head_height,
             bounds=(self.target_height - 0.5, self.target_height + 0.5),
@@ -365,11 +391,57 @@ class LeftHandHeightReward(humenv_rewards.RewardFunction):
 @dataclasses.dataclass
 class LeftHandLateralDistanceReward(humenv_rewards.RewardFunction):
     target_distance: float = 0.5
+    debug: bool = False
+    use_local_frame: bool = True  # Account for the humanoid's orientation
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
-        hand_pos = get_xpos(model, data, name="L_Hand")
+        # Get positions for both wrist and hand
+        wrist_pos = None
+        hand_pos = None
         pelvis_pos = get_xpos(model, data, name="Pelvis")
-        lateral_distance = abs(hand_pos[0] - pelvis_pos[0])  # X-axis for lateral
+        
+        try:
+            wrist_pos = get_xpos(model, data, name="L_Wrist")
+        except:
+            pass
+            
+        try:
+            hand_pos = get_xpos(model, data, name="L_Hand")
+        except:
+            pass
+        
+        # Calculate the hand position using available data
+        if wrist_pos is not None and hand_pos is not None:
+            # Use midpoint between wrist and hand for better stability
+            effective_pos = (wrist_pos + hand_pos) / 2
+        elif wrist_pos is not None:
+            effective_pos = wrist_pos
+        elif hand_pos is not None:
+            effective_pos = hand_pos
+        else:
+            # Fallback if no valid position found
+            return 0.0
+        
+        # Transform to local coordinates if needed
+        if self.use_local_frame:
+            
+            pelvis_rotation = get_rotation_matrix_from_pelvis(model, data)
+            local_pos = transform_point_to_local_frame(effective_pos, pelvis_pos, pelvis_rotation)
+            
+            # In local coordinates, X is lateral (left/right)
+            lateral_distance = abs(local_pos[0])
+            
+            if self.debug:
+                print(f"Left hand lateral: global_pos={effective_pos}, local_pos={local_pos}, lateral_distance={lateral_distance:.3f}, target={self.target_distance:.3f}")
+        else:
+            # Legacy behavior using global coordinates
+            lateral_distance = abs(effective_pos[0] - pelvis_pos[0])  # X-axis for lateral
+            
+            if self.debug:
+                wrist_lateral = abs(wrist_pos[0] - pelvis_pos[0]) if wrist_pos is not None else float('nan')
+                hand_lateral = abs(hand_pos[0] - pelvis_pos[0]) if hand_pos is not None else float('nan')
+                print(f"Left hand lateral: wrist={wrist_lateral:.3f}, hand={hand_lateral:.3f}, combined={lateral_distance:.3f}, target={self.target_distance:.3f}")
+            
         return rewards.tolerance(
             lateral_distance,
             bounds=(self.target_distance - 0.1, self.target_distance + 0.1),
@@ -390,11 +462,57 @@ class LeftHandLateralDistanceReward(humenv_rewards.RewardFunction):
 @dataclasses.dataclass
 class LeftHandForwardDistanceReward(humenv_rewards.RewardFunction):
     target_distance: float = 0.5
+    debug: bool = False
+    use_local_frame: bool = True  # Account for the humanoid's orientation
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
-        hand_pos = get_xpos(model, data, name="L_Hand")
+        # Get positions for both wrist and hand
+        wrist_pos = None
+        hand_pos = None
         pelvis_pos = get_xpos(model, data, name="Pelvis")
-        forward_distance = abs(hand_pos[1] - pelvis_pos[1])  # Y-axis for forward
+        
+        try:
+            wrist_pos = get_xpos(model, data, name="L_Wrist")
+        except:
+            pass
+            
+        try:
+            hand_pos = get_xpos(model, data, name="L_Hand")
+        except:
+            pass
+        
+        # Calculate the hand position using available data
+        if wrist_pos is not None and hand_pos is not None:
+            # Use midpoint between wrist and hand for better stability
+            effective_pos = (wrist_pos + hand_pos) / 2
+        elif wrist_pos is not None:
+            effective_pos = wrist_pos
+        elif hand_pos is not None:
+            effective_pos = hand_pos
+        else:
+            # Fallback if no valid position found
+            return 0.0
+        
+        # Transform to local coordinates if needed
+        if self.use_local_frame:
+            
+            pelvis_rotation = get_rotation_matrix_from_pelvis(model, data)
+            local_pos = transform_point_to_local_frame(effective_pos, pelvis_pos, pelvis_rotation)
+            
+            # In local coordinates, Y is forward/backward
+            forward_distance = abs(local_pos[1])
+            
+            if self.debug:
+                print(f"Left hand forward: global_pos={effective_pos}, local_pos={local_pos}, forward_distance={forward_distance:.3f}, target={self.target_distance:.3f}")
+        else:
+            # Legacy behavior using global coordinates
+            forward_distance = abs(effective_pos[1] - pelvis_pos[1])  # Y-axis for forward
+            
+            if self.debug:
+                wrist_forward = abs(wrist_pos[1] - pelvis_pos[1]) if wrist_pos is not None else float('nan')
+                hand_forward = abs(hand_pos[1] - pelvis_pos[1]) if hand_pos is not None else float('nan')
+                print(f"Left hand forward: wrist={wrist_forward:.3f}, hand={hand_forward:.3f}, combined={forward_distance:.3f}, target={self.target_distance:.3f}")
+            
         return rewards.tolerance(
             forward_distance,
             bounds=(self.target_distance - 0.1, self.target_distance + 0.1),
@@ -476,11 +594,57 @@ class RightHandHeightReward(humenv_rewards.RewardFunction):
 @dataclasses.dataclass
 class RightHandLateralDistanceReward(humenv_rewards.RewardFunction):
     target_distance: float = 0.5
+    debug: bool = False
+    use_local_frame: bool = True  # Account for the humanoid's orientation
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
-        hand_pos = get_xpos(model, data, name="R_Hand")
+        # Get positions for both wrist and hand
+        wrist_pos = None
+        hand_pos = None
         pelvis_pos = get_xpos(model, data, name="Pelvis")
-        lateral_distance = abs(hand_pos[0] - pelvis_pos[0])
+        
+        try:
+            wrist_pos = get_xpos(model, data, name="R_Wrist")
+        except:
+            pass
+            
+        try:
+            hand_pos = get_xpos(model, data, name="R_Hand")
+        except:
+            pass
+        
+        # Calculate the hand position using available data
+        if wrist_pos is not None and hand_pos is not None:
+            # Use midpoint between wrist and hand for better stability
+            effective_pos = (wrist_pos + hand_pos) / 2
+        elif wrist_pos is not None:
+            effective_pos = wrist_pos
+        elif hand_pos is not None:
+            effective_pos = hand_pos
+        else:
+            # Fallback if no valid position found
+            return 0.0
+        
+        # Transform to local coordinates if needed
+        if self.use_local_frame:
+            
+            pelvis_rotation = get_rotation_matrix_from_pelvis(model, data)
+            local_pos = transform_point_to_local_frame(effective_pos, pelvis_pos, pelvis_rotation)
+            
+            # In local coordinates, X is lateral (left/right)
+            lateral_distance = abs(local_pos[0])
+            
+            if self.debug:
+                print(f"Right hand lateral: global_pos={effective_pos}, local_pos={local_pos}, lateral_distance={lateral_distance:.3f}, target={self.target_distance:.3f}")
+        else:
+            # Legacy behavior using global coordinates
+            lateral_distance = abs(effective_pos[0] - pelvis_pos[0])  # X-axis for lateral
+            
+            if self.debug:
+                wrist_lateral = abs(wrist_pos[0] - pelvis_pos[0]) if wrist_pos is not None else float('nan')
+                hand_lateral = abs(hand_pos[0] - pelvis_pos[0]) if hand_pos is not None else float('nan')
+                print(f"Right hand lateral: wrist={wrist_lateral:.3f}, hand={hand_lateral:.3f}, combined={lateral_distance:.3f}, target={self.target_distance:.3f}")
+            
         return rewards.tolerance(
             lateral_distance,
             bounds=(self.target_distance - 0.1, self.target_distance + 0.1),
@@ -501,11 +665,57 @@ class RightHandLateralDistanceReward(humenv_rewards.RewardFunction):
 @dataclasses.dataclass
 class RightHandForwardDistanceReward(humenv_rewards.RewardFunction):
     target_distance: float = 0.5
+    debug: bool = False
+    use_local_frame: bool = True  # Account for the humanoid's orientation
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
-        hand_pos = get_xpos(model, data, name="R_Hand")
+        # Get positions for both wrist and hand
+        wrist_pos = None
+        hand_pos = None
         pelvis_pos = get_xpos(model, data, name="Pelvis")
-        forward_distance = abs(hand_pos[1] - pelvis_pos[1])
+        
+        try:
+            wrist_pos = get_xpos(model, data, name="R_Wrist")
+        except:
+            pass
+            
+        try:
+            hand_pos = get_xpos(model, data, name="R_Hand")
+        except:
+            pass
+        
+        # Calculate the hand position using available data
+        if wrist_pos is not None and hand_pos is not None:
+            # Use midpoint between wrist and hand for better stability
+            effective_pos = (wrist_pos + hand_pos) / 2
+        elif wrist_pos is not None:
+            effective_pos = wrist_pos
+        elif hand_pos is not None:
+            effective_pos = hand_pos
+        else:
+            # Fallback if no valid position found
+            return 0.0
+        
+        # Transform to local coordinates if needed
+        if self.use_local_frame:
+            
+            pelvis_rotation = get_rotation_matrix_from_pelvis(model, data)
+            local_pos = transform_point_to_local_frame(effective_pos, pelvis_pos, pelvis_rotation)
+            
+            # In local coordinates, Y is forward/backward
+            forward_distance = abs(local_pos[1])
+            
+            if self.debug:
+                print(f"Right hand forward: global_pos={effective_pos}, local_pos={local_pos}, forward_distance={forward_distance:.3f}, target={self.target_distance:.3f}")
+        else:
+            # Legacy behavior using global coordinates
+            forward_distance = abs(effective_pos[1] - pelvis_pos[1])  # Y-axis for forward
+            
+            if self.debug:
+                wrist_forward = abs(wrist_pos[1] - pelvis_pos[1]) if wrist_pos is not None else float('nan')
+                hand_forward = abs(hand_pos[1] - pelvis_pos[1]) if hand_pos is not None else float('nan')
+                print(f"Right hand forward: wrist={wrist_forward:.3f}, hand={hand_forward:.3f}, combined={forward_distance:.3f}, target={self.target_distance:.3f}")
+            
         return rewards.tolerance(
             forward_distance,
             bounds=(self.target_distance - 0.1, self.target_distance + 0.1),
@@ -555,11 +765,57 @@ class LeftFootHeightReward(humenv_rewards.RewardFunction):
 @dataclasses.dataclass
 class LeftFootLateralDistanceReward(humenv_rewards.RewardFunction):
     target_distance: float = 0.2
+    debug: bool = False
+    use_local_frame: bool = True  # Account for the humanoid's orientation
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
-        foot_pos = get_xpos(model, data, name="L_Toe")
+        # Get positions for both ankle and toe
+        ankle_pos = None
+        toe_pos = None
         pelvis_pos = get_xpos(model, data, name="Pelvis")
-        lateral_distance = abs(foot_pos[0] - pelvis_pos[0])
+        
+        try:
+            ankle_pos = get_xpos(model, data, name="L_Ankle")
+        except:
+            pass
+            
+        try:
+            toe_pos = get_xpos(model, data, name="L_Toe")
+        except:
+            pass
+        
+        # Calculate the foot position using available data
+        if ankle_pos is not None and toe_pos is not None:
+            # Use midpoint between ankle and toe for better stability
+            foot_pos = (ankle_pos + toe_pos) / 2
+        elif ankle_pos is not None:
+            foot_pos = ankle_pos
+        elif toe_pos is not None:
+            foot_pos = toe_pos
+        else:
+            # Fallback if no valid position found
+            return 0.0
+        
+        # Transform to local coordinates if needed
+        if self.use_local_frame:
+            
+            pelvis_rotation = get_rotation_matrix_from_pelvis(model, data)
+            local_pos = transform_point_to_local_frame(foot_pos, pelvis_pos, pelvis_rotation)
+            
+            # In local coordinates, X is lateral (left/right)
+            lateral_distance = abs(local_pos[0])
+            
+            if self.debug:
+                print(f"Left foot lateral: global_pos={foot_pos}, local_pos={local_pos}, lateral_distance={lateral_distance:.3f}, target={self.target_distance:.3f}")
+        else:
+            # Legacy behavior using global coordinates
+            lateral_distance = abs(foot_pos[0] - pelvis_pos[0])
+            
+            if self.debug:
+                ankle_lateral = abs(ankle_pos[0] - pelvis_pos[0]) if ankle_pos is not None else float('nan')
+                toe_lateral = abs(toe_pos[0] - pelvis_pos[0]) if toe_pos is not None else float('nan')
+                print(f"Left foot lateral: ankle={ankle_lateral:.3f}, toe={toe_lateral:.3f}, combined={lateral_distance:.3f}, target={self.target_distance:.3f}")
+            
         return rewards.tolerance(
             lateral_distance,
             bounds=(self.target_distance - 0.1, self.target_distance + 0.1),
@@ -582,11 +838,57 @@ class LeftFootLateralDistanceReward(humenv_rewards.RewardFunction):
 @dataclasses.dataclass
 class LeftFootForwardDistanceReward(humenv_rewards.RewardFunction):
     target_distance: float = 0.2
+    debug: bool = False
+    use_local_frame: bool = True  # Account for the humanoid's orientation
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
-        foot_pos = get_xpos(model, data, name="L_Toe")
+        # Get positions for both ankle and toe
+        ankle_pos = None
+        toe_pos = None
         pelvis_pos = get_xpos(model, data, name="Pelvis")
-        forward_distance = abs(foot_pos[1] - pelvis_pos[1])
+        
+        try:
+            ankle_pos = get_xpos(model, data, name="L_Ankle")
+        except:
+            pass
+            
+        try:
+            toe_pos = get_xpos(model, data, name="L_Toe")
+        except:
+            pass
+        
+        # Calculate the foot position using available data
+        if ankle_pos is not None and toe_pos is not None:
+            # Use midpoint between ankle and toe for better stability
+            foot_pos = (ankle_pos + toe_pos) / 2
+        elif ankle_pos is not None:
+            foot_pos = ankle_pos
+        elif toe_pos is not None:
+            foot_pos = toe_pos
+        else:
+            # Fallback if no valid position found
+            return 0.0
+        
+        # Transform to local coordinates if needed
+        if self.use_local_frame:
+            
+            pelvis_rotation = get_rotation_matrix_from_pelvis(model, data)
+            local_pos = transform_point_to_local_frame(foot_pos, pelvis_pos, pelvis_rotation)
+            
+            # In local coordinates, Y is forward/backward
+            forward_distance = abs(local_pos[1])
+            
+            if self.debug:
+                print(f"Left foot forward: global_pos={foot_pos}, local_pos={local_pos}, forward_distance={forward_distance:.3f}, target={self.target_distance:.3f}")
+        else:
+            # Legacy behavior using global coordinates
+            forward_distance = abs(foot_pos[1] - pelvis_pos[1])  # Y-axis for forward
+            
+            if self.debug:
+                ankle_forward = abs(ankle_pos[1] - pelvis_pos[1]) if ankle_pos is not None else float('nan')
+                toe_forward = abs(toe_pos[1] - pelvis_pos[1]) if toe_pos is not None else float('nan')
+                print(f"Left foot forward: ankle={ankle_forward:.3f}, toe={toe_forward:.3f}, combined={forward_distance:.3f}, target={self.target_distance:.3f}")
+            
         return rewards.tolerance(
             forward_distance,
             bounds=(self.target_distance - 0.1, self.target_distance + 0.1),
@@ -631,11 +933,57 @@ class RightFootHeightReward(humenv_rewards.RewardFunction):
 @dataclasses.dataclass
 class RightFootLateralDistanceReward(humenv_rewards.RewardFunction):
     target_distance: float = 0.2
+    debug: bool = False
+    use_local_frame: bool = True  # Account for the humanoid's orientation
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
-        foot_pos = get_xpos(model, data, name="R_Toe")
+        # Get positions for both ankle and toe
+        ankle_pos = None
+        toe_pos = None
         pelvis_pos = get_xpos(model, data, name="Pelvis")
-        lateral_distance = abs(foot_pos[0] - pelvis_pos[0])
+        
+        try:
+            ankle_pos = get_xpos(model, data, name="R_Ankle")
+        except:
+            pass
+            
+        try:
+            toe_pos = get_xpos(model, data, name="R_Toe")
+        except:
+            pass
+        
+        # Calculate the foot position using available data
+        if ankle_pos is not None and toe_pos is not None:
+            # Use midpoint between ankle and toe for better stability
+            foot_pos = (ankle_pos + toe_pos) / 2
+        elif ankle_pos is not None:
+            foot_pos = ankle_pos
+        elif toe_pos is not None:
+            foot_pos = toe_pos
+        else:
+            # Fallback if no valid position found
+            return 0.0
+        
+        # Transform to local coordinates if needed
+        if self.use_local_frame:
+            
+            pelvis_rotation = get_rotation_matrix_from_pelvis(model, data)
+            local_pos = transform_point_to_local_frame(foot_pos, pelvis_pos, pelvis_rotation)
+            
+            # In local coordinates, X is lateral (left/right)
+            lateral_distance = abs(local_pos[0])
+            
+            if self.debug:
+                print(f"Right foot lateral: global_pos={foot_pos}, local_pos={local_pos}, lateral_distance={lateral_distance:.3f}, target={self.target_distance:.3f}")
+        else:
+            # Legacy behavior using global coordinates
+            lateral_distance = abs(foot_pos[0] - pelvis_pos[0])
+            
+            if self.debug:
+                ankle_lateral = abs(ankle_pos[0] - pelvis_pos[0]) if ankle_pos is not None else float('nan')
+                toe_lateral = abs(toe_pos[0] - pelvis_pos[0]) if toe_pos is not None else float('nan')
+                print(f"Right foot lateral: ankle={ankle_lateral:.3f}, toe={toe_lateral:.3f}, combined={lateral_distance:.3f}, target={self.target_distance:.3f}")
+            
         return rewards.tolerance(
             lateral_distance,
             bounds=(self.target_distance - 0.1, self.target_distance + 0.1),
@@ -656,11 +1004,57 @@ class RightFootLateralDistanceReward(humenv_rewards.RewardFunction):
 @dataclasses.dataclass
 class RightFootForwardDistanceReward(humenv_rewards.RewardFunction):
     target_distance: float = 0.2
+    debug: bool = False
+    use_local_frame: bool = True  # Account for the humanoid's orientation
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
-        foot_pos = get_xpos(model, data, name="R_Toe")
+        # Get positions for both ankle and toe
+        ankle_pos = None
+        toe_pos = None
         pelvis_pos = get_xpos(model, data, name="Pelvis")
-        forward_distance = abs(foot_pos[1] - pelvis_pos[1])
+        
+        try:
+            ankle_pos = get_xpos(model, data, name="R_Ankle")
+        except:
+            pass
+            
+        try:
+            toe_pos = get_xpos(model, data, name="R_Toe")
+        except:
+            pass
+        
+        # Calculate the foot position using available data
+        if ankle_pos is not None and toe_pos is not None:
+            # Use midpoint between ankle and toe for better stability
+            foot_pos = (ankle_pos + toe_pos) / 2
+        elif ankle_pos is not None:
+            foot_pos = ankle_pos
+        elif toe_pos is not None:
+            foot_pos = toe_pos
+        else:
+            # Fallback if no valid position found
+            return 0.0
+        
+        # Transform to local coordinates if needed
+        if self.use_local_frame:
+            
+            pelvis_rotation = get_rotation_matrix_from_pelvis(model, data)
+            local_pos = transform_point_to_local_frame(foot_pos, pelvis_pos, pelvis_rotation)
+            
+            # In local coordinates, Y is forward/backward
+            forward_distance = abs(local_pos[1])
+            
+            if self.debug:
+                print(f"Right foot forward: global_pos={foot_pos}, local_pos={local_pos}, forward_distance={forward_distance:.3f}, target={self.target_distance:.3f}")
+        else:
+            # Legacy behavior using global coordinates
+            forward_distance = abs(foot_pos[1] - pelvis_pos[1])  # Y-axis for forward
+            
+            if self.debug:
+                ankle_forward = abs(ankle_pos[1] - pelvis_pos[1]) if ankle_pos is not None else float('nan')
+                toe_forward = abs(toe_pos[1] - pelvis_pos[1]) if toe_pos is not None else float('nan')
+                print(f"Right foot forward: ankle={ankle_forward:.3f}, toe={toe_forward:.3f}, combined={forward_distance:.3f}, target={self.target_distance:.3f}")
+            
         return rewards.tolerance(
             forward_distance,
             bounds=(self.target_distance - 0.1, self.target_distance + 0.1),
