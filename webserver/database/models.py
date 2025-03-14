@@ -18,6 +18,51 @@ class BaseModel(Model):
     class Meta:
         database = db
 
+class GeminiMessage(BaseModel):
+    """Model for storing Gemini chat messages with associated image data"""
+    client_id = CharField()
+    role = CharField(choices=[('user', 'User'), ('assistant', 'Assistant'), ('system', 'System')])
+    content = TextField()
+    image_path = CharField(null=True)
+    image_timestamp = FloatField(null=True)
+    timestamp = FloatField()
+    is_complete = BooleanField(default=True)
+    
+    @classmethod
+    def add_message(cls, client_id, role, content, image_path=None, image_timestamp=None, is_complete=True):
+        """Add a new message to the history"""
+        with db.connection_context():
+            message = GeminiMessage.create(
+                client_id=client_id,
+                role=role,
+                content=content,
+                image_path=image_path,
+                image_timestamp=image_timestamp,
+                timestamp=float(os.path.getmtime(__file__) if image_timestamp is None else image_timestamp),
+                is_complete=is_complete
+            )
+            return message.id
+    
+    @classmethod
+    def get_conversation(cls, client_id, limit=50):
+        """Get conversation history for a client"""
+        with db.connection_context():
+            messages = (GeminiMessage
+                       .select()
+                       .where(GeminiMessage.client_id == client_id)
+                       .order_by(GeminiMessage.timestamp)
+                       .limit(limit))
+            
+            return [{
+                "id": msg.id,
+                "role": msg.role,
+                "content": msg.content,
+                "image_path": msg.image_path,
+                "image_timestamp": msg.image_timestamp,
+                "timestamp": msg.timestamp,
+                "is_complete": msg.is_complete
+            } for msg in messages]
+
 class Content(BaseModel):
     title = CharField()
     thumbnail = CharField()
@@ -130,7 +175,7 @@ def run_migration():
 def initialize_database():
     """Initialize the database and create tables if they don't exist."""
     db.connect(reuse_if_open=True)
-    db.create_tables([Content], safe=True)
+    db.create_tables([Content, GeminiMessage], safe=True)
     
     # Run migrations
     run_migration()

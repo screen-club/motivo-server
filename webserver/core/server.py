@@ -4,6 +4,9 @@ import time
 import json
 import logging
 import threading
+import traceback
+import asyncio
+import websockets
 from datetime import datetime
 
 # Flask and extensions
@@ -113,24 +116,7 @@ class WebServer:
                     as_attachment=False
                 )
                 
-        # Debug route to check file existence
-        @self.app.route('/debug_frame')
-        def debug_frame():
-            """Debug endpoint to check frame file"""
-            frame_path = os.path.join(config.shared_frames_dir, 'latest_frame.jpg')
-            
-            file_info = {
-                "path": frame_path,
-                "exists": os.path.exists(frame_path),
-                "is_file": os.path.isfile(frame_path) if os.path.exists(frame_path) else False,
-                "size_bytes": os.path.getsize(frame_path) if os.path.exists(frame_path) else 0,
-                "permissions": oct(os.stat(frame_path).st_mode & 0o777) if os.path.exists(frame_path) else "N/A",
-                "shared_frames_dir": config.shared_frames_dir,
-                "shared_dir_exists": os.path.exists(config.shared_frames_dir),
-                "full_path": os.path.abspath(frame_path)
-            }
-            
-            return jsonify(file_info)
+
             
         # Removed the problematic MJPEG stream route. 
         # We'll use static images from the public directory instead.
@@ -175,6 +161,28 @@ class WebServer:
                     }
                 }
             })
+            
+        # Gemini status check endpoint - explicitly for socket.io connectivity testing
+        @self.app.route('/api/gemini_status')
+        def get_gemini_status():
+            """Return detailed Gemini API connection status"""
+            gemini_connected = self.gemini_service.is_connected() if hasattr(self.gemini_service, 'is_connected') else False
+            
+            # Get more detailed status
+            status = {
+                "connected": gemini_connected,
+                "connection_state": self.gemini_service.connection_state if hasattr(self.gemini_service, 'connection_state') else "unknown",
+                "connection_attempts": self.gemini_service.connection_attempts if hasattr(self.gemini_service, 'connection_attempts') else 0,
+                "last_connection_attempt": self.gemini_service.last_connection_attempt if hasattr(self.gemini_service, 'last_connection_attempt') else 0,
+                "api_key_set": bool(config.google_api_key),
+                "server_uptime": time.time() - SERVER_START_TIME,
+                "timestamp": time.time()
+            }
+            
+            # Return with CORS headers
+            response = jsonify(status)
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response
         
         # File uploads
         @self.app.route('/upload', methods=['POST'])
@@ -202,6 +210,13 @@ class WebServer:
         @self.app.route('/uploads/<path:filename>')
         def serve_upload(filename):
             return send_from_directory(config.uploads_dir, filename)
+            
+        # Serve shared frames
+        @self.app.route('/shared_frames/<path:filename>')
+        def serve_shared_frame(filename):
+            return send_from_directory(config.shared_frames_dir, filename)
+            
+      
         
         # Content management
         @self.app.route('/api/content', methods=['GET'])
@@ -257,32 +272,41 @@ class WebServer:
         """Register Socket.IO event handlers"""
         @self.socketio.on('connect')
         def handle_connect():
-            logger.info(f"Client connected: {request.sid}")
             emit('connection_status', {"status": "connected"})
             
         @self.socketio.on('gemini_connect')
         def handle_gemini_connect():
             """Handle Gemini connection check request"""
-            logger.info(f"Gemini connection check requested by client: {request.sid}")
-            gemini_connected = self.gemini_service.is_connected()
-            
-            # Send Gemini connection status to the client
-            emit('gemini_connection_status', {
-                'connected': gemini_connected,
-                'state': self.gemini_service.connection_state if hasattr(self.gemini_service, 'connection_state') else "unknown",
-                'timestamp': time.time()
-            })
+            try:
+                gemini_connected = self.gemini_service.is_connected()
+                connection_state = self.gemini_service.connection_state if hasattr(self.gemini_service, 'connection_state') else "unknown"
+                
+                # Send Gemini connection status to the client
+                emit('gemini_connection_status', {
+                    'connected': gemini_connected,
+                    'state': connection_state,
+                    'timestamp': time.time(),
+                    'client_id': request.sid,
+                    'socketio_connected': True  # Indicator that Socket.IO itself is working
+                })
+            except Exception as e:
+                logger.error(f"Error in gemini_connect handler: {str(e)}")
+                emit('gemini_connection_status', {
+                    'connected': False,
+                    'state': "error",
+                    'error_message': str(e),
+                    'timestamp': time.time(),
+                    'client_id': request.sid,
+                    'socketio_connected': True
+                })
         
         @self.socketio.on('disconnect')
         def handle_disconnect():
-            logger.info(f"Client disconnected: {request.sid}")
+            pass
         
         @self.socketio.on('claude_message')
         def handle_claude_message(data):
             try:
-                # Process Claude message
-                logger.info(f"Received Claude message: {data.get('message', '')[:50]}...")
-                
                 # Call Claude API
                 response = self.anthropic_client.messages.create(
                     model="claude-3-5-sonnet-20240620",
@@ -307,12 +331,92 @@ class WebServer:
                 # Get the message from either 'message' or 'text' field for compatibility
                 message_text = data.get('message', data.get('text', ''))
                 
-                # Queue message for Gemini service
-                message_id = self.gemini_service.queue_message(
-                    message_text,
-                    data.get('id'),
-                    request.sid
-                )
+                # Always include the image with text messages by default
+                include_image = data.get('include_image', True)
+                add_to_existing = data.get('add_to_existing', False)
+                
+                # Check if a frame_url was provided directly from the client
+                frame_url = data.get('frame_url')
+                
+                # Log the received frame_url for debugging
+                if frame_url:
+                    logger.info(f"Received frame_url in gemini_message: {frame_url}")
+                
+                # Get or generate message_id - this is critical for matching responses
+                message_id = data.get('id')
+                if not message_id:
+                    message_id = str(uuid.uuid4())
+                    logger.info(f"Generated new message ID: {message_id}")
+                else:
+                    logger.info(f"Using provided message ID: {message_id}")
+                
+                try:
+                    if include_image:
+                        # Image inclusion requested, validate and prepare frame URL
+                        
+                        if not frame_url:
+
+                            error_msg = "No frame URL provided and no alternative sources available"
+                            logger.error(error_msg)
+                            raise ValueError(error_msg)
+                        
+                        # Convert URL path to absolute file path
+                        if frame_url.startswith('/'):
+                            # Remove the leading slash for path joining
+                            relative_path = frame_url[1:]
+                            # Construct full path by joining with the public directory
+                            full_path = os.path.join(self.app.static_folder, relative_path)
+                            logger.info(f"Converted URL {frame_url} to file path: {full_path}")
+                        else:
+                            # If not starting with /, assume it's already formatted correctly
+                            full_path = os.path.join(self.app.static_folder, frame_url)
+                        
+                        # Check if the file actually exists
+                        if not os.path.exists(full_path):
+                            error_msg = f"Image file not found at {full_path}"
+                            logger.error(error_msg)
+                            raise FileNotFoundError(error_msg)
+                        
+                        # Create a capture info object with the URL and full path
+                        capture_info = {
+                            "path": frame_url,
+                            "timestamp": int(time.time()),
+                            "timestamp_str": time.strftime('%d/%m/%Y %H:%M:%S'),
+                            "fullpath": full_path
+                        }
+                        
+                        logger.info(f"Using frame URL: {frame_url}")
+                        
+                        # Queue the message with the validated capture info
+                        message_id = self.gemini_service.queue_message(
+                            message_text,
+                            message_id,  # Pass the message_id explicitly
+                            request.sid,
+                            include_image=True,
+                            capture_info=capture_info,
+                            add_to_existing=add_to_existing
+                        )
+                        
+                        # Log that we've queued the message with this capture info
+                        logger.info(f"Queued Gemini message with image path: {capture_info.get('path')} and message ID: {message_id}")
+                    else:
+                        # No image inclusion requested, just send the text message
+                        message_id = self.gemini_service.queue_message(
+                            message_text,
+                            message_id,  # Pass the message_id explicitly
+                            request.sid,
+                            include_image=False,
+                            add_to_existing=add_to_existing
+                        )
+                
+                except (ValueError, FileNotFoundError) as e:
+                    logger.error(f"Error preparing image for Gemini: {str(e)}")
+                    emit('gemini_error', {
+                        "error": str(e), 
+                        "id": data.get('id'),
+                        "type": "image_error"
+                    })
+                    return
                 
                 # Process any pending responses from Gemini
                 def handle_gemini_response(message):
@@ -322,14 +426,30 @@ class WebServer:
                             content = message.get("content", "")
                             complete = message.get("complete", False)
                             
-                            # Emit the response with both content and message fields for compatibility
-                            # with different frontend implementations
-                            emit('gemini_response', {
+                            # Create response with standard fields
+                            response_data = {
                                 "message": content,
                                 "content": content,
                                 "complete": complete,
-                                "id": data.get('id')
-                            })
+                                "id": data.get('id')  # Use the original request ID for continuity
+                            }
+                            
+                            # Include image information if present in the message
+                            if "image_path" in message:
+                                # Use the image path directly from the message
+                                response_data["image_path"] = message["image_path"]
+                                response_data["image_timestamp"] = message.get("image_timestamp")
+                                response_data["timestamp_str"] = message.get("timestamp_str")
+                                
+                                # Log the message ID with the image path
+                                message_id_for_log = message.get("message_id", "unknown")
+                                logger.info(f"Sending response for message {message_id_for_log} with image_path: {message['image_path']}")
+                            else:
+                                logger.warning(f"Missing image_path in Gemini response - frontend may not display image")
+                            
+                            # Emit the response with all information
+                            emit('gemini_response', response_data)
+                            logger.info(f"Emitted gemini_response with data: {response_data}")
                     except Exception as e:
                         logger.error(f"Error handling Gemini response: {str(e)}")
                 
@@ -340,6 +460,8 @@ class WebServer:
                 logger.error(f"Error queueing Gemini message: {str(e)}")
                 emit('gemini_error', {"error": str(e), "id": data.get('id')})
                 
+
+  
         # Periodically process incoming messages from Gemini
         def process_gemini_messages():
             while True:
@@ -353,15 +475,34 @@ class WebServer:
                                 content = message.get("content", "")
                                 complete = message.get("complete", False)
                                 
-                                # Emit the response to all clients with both content and message fields
-                                self.socketio.emit('gemini_response', {
+                                # Prepare response data with all fields from the original message
+                                response_data = {
                                     "message": content,
                                     "content": content,
                                     "complete": complete,
                                     "id": message.get("id", None)
-                                })
+                                }
+                                
+                                # Important: Include image data if available
+                                if "image_path" in message:
+                                    response_data["image_path"] = message["image_path"]
+                                    response_data["image_timestamp"] = message.get("image_timestamp", time.time())
+                                    
+                                    # Include human-readable timestamp if available
+                                    if "timestamp_str" in message:
+                                        response_data["timestamp_str"] = message["timestamp_str"]
+                                    
+                                    # Log that we're sending an image path
+                                    message_id_for_log = message.get("message_id", "unknown")
+                                    logger.info(f"Broadcasting response for message {message_id_for_log} with image: {message['image_path']}")
+                                else:
+                                    logger.warning("No image path in response for background processor")
+                                
+                                # Emit the complete response to all clients
+                                self.socketio.emit('gemini_response', response_data)
                         except Exception as e:
                             logger.error(f"Error handling response in background thread: {str(e)}")
+                            traceback.print_exc()  # Add traceback for more detailed error info
                     
                     # Process any pending responses
                     self.gemini_service.process_incoming_messages(handle_response)
@@ -382,9 +523,17 @@ class WebServer:
         # Start Gemini service
         self.gemini_service.start()
         
+        # Check if we're on macOS or a local environment
+        import platform
+        is_mac = platform.system() == 'Darwin'
+        is_local = config.api_host in ['localhost', '127.0.0.1', '0.0.0.0'] or is_mac
+        
+        # Set debug mode for local/mac development
+        debug_mode = is_local
+        
         # Start Socket.IO server
         logger.info(f"Starting web server on port {config.api_port}...")
-        self.socketio.run(self.app, host='0.0.0.0', port=config.api_port)
+        self.socketio.run(self.app, host='0.0.0.0', port=config.api_port, debug=debug_mode)
 
 # Create singleton server instance
 server = WebServer()

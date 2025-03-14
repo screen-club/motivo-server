@@ -47,9 +47,17 @@ class GeminiService:
         
         # Storage paths
         self.base_dir = str(Path(__file__).resolve().parents[3])
-        self.public_storage_dir = os.path.join(self.base_dir, 'public', 'storage')
+        
+        # Define paths based on the structure
+        if os.path.exists(os.path.join(self.base_dir, 'motivo-server')):
+            # We're in the liminal/motivo-server structure
+            self.motivo_server_dir = os.path.join(self.base_dir, 'motivo-server')
+        else:
+            # We're directly in motivo-server
+            self.motivo_server_dir = self.base_dir
+            
+        self.public_storage_dir = os.path.join(self.motivo_server_dir, 'public', 'storage')
         self.shared_frames_dir = os.path.join(self.public_storage_dir, 'shared_frames')
-        self.gemini_frame_path = os.path.join(self.shared_frames_dir, 'latest_frame.jpg')
         
         # Ensure directories exist
         os.makedirs(self.shared_frames_dir, exist_ok=True)
@@ -81,8 +89,7 @@ class GeminiService:
             
     def _broadcast_connection_status(self, is_connected):
         """Helper method to broadcast connection status"""
-        # This would typically emit a websocket message
-        logger.info(f"Connection status: {'connected' if is_connected else 'disconnected'}")
+        pass
     
     def start(self):
         """Start the Gemini service"""
@@ -97,7 +104,8 @@ class GeminiService:
             self.thread.start()
             logger.info("Gemini service started in background thread")
             
-    def queue_message(self, message, message_id=None, client_id=None):
+
+    def queue_message(self, message, message_id=None, client_id=None, include_image=True, capture_info=None, add_to_existing=False, auto_capture=False):
         """Queue a message to be sent to Gemini"""
         if message_id is None:
             message_id = str(uuid.uuid4())
@@ -105,36 +113,133 @@ class GeminiService:
         if client_id is None:
             client_id = "system"
         
-        # Send the text to Gemini instead of just queuing the raw message
-        self.send_text(message, client_id)
+        # Store message-id mapping for this client
+        if client_id not in self.client_sessions:
+            self.client_sessions[client_id] = {}
             
-        logger.debug(f"Queued message {message_id} for client {client_id}")
+        # Always track the last message ID for this client
+        self.client_sessions[client_id]["last_message_id"] = message_id
+        logger.info(f"Associating client {client_id} with message ID {message_id}")
+        
+        # Ensure the service is running
+        if not self.running:
+            self.start()
+        
+        # CRITICAL: Handle image to send with Gemini request
+        if include_image:
+            # Require capture_info when include_image is True
+            if not capture_info:
+                error_msg = "Error: include_image is True but no capture_info provided"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+            
+            # Verify the image file exists
+            if not os.path.exists(capture_info['fullpath']):
+                error_msg = f"Error: Image file not found at {capture_info['fullpath']}"
+                logger.error(error_msg)
+                raise FileNotFoundError(error_msg)
+                
+            # No longer store in self.last_image - send directly
+            logger.info(f"Using image from capture_info: {capture_info['path']}")
+        
+        # Log if this is an auto-capture message
+        if auto_capture:
+            logger.info("Processing auto-capture message - will preserve existing rewards")
+        
+        # Send the text to Gemini, optionally including the image from capture_info
+        self.send_text(message, message_id, client_id, include_image, capture_info, add_to_existing, auto_capture)
+        
         return message_id
         
-    def send_text(self, text, client_id=None):
-        """Send text message to Gemini API"""
+    def send_text(self, text, message_id, client_id=None, include_image=True, capture_info=None, add_to_existing=False, auto_capture=False):
+        """Send text message to Gemini API, optionally with the provided image"""
         if not self.running:
-            logger.warning("Cannot send text - service not running")
-            return False
+            self.start()
         
         # Check if we have a connection
+        has_connection = False
         with self.ws_lock:
-            if not self.ws:
-                logger.warning("Cannot send text - no WebSocket connection")
-                return False
+            has_connection = self.ws is not None
+            
+        if not has_connection:
+            logger.warning("Cannot send text - no WebSocket connection")
+            # Format the message and put it in the queue anyway for when connection is established
+            parts = [{"text": text}]
+            
+            msg = {
+                "clientContent": {
+                    "turns": [
+                        {
+                            "role": "user",
+                            "parts": parts
+                        }
+                    ],
+                    "turn_complete": True
+                }
+            }
+            
+            # Add to queue for sending after reconnection
+            self.outgoing_queue.put(msg)
+            
+            if client_id:
+                self.client_sessions[client_id] = {
+                    "last_message": text,
+                    "timestamp": time.time()
+                }
+                
+            return True
         
         try:
+            # Prepare message parts
+            parts = [{"text": text}]
+            
+            # Check if we should include an image
+            if include_image:
+                # Verify we have valid capture_info
+                if not capture_info or not capture_info.get("fullpath"):
+                    error_msg = "Image inclusion requested, but no valid capture_info provided"
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+                
+                # Use the image path directly from capture_info
+                image_path = capture_info.get("fullpath")
+                
+                if not os.path.exists(image_path):
+                    error_msg = f"Image file not found at path: {image_path}"
+                    logger.error(error_msg)
+                    raise FileNotFoundError(error_msg)
+                
+                try:
+                    # Read the image data directly from the provided path
+                    with open(image_path, 'rb') as f:
+                        image_data = f.read()
+                        
+                    # Convert to base64
+                    import base64
+                    image_base64 = base64.b64encode(image_data).decode('utf-8')
+                    
+                    # Add image part before text
+                    parts.insert(0, {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": image_base64
+                        }
+                    })
+                    
+                    logger.info(f"Added image to message: {image_path}")
+                    
+                except Exception as img_err:
+                    error_msg = f"Failed to process image: {str(img_err)}"
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+            
             # Format the message according to Gemini Multimodal Live API documentation
             msg = {
                 "clientContent": {
                     "turns": [
                         {
                             "role": "user",
-                            "parts": [
-                                {
-                                    "text": text
-                                }
-                            ]
+                            "parts": parts
                         }
                     ],
                     "turn_complete": True
@@ -143,19 +248,37 @@ class GeminiService:
             
             # Add to queue and log
             self.outgoing_queue.put(msg)
-            logger.info(f"Queued text message for Gemini: {text[:50]}...")
             
             # If we only have one client, store this client ID for response routing
             if client_id:
-                self.client_sessions[client_id] = {
+                # Initialize if not exists
+                if client_id not in self.client_sessions:
+                    self.client_sessions[client_id] = {}
+                
+                # Update session with message information
+                session = self.client_sessions[client_id]
+                session.update({
                     "last_message": text,
                     "timestamp": time.time()
-                }
-                logger.debug(f"Associated message with client ID: {client_id}")
+                })
+                
+                # Store message ID and image info together in a dictionary for this specific message
+                # This ensures each message keeps track of its own image
+                if include_image and capture_info:
+                    # Don't store in last_image - create a message-specific record
+                    logger.info(f"Storing image {capture_info['path']} for message ID {message_id}")
+                    if "message_images" not in session:
+                        session["message_images"] = {}
+                    
+                    session["message_images"][message_id] = {
+                        "path": capture_info["path"],
+                        "timestamp": capture_info["timestamp"],
+                        "timestamp_str": capture_info["timestamp_str"]
+                    }
             
             return True
         except Exception as e:
-            logger.error(f"Error sending text message: {str(e)}")
+            logger.error(f"Error sending message: {str(e)}")
             traceback.print_exc()
             return False
         
@@ -171,7 +294,6 @@ class GeminiService:
             traceback.print_exc()
         finally:
             self.loop.close()
-            logger.info("Gemini service loop closed")
             
     async def _connect_and_run(self):
         """Connect to Gemini API and maintain the connection"""
@@ -180,17 +302,28 @@ class GeminiService:
         
         while self.running:
             try:
+                # Check if we should reconnect immediately (based on status check)
+                if self.connection_state == "reconnecting":
+                    pass
+                else:
+                    # Handle normal retry delay logic
+                    current_time = time.time()
+                    time_since_last_attempt = current_time - self.last_connection_attempt
+                    
+                    if time_since_last_attempt < retry_delay and self.connection_attempts > 1:
+                        await asyncio.sleep(0.5)  # Small sleep to prevent tight loop
+                        continue
+                    
                 self.connection_attempts += 1
                 self.last_connection_attempt = time.time()
                 self.connection_state = "connecting"
-                logger.info(f"[CONNECTIVITY] Connecting to Gemini API (attempt #{self.connection_attempts}, retry delay: {retry_delay}s)")
                 
                 # Reload system instructions on each connection attempt
                 self.load_system_instructions()
                 
                 # Verify API key is set
                 if not self.api_key:
-                    logger.error("[CONNECTIVITY] Cannot connect to Gemini: API key is not set")
+                    logger.error("Cannot connect to Gemini: API key is not set")
                     self.connection_state = "failed"
                     self._broadcast_connection_status(False)
                     await asyncio.sleep(5)
@@ -204,21 +337,29 @@ class GeminiService:
                         "User-Agent": "GeminiServiceClient/1.0"
                     }
                     
-                    # Connect to the Gemini API
+                    # Connect to the Gemini API with shorter timeouts
                     websocket = await websockets.connect(
                         self.uri, 
                         additional_headers=headers,
-                        ping_interval=30,
-                        ping_timeout=10
+                        ping_interval=20,
+                        ping_timeout=10,  # Increased for more stability
+                        close_timeout=5
                     )
-                    logger.info("[CONNECTIVITY] WebSocket connection established successfully")
-                except Exception as conn_err:
-                    logger.error(f"[CONNECTIVITY] Failed to establish WebSocket connection: {str(conn_err)}")
+                except websockets.exceptions.InvalidStatusCode as status_err:
+                    logger.error(f"Invalid status code from Gemini API: {status_err}")
+                    if hasattr(status_err, 'status_code'):
+                        logger.error(f"Status code: {status_err.status_code}")
                     self.connection_state = "failed"
                     self._broadcast_connection_status(False)
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, max_retry_delay)
-                    logger.info(f"[CONNECTIVITY] Will retry connection in {retry_delay} seconds")
+                    continue
+                except Exception as conn_err:
+                    logger.error(f"Failed to establish WebSocket connection: {str(conn_err)}")
+                    self.connection_state = "failed"
+                    self._broadcast_connection_status(False)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, max_retry_delay)
                     continue
                 
                 with self.ws_lock:
@@ -252,32 +393,28 @@ class GeminiService:
                                 }
                             ]
                         }
-                        logger.info(f"[CONNECTIVITY] Added system instructions to setup message ({len(self.system_instructions)} chars)")
                     
-                    logger.info(f"[CONNECTIVITY] Sending setup message to initialize Gemini connection")
                     await self.ws.send(json.dumps(setup_msg))
                     
                     # Wait for response with timeout
                     raw_response = await asyncio.wait_for(self.ws.recv(), timeout=10)
                     setup_response = json.loads(raw_response)
-                    logger.info(f"[CONNECTIVITY] Gemini API setup complete and ready for messages")
                     
                     # Broadcast successful connection
                     self.connection_state = "connected"
                     self.connection_attempts = 0
                     self._broadcast_connection_status(True)
                 except asyncio.TimeoutError:
-                    logger.error("[CONNECTIVITY] Timeout waiting for setup response from Gemini")
+                    logger.error("Timeout waiting for setup response from Gemini")
                     await self.ws.close()
                     self.ws = None
                     self.connection_state = "timeout"
                     self._broadcast_connection_status(False)
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, max_retry_delay)
-                    logger.info(f"[CONNECTIVITY] Will retry connection in {retry_delay} seconds")
                     continue
                 except Exception as setup_err:
-                    logger.error(f"[CONNECTIVITY] Error during Gemini setup: {str(setup_err)}")
+                    logger.error(f"Error during Gemini setup: {str(setup_err)}")
                     traceback.print_exc()
                     await self.ws.close()
                     self.ws = None
@@ -285,7 +422,6 @@ class GeminiService:
                     self._broadcast_connection_status(False)
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, max_retry_delay)
-                    logger.info(f"[CONNECTIVITY] Will retry connection in {retry_delay} seconds")
                     continue
                 
                 # Process messages with better error handling
@@ -295,15 +431,15 @@ class GeminiService:
                         self._process_incoming_messages()
                     )
                 except websockets.exceptions.ConnectionClosed as closed_err:
-                    logger.warning(f"[CONNECTIVITY] Gemini WebSocket connection closed with code {closed_err.code}: {closed_err.reason}")
+                    logger.warning(f"Gemini WebSocket connection closed with code {closed_err.code}: {closed_err.reason}")
                     self.connection_state = "closed"
                 except Exception as process_err:
-                    logger.error(f"[CONNECTIVITY] Error processing messages: {str(process_err)}")
+                    logger.error(f"Error processing messages: {str(process_err)}")
                     self.connection_state = "error"
                     traceback.print_exc()
                 
             except Exception as e:
-                logger.error(f"[CONNECTIVITY] Unexpected error in Gemini connection: {str(e)}")
+                logger.error(f"Unexpected error in Gemini connection: {str(e)}")
                 self.connection_state = "error"
                 traceback.print_exc()
                 
@@ -312,10 +448,9 @@ class GeminiService:
                 with self.ws_lock:
                     if self.ws:
                         try:
-                            logger.info("[CONNECTIVITY] Closing WebSocket connection")
                             await self.ws.close()
                         except:
-                            logger.warning("[CONNECTIVITY] Error when closing WebSocket connection")
+                            logger.warning("Error when closing WebSocket connection")
                         self.ws = None
                 
                 # Notify of disconnection
@@ -323,7 +458,6 @@ class GeminiService:
                 self._broadcast_connection_status(False)
                 
                 # Wait before reconnecting
-                logger.info(f"[CONNECTIVITY] Will attempt reconnection in {retry_delay} seconds")
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, max_retry_delay)
                 
@@ -335,24 +469,22 @@ class GeminiService:
                 if not self.outgoing_queue.empty():
                     message = self.outgoing_queue.get()
                     
-                    # Log message details for debugging
-                    if isinstance(message, dict):
-                        msg_type = message.get('type', 'client_content')
-                        
-                        # Log more details about the message content
-                        if 'clientContent' in message:
-                            turns = message.get('clientContent', {}).get('turns', [])
-                            if turns and len(turns) > 0:
-                                text_parts = [part.get('text', '') for turn in turns for part in turn.get('parts', []) if 'text' in part]
-                                
-                    
                     # Send the message
                     serialized = json.dumps(message)
-                    await self.ws.send(serialized)
+                    try:
+                        await self.ws.send(serialized)
+                    except websockets.exceptions.ConnectionClosedError as ws_err:
+                        logger.warning(f"Connection closed while sending message: {ws_err}")
+                        # Break the loop to trigger reconnection
+                        break
                 
                 # Brief pause to prevent high CPU usage
                 await asyncio.sleep(0.01)
             
+            except websockets.exceptions.ConnectionClosedError as ws_err:
+                logger.warning(f"Connection closed in outgoing queue: {ws_err}")
+                # Break the loop to trigger reconnection
+                break
             except Exception as e:
                 logger.error(f"Error processing outgoing message: {str(e)}")
                 traceback.print_exc()
@@ -362,7 +494,7 @@ class GeminiService:
         """Process incoming messages from Gemini API"""
         current_response = ""  # Buffer to accumulate text chunks
         turn_in_progress = False
-        
+        current_message_id = None  # Track which message we're currently processing
         
         while self.running and self.ws:
             try:
@@ -375,14 +507,25 @@ class GeminiService:
                     
                 except json.JSONDecodeError as json_err:
                     logger.error(f"Failed to parse JSON response: {str(json_err)}")
-                    logger.debug(f"Invalid JSON: {raw_response[:100]}...")
                     continue
                 
                 # Check for setupComplete
                 if "setupComplete" in response:
-                    logger.info("Received setupComplete message")
                     continue
-                    
+                
+                # If this is the start of a new turn, try to get the message ID
+                # from the first client in the sessions
+                if not turn_in_progress and "serverContent" in response:
+                    client_ids = list(self.client_sessions.keys())
+                    if client_ids:
+                        client_id = client_ids[0]
+                        session = self.client_sessions.get(client_id, {})
+                        current_message_id = session.get("last_message_id")
+                        if current_message_id:
+                            logger.info(f"Starting to process response for message ID: {current_message_id}")
+                        else:
+                            logger.warning("No message ID found in client session")
+                
                 # Extract text content based on the Gemini Multimodal Live API structure
                 text_content = None
                 turn_complete = False
@@ -397,7 +540,6 @@ class GeminiService:
                     
                     # Check for interruption
                     if server_content.get("interrupted", False):
-                        logger.info("Generation was interrupted")
                         current_response = ""  # Clear buffer on interruption
                         turn_in_progress = False
                     
@@ -426,8 +568,31 @@ class GeminiService:
                             "type": "gemini_response",
                             "content": current_response,
                             "timestamp": time.time(),
-                            "complete": turn_complete
+                            "complete": turn_complete,
+                            "message_id": current_message_id
                         }
+                        
+                        # Get image data directly from client session if available
+                        if client_ids:
+                            client_id = client_ids[0]
+                            if client_id in self.client_sessions:
+                                session = self.client_sessions[client_id]
+                                
+                                # Try to find the message-specific image first
+                                if current_message_id and "message_images" in session and current_message_id in session["message_images"]:
+                                    img_info = session["message_images"][current_message_id]
+                                    response_data["image_path"] = img_info["path"]
+                                    response_data["image_timestamp"] = img_info["timestamp"]
+                                    response_data["timestamp_str"] = img_info["timestamp_str"]
+                                    logger.info(f"Using message-specific image in response: {img_info['path']}")
+                                    
+                                    # Clean up this message image entry once used
+                                    if turn_complete:
+                                        session["message_images"].pop(current_message_id, None)
+                                elif "message_images" in session:
+                                    logger.warning(f"Message ID {current_message_id} not found in message_images. Available IDs: {list(session['message_images'].keys())}")
+                                else:
+                                    logger.warning("No message_images dictionary in session")
                         
                         # Add client info if available
                         if len(client_ids) == 1:
@@ -447,7 +612,7 @@ class GeminiService:
                     logger.error(f"Gemini API error: {response.get('error')}")
             
             except websockets.exceptions.ConnectionClosed as ws_err:
-                logger.warning(f"[CONNECTIVITY] Gemini WebSocket connection closed: {ws_err}")
+                logger.warning(f"Gemini WebSocket connection closed: {ws_err}")
                 self.connection_state = "closed"
                 break
             except Exception as e:
@@ -461,6 +626,41 @@ class GeminiService:
             connected = self.ws is not None and self.connection_state == "connected"
         
         return connected
+    
+    def get_connection_status(self):
+        """Get detailed connection status for API endpoints"""
+        status = {
+            "connected": self.is_connected(),
+            "state": self.connection_state
+        }
+        
+        # Always attempt reconnection when status is checked
+        if not status["connected"] and self.running:
+            # Force immediate reconnection attempt
+            self.connection_state = "reconnecting"
+            self.last_connection_attempt = 0
+            
+            status["reconnection_triggered"] = True
+        
+        return status
+    
+    def ensure_connection(self):
+        """Ensure that the service is connected, triggering connection if needed"""
+        if not self.is_connected() and self.running:
+            
+            # If not already attempting to reconnect
+            if self.connection_state not in ["connecting", "reconnecting"]:
+                self.connection_state = "reconnecting"
+                
+                # Reset last connection attempt time to trigger immediate reconnection
+                self.last_connection_attempt = 0
+                
+                # If the thread isn't running, start it
+                if self.thread is None or not self.thread.is_alive():
+                    self.start()
+                    
+            return False
+        return True
         
     def process_incoming_messages(self, callback):
         """Process any incoming messages and call the provided callback"""
@@ -471,7 +671,6 @@ class GeminiService:
             while not self.incoming_queue.empty():
                 try:
                     message = self.incoming_queue.get_nowait()
-                    _logger.debug(f"Processing message from queue: {message.get('type', 'unknown')}")
                     callback(message)
                 except Exception as e:
                     # Use the local logger reference

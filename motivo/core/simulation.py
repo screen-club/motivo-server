@@ -9,7 +9,7 @@ from datetime import datetime
 from core.config import config
 from core.state import app_state
 from utils.smpl_utils import qpos_to_smpl
-from utils.frame_utils import save_frame_data
+from utils.frame_utils import save_frame_data, save_shared_frame
 from utils.utils import normalize_q_value
 from rewards.reward_context import compute_q_value
 
@@ -103,7 +103,7 @@ async def cleanup_stale_connections():
     
     stale_connections = set()
     for ws in app_state.ws_manager.connected_clients:
-        if ws.state == websockets.ConnectionState.CLOSED:
+        if ws.closed:
             stale_connections.add(ws)
             logger.warning("Found closed connection that wasn't properly removed")
     
@@ -125,24 +125,47 @@ async def render_and_process_frame(frame_count, q_percentage, last_frame_save_ti
         is_computing=app_state.message_handler.is_computing_reward
     )
     
-    # Save frame for external services (like Gemini) periodically
-    current_time = time.time()
-    if current_time - last_frame_save_time >= 1.0:
-        try:
-            # Convert from RGB to BGR for OpenCV
-            save_frame = cv2.cvtColor(frame_with_overlays.copy(), cv2.COLOR_RGB2BGR)
-            cv2.imwrite(config.gemini_frame_path, save_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            # Also save a timestamp file to track when the frame was saved
-            with open(os.path.join(config.shared_frames_dir, 'timestamp.txt'), 'w') as f:
-                f.write(str(current_time))
-            last_frame_save_time = current_time
-        except Exception as e:
-            logger.error(f"Error saving frame: {str(e)}")
+    # Instead of saving frames on every render, we'll only save when explicitly requested
+    # via the webserver's gemini_capture event
     
-    # Update WebRTC stream - direct asyncio call since broadcast_frame is a coroutine
+    # Update WebRTC stream with proper task management
     frame_copy = frame_with_overlays.copy()
-    # Create a task for broadcasting but don't wait for it to complete
-    asyncio.create_task(app_state.webrtc_manager.broadcast_frame(frame_copy))
+    
+    # Use a more controlled approach for creating and tracking tasks
+    try:
+        # Create a task with a timeout to prevent stalled tasks
+        webrtc_task = asyncio.create_task(
+            asyncio.wait_for(
+                app_state.webrtc_manager.broadcast_frame(frame_copy),
+                timeout=0.5  # 500ms timeout to prevent blocking
+            )
+        )
+        
+        # Optionally add task to a global task set for cleanup
+        # This prevents tasks from lingering and causing memory leaks
+        if not hasattr(app_state, 'pending_webrtc_tasks'):
+            app_state.pending_webrtc_tasks = set()
+        
+        app_state.pending_webrtc_tasks.add(webrtc_task)
+        
+        # Set up cleanup callback
+        def task_done(task):
+            try:
+                app_state.pending_webrtc_tasks.discard(task)
+            except:
+                pass
+        
+        webrtc_task.add_done_callback(task_done)
+        
+        # Periodically clean up completed tasks (every 100 frames)
+        if frame_count % 100 == 0 and hasattr(app_state, 'pending_webrtc_tasks'):
+            done_tasks = {task for task in app_state.pending_webrtc_tasks if task.done()}
+            for task in done_tasks:
+                app_state.pending_webrtc_tasks.discard(task)
+            logger.debug(f"Cleaned up {len(done_tasks)} completed WebRTC tasks, {len(app_state.pending_webrtc_tasks)} pending")
+    
+    except Exception as e:
+        logger.error(f"Error setting up WebRTC broadcast: {e}")
     
     # Check for key presses (quit/save)
     should_quit, should_save = app_state.display_manager.check_key()

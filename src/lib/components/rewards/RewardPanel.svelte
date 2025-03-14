@@ -9,6 +9,7 @@
   let selectedGroup = Object.keys(REWARD_GROUPS)[0];
   let selectedRewardType = REWARD_GROUPS[selectedGroup][0];
   let activeParameters = initializeParameters(selectedRewardType);
+  let addMode = true; // true = add to existing, false = replace all
 
   // Watch for group changes and update reward type accordingly
   $: {
@@ -30,6 +31,7 @@
 
   // Add selected reward to active rewards
   function addReward() {
+    const addToExisting = addMode;
     const rewardId = uuidv4();
     const newReward = {
       id: rewardId,
@@ -47,6 +49,7 @@
           weights: [1.0],
           combinationType: 'geometric'
         },
+        add_to_existing: addToExisting,
         timestamp: new Date().toISOString()
       }));
 
@@ -112,11 +115,23 @@
       </ParameterGroup>
     </div>
 
+    <!-- Mode selection -->
+    <div class="flex items-center space-x-4 mb-3">
+      <label class="inline-flex items-center cursor-pointer">
+        <input type="radio" name="add-mode" bind:group={addMode} value={true} class="form-radio h-4 w-4 text-blue-600">
+        <span class="ml-2 text-sm text-gray-700">Add to existing</span>
+      </label>
+      <label class="inline-flex items-center cursor-pointer">
+        <input type="radio" name="add-mode" bind:group={addMode} value={false} class="form-radio h-4 w-4 text-blue-600">
+        <span class="ml-2 text-sm text-gray-700">Replace all</span>
+      </label>
+    </div>
+
     <button
       on:click={addReward}
       class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md transition-colors"
     >
-      Add Reward
+      {addMode ? 'Add Reward' : 'Replace All Rewards'}
     </button>
   </div>
 </div>

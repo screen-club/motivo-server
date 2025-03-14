@@ -1,16 +1,18 @@
 import json
+import cv2
 import numpy as np
 import torch
 import os
 import traceback
 import asyncio
 import logging
+import websockets
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 from core.config import config
-from utils.frame_utils import FrameRecorder
+from utils.frame_utils import FrameRecorder, save_shared_frame
 from rewards.reward_context import compute_reward_context
 
 logger = logging.getLogger('message_handler')
@@ -56,6 +58,8 @@ class MessageHandler:
             "update_reward": self.handle_update_reward,
             "get_current_context": self.handle_get_current_context,
             "load_npz_context": self.handle_load_npz_context,
+            "capture_frame": self.handle_capture_frame,
+            "make_snapshot": self.handle_make_snapshot,
         }
         
         logger.info("Message handler initialized")
@@ -96,13 +100,32 @@ class MessageHandler:
             handler = self.command_handlers.get(message_type)
             if handler:
                 logger.debug(f"Handling message of type: {message_type}")
-                await handler(websocket, data)
+                try:
+                    await handler(websocket, data)
+                except websockets.exceptions.ConnectionClosedError as e:
+                    logger.error(f"WebSocket connection closed while handling {message_type}: {str(e)}")
+                    # No need to send response as connection is closed
+                except Exception as e:
+                    logger.error(f"Error in handler for {message_type}: {str(e)}")
+                    traceback.print_exc()
+                    # Try to send error response if connection is still open
+                    try:
+                        await websocket.send(json.dumps({
+                            "type": f"{message_type}_error",
+                            "error": str(e),
+                            "timestamp": datetime.now().isoformat()
+                        }))
+                    except:
+                        pass
             else:
                 logger.warning(f"Unknown message type: {message_type}")
                 
         except json.JSONDecodeError:
             logger.error("Invalid JSON message received")
-            await websocket.send(json.dumps({"error": "Invalid JSON"}))
+            try:
+                await websocket.send(json.dumps({"error": "Invalid JSON"}))
+            except:
+                pass
         except Exception as e:
             logger.error(f"Error handling message: {str(e)}")
             traceback.print_exc()
@@ -247,15 +270,27 @@ class MessageHandler:
     async def handle_clear_active_rewards(self, websocket, data: Dict[str, Any]) -> None:
         """Clear all active rewards and return to default context"""
         logger.info("Clearing active rewards...")
+        
+        # Check if we should preserve the environment Z context
+        preserve_z = data.get('preserve_z', False)
+        
         self.active_rewards = None
         self.current_reward_config = None  # Clear current reward config
         self.active_poses = None  # Also clear active poses
-        self.current_z = self.default_z
+        
+        if not preserve_z:
+            # Only reset the z context if we're not preserving it
+            logger.info("Resetting environment context to default")
+            self.current_z = self.default_z
+        else:
+            logger.info("Preserving environment Z context while clearing active rewards")
+            
         logger.info("Active rewards cleared ✅")
         
         response = {
             "type": "rewards_cleared",
             "status": "success",
+            "preserve_z": preserve_z,
             "timestamp": datetime.now().isoformat()
         }
         await websocket.send(json.dumps(response))
@@ -407,20 +442,97 @@ class MessageHandler:
                 await self.handle_clean_rewards(websocket, data)
                 return
                 
-            self.active_rewards = data['reward']
-            self.current_reward_config = data['reward']
-            logger.info("Computing context for new reward configuration")
-            z, _ = await self.context_cache.get_cached_context(
-                self.active_rewards, 
-                self.get_reward_context
-            )
+            # Process rewards in batch mode
+            # Check if this contains multiple rewards or is adding to existing
+            is_adding_reward = data.get('add_to_existing', False)
+            is_batch_mode = data.get('batch_mode', False) or len(data.get('reward', {}).get('rewards', [])) > 1
+            
+            if is_adding_reward and self.active_rewards is not None:
+                # Add the new reward to existing rewards
+                logger.info("Adding new reward to existing rewards")
+                
+                # Get the existing rewards and weights
+                existing_rewards = self.active_rewards.get('rewards', [])
+                existing_weights = self.active_rewards.get('weights', [])
+                
+                # Get the new rewards and weights
+                new_rewards = data['reward'].get('rewards', [])
+                new_weights = data['reward'].get('weights', [])
+                
+                # Combine them
+                combined_rewards = existing_rewards + new_rewards
+                combined_weights = existing_weights + new_weights
+                
+                # Create the updated reward config
+                self.active_rewards = {
+                    'rewards': combined_rewards,
+                    'weights': combined_weights,
+                    'combinationType': data['reward'].get('combinationType', 
+                                                        self.active_rewards.get('combinationType', 'geometric'))
+                }
+                
+                logger.info(f"Combined {len(existing_rewards)} existing rewards with {len(new_rewards)} new rewards")
+            else:
+                # Replace existing rewards with the new configuration
+                logger.info("Setting new reward configuration")
+                self.active_rewards = data['reward']
+            
+            # Update current reward configuration
+            self.current_reward_config = self.active_rewards
+            
+            # If batch mode is enabled or multiple rewards are being processed,
+            # use a special batch computation approach
+            if is_batch_mode:
+                logger.info("Using batch mode for computing multiple rewards at once")
+                
+                try:
+                    # Create a unique batch key based on timestamp
+                    batch_key = f"batch_{datetime.now().timestamp()}"
+                    
+                    # Set up the batch computation, but don't pre-populate the cache
+                    self.context_cache.precompute_reward_combination(self.active_rewards, batch_key)
+                    
+                    # First compute a standard cache key as fallback
+                    standard_key = self.context_cache.get_cache_key(self.active_rewards)
+                    
+                    # Compute the context once for all rewards
+                    logger.info("Computing context for all rewards at once")
+                    z, _ = await self.context_cache.get_cached_context(
+                        self.active_rewards, 
+                        self.get_reward_context,
+                        # Use standard key first, not batch_key to avoid NoneType errors
+                        use_batch_key=None
+                    )
+                    
+                    # Now that we have the result, manually store it with the batch key
+                    # This caches the result with both the standard key and batch key
+                    if z is not None:
+                        self.context_cache.computation_cache[batch_key] = z
+                        logger.info(f"Cached batch result with key: {batch_key}")
+                except Exception as e:
+                    logger.error(f"Error in batch mode processing: {str(e)}")
+                    logger.info("Falling back to standard processing")
+                    z, _ = await self.context_cache.get_cached_context(
+                        self.active_rewards, 
+                        self.get_reward_context
+                    )
+            else:
+                # Standard computation for single reward
+                logger.info("Computing context for new reward configuration")
+                z, _ = await self.context_cache.get_cached_context(
+                    self.active_rewards, 
+                    self.get_reward_context
+                )
+                
             self.current_z = z
             
             response = {
                 "type": "reward",
                 "value": 1.0,
                 "timestamp": data.get("timestamp", ""),
-                "is_computing": self.is_computing_reward
+                "is_computing": self.is_computing_reward,
+                "active_rewards": self.active_rewards,
+                "batch_mode": is_batch_mode
             }
             await websocket.send(json.dumps(response))
             
@@ -674,6 +786,160 @@ class MessageHandler:
         """Get the current context tensor"""
         return self.current_z
 
+    async def handle_capture_frame(self, websocket, data: Dict[str, Any]) -> None:
+        """Handle request to capture and save the current frame"""
+        try:
+            logger.info("Received request to capture frame")
+            
+            # Get the current frame from the environment
+            frame = self.env.render()
+            
+            # Get display manager overlay if available
+            frame_with_overlays = frame
+            if hasattr(self.env, 'display_manager') and self.env.display_manager:
+                frame_with_overlays = self.env.display_manager.show_frame(
+                    frame,
+                    q_percentage=0.0,  # We don't have this value here
+                    is_computing=self.is_computing_reward
+                )
+                
+            # Save the frame
+            resize_width = data.get("resize_width", 640)
+            frame_path = save_shared_frame(frame_with_overlays, resize_width=resize_width)
+            
+            # Convert absolute path to a relative URL
+            # Extract just the filename from the path
+            frame_filename = os.path.basename(frame_path)
+            
+            # Create a relative URL path for the frame
+            relative_url = f"/storage/shared_frames/{frame_filename}"
+            
+            # Log the conversion for debugging
+            logger.info(f"Converting absolute path '{frame_path}' to relative URL '{relative_url}'")
+            
+            # Respond with success
+            response = {
+                "type": "frame_captured",
+                "status": "success",
+                "frame_path": relative_url,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Include requestId if it was provided
+            if "requestId" in data:
+                response["requestId"] = data["requestId"]
+                
+            await websocket.send(json.dumps(response))
+            logger.info("Frame successfully captured and saved")
+            
+        except Exception as e:
+            logger.error(f"Error capturing frame: {str(e)}")
+            traceback.print_exc()
+            
+            # Send error response
+            response = {
+                "type": "frame_captured",
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Include requestId if it was provided
+            if "requestId" in data:
+                response["requestId"] = data["requestId"]
+                
+            await websocket.send(json.dumps(response))
+            
+    async def handle_make_snapshot(self, websocket, data: Dict[str, Any]) -> None:
+        """Handle request to make a snapshot of the current frame with timestamp for Gemini"""
+        try:
+            logger.info("Received request to make snapshot for Gemini")
+            
+            # Get the current frame from the environment
+            frame = self.env.render()
+            
+            # Get display manager overlay if available
+            frame_with_overlays = frame
+            if hasattr(self.env, 'display_manager') and self.env.display_manager:
+                frame_with_overlays = self.env.display_manager.show_frame(
+                    frame,
+                    q_percentage=0.0,
+                    is_computing=self.is_computing_reward
+                )
+                
+            # Create a timestamp-based filename for this capture
+            timestamp = int(datetime.now().timestamp())
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            snapshot_filename = f"gemini_snapshot_{timestamp}.jpg"
+            
+            # Save the frame to both shared_frames and public dir
+            from core.config import config
+            
+            resize_width = data.get("resize_width", 640)
+            
+            # First save to shared_frames directory (used by Motivo server)
+            frame_path = save_shared_frame(frame_with_overlays, resize_width=resize_width)
+            
+            # Also save a timestamped copy
+            try:
+                # Resize image while preserving aspect ratio
+                h, w = frame_with_overlays.shape[:2]
+                aspect_ratio = h / w
+                new_width = resize_width
+                new_height = int(new_width * aspect_ratio)
+                
+                # Resize the image
+                resized_frame = cv2.resize(frame_with_overlays, (new_width, new_height), interpolation=cv2.INTER_AREA)
+                
+                # Convert RGB to BGR for OpenCV
+                bgr_frame = cv2.cvtColor(resized_frame, cv2.COLOR_RGB2BGR)
+                
+                # Save timestamped image to shared_frames_dir
+                timestamped_path = os.path.join(config.shared_frames_dir, snapshot_filename)
+                cv2.imwrite(timestamped_path, bgr_frame)
+                logger.info(f"Saved timestamped snapshot: {timestamped_path}")
+                
+                # Save a copy to public directory for web access
+                public_frames_dir = os.path.join(os.path.dirname(config.public_dir), 'public', 'storage', 'shared_frames')
+                os.makedirs(public_frames_dir, exist_ok=True)
+                public_timestamped_path = os.path.join(public_frames_dir, snapshot_filename)
+                cv2.imwrite(public_timestamped_path, bgr_frame)
+                logger.info(f"Saved public copy of snapshot: {public_timestamped_path}")
+                
+                # Create the public URL path for browser access
+                image_url_path = f"/storage/shared_frames/{snapshot_filename}"
+                
+            except Exception as e:
+                logger.error(f"Error saving timestamped snapshot: {str(e)}")
+                timestamped_path = None
+                image_url_path = None
+            
+            # Respond with success
+            response = {
+                "type": "snapshot_created",
+                "status": "success",
+                "frame_path": frame_path,
+                "timestamped_path": timestamped_path,
+                "public_path": image_url_path,
+                "timestamp": timestamp,
+                "timestamp_str": timestamp_str
+            }
+            await websocket.send(json.dumps(response))
+            logger.info("Snapshot successfully created and saved")
+            
+        except Exception as e:
+            logger.error(f"Error creating snapshot: {str(e)}")
+            traceback.print_exc()
+            
+            # Send error response
+            response = {
+                "type": "snapshot_created",
+                "status": "error",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+            await websocket.send(json.dumps(response))
+    
     def set_default_z(self, z: torch.Tensor) -> None:
         """Set the default context tensor"""
         self.default_z = z

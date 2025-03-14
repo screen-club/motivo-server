@@ -17,8 +17,21 @@ class Config:
     def __init__(self):
         # Base paths
         self.base_dir = str(Path(__file__).resolve().parents[3])
-        self.public_dir = os.path.join(self.base_dir, 'public')
-        self.storage_dir = os.path.join(self.public_dir, 'storage')
+        
+        # Check if we're in a nested path or not
+        if os.path.exists(os.path.join(self.base_dir, 'motivo-server')):
+            # We're in liminal/motivo-server
+            self.motivo_server_dir = os.path.join(self.base_dir, 'motivo-server')
+        else:
+            # We're already in motivo-server directory
+            self.motivo_server_dir = self.base_dir
+        
+        self.public_dir = os.path.join(self.motivo_server_dir, 'public')
+        
+        # Create the public dir if needed
+        os.makedirs(self.public_dir, exist_ok=True)
+        
+        self.storage_dir = os.path.join(self.motivo_server_dir, 'storage')
         
         # Storage paths
         self.db_dir = os.path.join(self.storage_dir, 'db')
@@ -71,10 +84,7 @@ class Config:
         """Get the API URL"""
         return f"http://{self.api_host}:{self.api_port}"
     
-    @property
-    def gemini_frame_path(self):
-        """Path to the latest frame for Gemini"""
-        return os.path.join(self.shared_frames_dir, 'latest_frame.jpg')
+
 
 # Create a singleton configuration
 config = Config()

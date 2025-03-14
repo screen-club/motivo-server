@@ -7,6 +7,7 @@
   const connectedClients = writable(0);
   const uniqueClients = writable(0);
   let cleanupMessageHandler;
+  let cleanupConnectionListener;
   let intervalId;
 
   $: isDev = $versionInfo.environment === 'development';
@@ -19,23 +20,35 @@
   }
 
   function requestDebugInfo() {
-    websocketService.send({
-      type: "debug_model_info"
-    });
+    // Only request debug info if websocket is connected
+    if (websocketService.getSocket()?.readyState === WebSocket.OPEN) {
+      websocketService.send({
+        type: "debug_model_info"
+      });
+    }
   }
 
   onMount(() => {
     cleanupMessageHandler = websocketService.addMessageHandler(handleMessage);
     
+    // Add a connection state listener to handle reconnections
+    cleanupConnectionListener = websocketService.onReadyStateChange((isReady) => {
+      if (isReady) {
+        // Request debug info immediately when connection established
+        requestDebugInfo();
+      }
+    });
+    
     // Request initial debug info
     requestDebugInfo();
     
-    // Set up periodic updates every 5 seconds
-    intervalId = setInterval(requestDebugInfo, 5000);
+    // Set up periodic updates every 10 seconds (reduced frequency to lower traffic)
+    intervalId = setInterval(requestDebugInfo, 10000);
   });
 
   onDestroy(() => {
     if (cleanupMessageHandler) cleanupMessageHandler();
+    if (cleanupConnectionListener) cleanupConnectionListener();
     if (intervalId) clearInterval(intervalId);
   });
 </script>

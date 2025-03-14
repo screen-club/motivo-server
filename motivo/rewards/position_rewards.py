@@ -6,9 +6,35 @@ import numpy as np
 from humenv import rewards as humenv_rewards
 from dm_control.utils import rewards
 import mujoco
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 import dataclasses
 from humenv.rewards import get_chest_upright
+
+# Define the transformation functions directly here to avoid complex imports
+def get_rotation_matrix_from_pelvis(model, data, name="Pelvis"):
+    """
+    Extract the rotation matrix of the humanoid's pelvis to define its local coordinate system.
+    """
+    try:
+        body_id = model.body(name).id
+        rotation_matrix = data.xmat[body_id].reshape(3, 3).copy()
+        return rotation_matrix
+    except:
+        # Fallback to identity matrix if body not found
+        return np.eye(3)
+
+def transform_point_to_local_frame(point, origin, rotation_matrix):
+    """
+    Transform a point from global coordinates to the local coordinate frame
+    defined by an origin and rotation matrix.
+    """
+    # Translate to origin
+    translated = point - origin
+    
+    # Apply inverse rotation (transpose for rotation matrices)
+    local_point = rotation_matrix.T @ translated
+    
+    return local_point
 
 @dataclasses.dataclass
 class PositionTarget:
@@ -25,25 +51,45 @@ class PositionReward(humenv_rewards.RewardFunction):
     """
     Reward for controlling multiple body parts' positions.
     Supports selective axis control with individual weights.
+    Uses the humanoid's orientation for proper lateral/forward movement calculations.
     """
     targets: Dict[str, PositionTarget]  # body_name -> target
     upright_weight: float = 0.3
     control_weight: float = 0.2
+    use_local_frame: bool = True  # Use the humanoid's orientation for calculations
+    debug: bool = False  # Enable debug logging
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
         # Position rewards
         position_rewards = []
         total_weight = sum(target.weight for target in self.targets.values())
+        
+        # Get the humanoid's reference frame if we're using local coordinates
+        pelvis_pos = data.xpos[model.body("Pelvis").id].copy()
+        pelvis_rotation = get_rotation_matrix_from_pelvis(model, data) if self.use_local_frame else np.eye(3)
+        
+        if self.debug:
+            print(f"Pelvis position: {pelvis_pos}")
+            print(f"Pelvis rotation matrix:\n{pelvis_rotation}")
 
         for body_name, target in self.targets.items():
+            # Get the current position of the body part
             current_pos = data.xpos[model.body(body_name).id].copy()
+            
+            # Transform to local coordinates if needed
+            if self.use_local_frame:
+                local_pos = transform_point_to_local_frame(current_pos, pelvis_pos, pelvis_rotation)
+                if self.debug:
+                    print(f"Body: {body_name}, Global pos: {current_pos}, Local pos: {local_pos}")
+                current_pos = local_pos
+            
             axis_rewards = []
 
             # Check each axis - refactored to reduce duplication
             for i, (axis_val, target_val) in enumerate([
-                (current_pos[0], target.x),
-                (current_pos[1], target.y),
-                (current_pos[2], target.z)
+                (current_pos[0], target.x),  # X is lateral (left/right) in local frame
+                (current_pos[1], target.y),  # Y is forward/backward in local frame
+                (current_pos[2], target.z)   # Z is up/down (height) in both frames
             ]):
                 if target_val is not None:
                     reward = rewards.tolerance(
@@ -55,6 +101,9 @@ class PositionReward(humenv_rewards.RewardFunction):
                     )
                     # Handle both tensor and float return types
                     reward = reward.item() if hasattr(reward, 'item') else float(reward)
+                    if self.debug:
+                        axis_name = ['lateral (x)', 'forward (y)', 'height (z)'][i]
+                        print(f"  {body_name} {axis_name}: value={axis_val:.3f}, target={target_val:.3f}, reward={reward:.3f}")
                     axis_rewards.append(reward)
 
             if axis_rewards:
