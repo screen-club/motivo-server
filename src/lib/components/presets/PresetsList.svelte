@@ -56,7 +56,7 @@
 
       if (preset.type === 'timeline') {
         if (timelineComponent) {
-          timelineComponent.loadTimeline(preset.data, preset.id); // Pass the timeline ID
+          timelineComponent.loadTimeline(preset.data, preset.id, preset.title); // Pass the timeline ID and title
         }
         
         if (preset.data?.placedPresets) {
@@ -444,7 +444,6 @@
 
 <div class="w-full bg-white rounded-lg shadow-lg p-4 mb-14">
   <div class="w-full">
-    <h2 class="text-lg font-bold text-gray-800">Timeline</h2>
     <PresetTimeline bind:this={timelineComponent} />
   </div>
   

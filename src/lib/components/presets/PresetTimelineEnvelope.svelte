@@ -312,51 +312,28 @@
       ctx.fillText(value.toFixed(1), 5, y - 2);
     }
     
-    // Sort points by time
-    const sortedPoints = [...envelopePoints[currentParam]].sort((a, b) => a.time - b.time);
+    // Collect active envelopes for the legend
+    const activeEnvelopes = [];
     
-    // Draw envelope line - but only for points visible in viewport
-    ctx.beginPath();
-    ctx.strokeStyle = '#4299e1';
-    ctx.lineWidth = 2;
-    
-    let started = false;
-    
-    sortedPoints.forEach((point, index) => {
-      // Skip points outside viewport, but connect line to points just outside
-      if (point.time < viewportStart - 0.1 && (index === sortedPoints.length - 1 || sortedPoints[index + 1].time > viewportStart)) {
-        // This is the last point before viewport - calculate where line enters viewport
-        const nextPoint = sortedPoints[index + 1];
-        const ratio = (viewportStart - point.time) / (nextPoint.time - point.time);
-        const value = point.value + ratio * (nextPoint.value - point.value);
-        
-        ctx.moveTo(0, canvasHeight - ((value - minValue) / (maxValue - minValue)) * canvasHeight);
-        started = true;
-      }
-      else if (point.time > viewportStart + viewportDuration + 0.1 && started) {
-        // This is the first point after viewport - calculate where line exits viewport
-        const prevPoint = sortedPoints[index - 1];
-        const ratio = (viewportStart + viewportDuration - prevPoint.time) / (point.time - prevPoint.time);
-        const value = prevPoint.value + ratio * (point.value - prevPoint.value);
-        
-        ctx.lineTo(canvasWidth, canvasHeight - ((value - minValue) / (maxValue - minValue)) * canvasHeight);
-        started = false;
-      }
-      else if (point.time >= viewportStart - 0.1 && point.time <= viewportStart + viewportDuration + 0.1) {
-        // This point is visible in viewport
-        const x = ((point.time - viewportStart) / viewportDuration) * canvasWidth;
-        const y = canvasHeight - ((point.value - minValue) / (maxValue - minValue)) * canvasHeight;
-        
-        if (!started) {
-          ctx.moveTo(x, y);
-          started = true;
-        } else {
-          ctx.lineTo(x, y);
+    // First draw all other envelopes with low opacity
+    Object.keys(envelopePoints).forEach(param => {
+      if (param !== currentParam && envelopePoints[param]?.length >= 2) {
+        // Draw other envelopes with low opacity
+        const envelopeData = drawEnvelopeLine(ctx, param, 0.3); // 0.3 opacity for non-selected envelopes
+        if (envelopeData) {
+          activeEnvelopes.push(envelopeData);
         }
       }
     });
     
-    ctx.stroke();
+    // Then draw the current envelope with full opacity
+    const currentEnvelopeData = drawEnvelopeLine(ctx, currentParam, 1.0); // Full opacity for selected envelope
+    if (currentEnvelopeData) {
+      activeEnvelopes.push(currentEnvelopeData);
+    }
+    
+    // Draw legend for all active envelopes
+    drawEnvelopeLegend(ctx, activeEnvelopes);
     
     // Draw playhead
     const playheadX = ((currentTime - viewportStart) / viewportDuration) * canvasWidth;
@@ -389,7 +366,8 @@
       );
     }
     
-    // Draw points
+    // Only draw points for the current parameter
+    const sortedPoints = [...envelopePoints[currentParam]].sort((a, b) => a.time - b.time);
     sortedPoints.forEach((point, index) => {
       // Skip points outside viewport
       if (point.time < viewportStart || point.time > viewportStart + viewportDuration) return;
@@ -402,8 +380,11 @@
       const isSelected = index === selectedPointIndex;
       const pointRadius = isHovered ? 10 : 6; // Bigger on hover
       
+      // Use the color from the parameter color mapping
+      const paramColor = parameterColors[currentParam] || '#4299e1';
+      
       ctx.beginPath();
-      ctx.fillStyle = isSelected ? '#3182ce' : (isHovered ? '#63b3ed' : '#4299e1');
+      ctx.fillStyle = isSelected ? shadeColor(paramColor, -20) : (isHovered ? shadeColor(paramColor, 20) : paramColor);
       ctx.arc(x, y, pointRadius, 0, Math.PI * 2);
       ctx.fill();
       
@@ -411,6 +392,178 @@
       ctx.lineWidth = 2;
       ctx.stroke();
     });
+  }
+  
+  // Draw a legend for all active envelopes
+  function drawEnvelopeLegend(ctx, envelopes) {
+    if (!envelopes || envelopes.length === 0) return;
+    
+    const legendPadding = 10;
+    const legendItemHeight = 20;
+    const legendWidth = 120;
+    
+    // Draw legend background
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.fillRect(
+      canvasWidth - legendWidth - legendPadding, 
+      legendPadding, 
+      legendWidth, 
+      envelopes.length * legendItemHeight + legendPadding
+    );
+    
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(
+      canvasWidth - legendWidth - legendPadding, 
+      legendPadding, 
+      legendWidth, 
+      envelopes.length * legendItemHeight + legendPadding
+    );
+    
+    // Sort envelopes to make sure current parameter is at the top
+    envelopes.sort((a, b) => {
+      if (a.param === currentParam) return -1;
+      if (b.param === currentParam) return 1;
+      return a.param.localeCompare(b.param);
+    });
+    
+    // Draw each legend item
+    envelopes.forEach((envelope, index) => {
+      // Draw color line
+      ctx.beginPath();
+      ctx.strokeStyle = envelope.color;
+      ctx.lineWidth = envelope.param === currentParam ? 3 : 2;
+      
+      const lineY = legendPadding + (index + 0.5) * legendItemHeight;
+      ctx.moveTo(canvasWidth - legendWidth - legendPadding + 5, lineY);
+      ctx.lineTo(canvasWidth - legendWidth - legendPadding + 25, lineY);
+      ctx.stroke();
+      
+      // Draw parameter name
+      ctx.fillStyle = '#333333';
+      ctx.font = envelope.param === currentParam ? 'bold 11px sans-serif' : '11px sans-serif';
+      ctx.fillText(
+        formatParamName(envelope.param), 
+        canvasWidth - legendWidth - legendPadding + 30, 
+        legendPadding + (index + 0.7) * legendItemHeight
+      );
+    });
+  }
+  
+  // Helper function to format parameter name for display
+  function formatParamName(param) {
+    return param.split('_').map(word => 
+      word.charAt(0).toUpperCase() + word.slice(1)
+    ).join(' ');
+  }
+  
+  // Helper function to darken or lighten a color
+  function shadeColor(color, percent) {
+    const rgb = hexToRgb(color);
+    
+    // Increase or decrease each component
+    rgb.r = Math.min(255, Math.max(0, rgb.r + (rgb.r * percent / 100)));
+    rgb.g = Math.min(255, Math.max(0, rgb.g + (rgb.g * percent / 100)));
+    rgb.b = Math.min(255, Math.max(0, rgb.b + (rgb.b * percent / 100)));
+    
+    // Convert back to hex
+    const r = Math.round(rgb.r).toString(16).padStart(2, '0');
+    const g = Math.round(rgb.g).toString(16).padStart(2, '0');
+    const b = Math.round(rgb.b).toString(16).padStart(2, '0');
+    
+    return `#${r}${g}${b}`;
+  }
+  
+  // Parameter color mapping
+  const parameterColors = {
+    gravity: '#4299e1', // blue
+    density: '#f56565', // red
+    wind_x: '#48bb78', // green
+    wind_y: '#ed8936', // orange
+    wind_z: '#9f7aea', // purple
+    viscosity: '#f6ad55', // light orange
+    integrator: '#667eea', // indigo
+    timestep: '#f687b3'  // pink
+  };
+
+  // Helper function to draw an envelope line with specified opacity
+  function drawEnvelopeLine(ctx, param, opacity) {
+    if (!envelopePoints[param]?.length) return;
+    
+    // Sort points by time
+    const sortedPoints = [...envelopePoints[param]].sort((a, b) => a.time - b.time);
+    
+    // Get bounds for this parameter
+    let paramMin = minValue;
+    let paramMax = maxValue;
+    if (parameterBounds[param]) {
+      paramMin = parameterBounds[param].min;
+      paramMax = parameterBounds[param].max;
+    }
+    
+    // Get color for this parameter
+    const baseColor = parameterColors[param] || '#4299e1'; // Default to blue if not found
+    
+    // Draw envelope line - but only for points visible in viewport
+    ctx.beginPath();
+    
+    // Convert hex color to rgba with the specified opacity
+    const rgbColor = hexToRgb(baseColor);
+    ctx.strokeStyle = `rgba(${rgbColor.r}, ${rgbColor.g}, ${rgbColor.b}, ${opacity})`;
+    ctx.lineWidth = param === currentParam ? 2 : 1.5; // Thicker line for current parameter
+    
+    let started = false;
+    
+    sortedPoints.forEach((point, index) => {
+      // Skip points outside viewport, but connect line to points just outside
+      if (point.time < viewportStart - 0.1 && (index === sortedPoints.length - 1 || sortedPoints[index + 1].time > viewportStart)) {
+        // This is the last point before viewport - calculate where line enters viewport
+        const nextPoint = sortedPoints[index + 1];
+        const ratio = (viewportStart - point.time) / (nextPoint.time - point.time);
+        const value = point.value + ratio * (nextPoint.value - point.value);
+        
+        ctx.moveTo(0, canvasHeight - ((value - paramMin) / (paramMax - paramMin)) * canvasHeight);
+        started = true;
+      }
+      else if (point.time > viewportStart + viewportDuration + 0.1 && started) {
+        // This is the first point after viewport - calculate where line exits viewport
+        const prevPoint = sortedPoints[index - 1];
+        const ratio = (viewportStart + viewportDuration - prevPoint.time) / (point.time - prevPoint.time);
+        const value = prevPoint.value + ratio * (point.value - prevPoint.value);
+        
+        ctx.lineTo(canvasWidth, canvasHeight - ((value - paramMin) / (paramMax - paramMin)) * canvasHeight);
+        started = false;
+      }
+      else if (point.time >= viewportStart - 0.1 && point.time <= viewportStart + viewportDuration + 0.1) {
+        // This point is visible in viewport
+        const x = ((point.time - viewportStart) / viewportDuration) * canvasWidth;
+        const y = canvasHeight - ((point.value - paramMin) / (paramMax - paramMin)) * canvasHeight;
+        
+        if (!started) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+    });
+    
+    ctx.stroke();
+    
+    return { param, color: baseColor };
+  }
+  
+  // Helper function to convert hex color to rgb
+  function hexToRgb(hex) {
+    // Remove # if present
+    hex = hex.replace('#', '');
+    
+    // Parse the hex values
+    const r = parseInt(hex.substring(0, 2), 16);
+    const g = parseInt(hex.substring(2, 4), 16);
+    const b = parseInt(hex.substring(4, 6), 16);
+    
+    return { r, g, b };
   }
   
   // Helper function to calculate appropriate grid step based on viewport duration

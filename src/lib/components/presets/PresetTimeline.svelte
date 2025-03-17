@@ -11,6 +11,7 @@
   export let duration = 180;
   export let placedPresets = [];
   export let timelineId = null;
+  export let timelineName = "Untitled";
   let isPlaying = false;
   let timelineRef;
   let currentTime = 0;
@@ -477,9 +478,15 @@
   }
 
   // Update the loadTimeline function to properly handle envelope loading
-  export function loadTimeline(timelineData, id = null) {
+  export function loadTimeline(timelineData, id = null, name = null) {
     if (id) {
       timelineId = id;
+    }
+    
+    if (name) {
+      timelineName = name;
+    } else {
+      timelineName = "Untitled";
     }
     
     if (timelineData?.duration) {
@@ -513,6 +520,10 @@
 </script>
 
 <div class="w-full bg-white rounded-lg shadow-lg p-4 mb-8">
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="text-lg font-bold text-gray-800">Timeline: {timelineName}</h2>
+  </div>
+  
   <div class="flex items-center gap-4 mb-4">
     <button 
       class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600"
