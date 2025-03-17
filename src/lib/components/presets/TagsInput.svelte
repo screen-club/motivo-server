@@ -33,9 +33,12 @@
         dispatch("update", { tags: newTags });
     }
 
+    // Ensure allTags is uniquified
+    $: uniqueAllTags = Array.from(new Set(allTags));
+    
     $: {
         if (inputValue.trim()) {
-            filteredTags = allTags
+            filteredTags = uniqueAllTags
                 .filter(
                     (tag) =>
                         tag.toLowerCase().includes(inputValue.toLowerCase()) &&

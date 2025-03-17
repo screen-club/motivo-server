@@ -5,7 +5,9 @@
   import { fade } from 'svelte/transition';
   import { get } from 'svelte/store';
   import { currentlyPlayingPresetId } from "../../stores/playbackStore";
-  import { onDestroy } from 'svelte';
+  import { onDestroy, createEventDispatcher } from 'svelte';
+  
+  const dispatch = createEventDispatcher();
 
   export let preset;
   export let onLoad;
@@ -130,6 +132,8 @@
     try {
       await DbService.updatePresetTags(preset.id, newTags);
       preset.tags = newTags;
+      // Dispatch an event to notify parent that tags have been updated
+      dispatch('tagsUpdated', { tags: newTags });
     } catch (error) {
       console.error("Failed to update tags:", error);
     }
@@ -140,6 +144,8 @@
     try {
       await DbService.updatePresetUsers(preset.id, newUsers);
       preset.users = newUsers;
+      // Dispatch an event to notify parent that users have been updated
+      dispatch('usersUpdated', { users: newUsers });
     } catch (error) {
       console.error("Failed to update users:", error);
     }

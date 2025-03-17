@@ -5,6 +5,7 @@
   import { Link } from "svelte-routing";
   import { location } from "../stores/routeStore";
   import { versionInfo } from '../stores/versionStore';
+  import UserSelect from './Header/UserSelect.svelte';
 
   export let title = "Liminal Motivo Server";
   
@@ -32,12 +33,12 @@
 </script>
 
 <header class="w-full bg-white shadow-sm">
-  <div class="w-full max-w-[2000px] mx-auto">
+  <div class="w-full mx-auto">
     <div class="px-4 sm:px-6 lg:px-8 py-2 flex justify-between items-center">
-      <h1 class="text-2xl font-black text-black">
+      <h1 class="text-2xl font-black text-black whitespace-nowrap">
         {title}
       </h1>
-      <nav class="flex gap-4">
+      <nav class="flex gap-4 items-center">
         <Link 
           to="/control" 
           class={isControlActive ? 'text-blue-600 font-medium' : 'hover:text-blue-600'}>
@@ -48,6 +49,7 @@
           class={isTestingActive ? 'text-blue-600 font-medium' : 'hover:text-blue-600'}>
           Testing
         </Link>
+        <UserSelect />
       </nav>
     </div>
   </div>

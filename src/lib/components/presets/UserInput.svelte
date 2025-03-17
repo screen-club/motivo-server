@@ -33,9 +33,13 @@
         dispatch("update", { users: newUsers });
     }
 
+    // Ensure allUsers is uniquified
+    $: uniqueAllUsers = Array.from(new Set(allUsers));
+    
     $: {
         if (inputValue.trim()) {
-            filteredUsers = allUsers
+            // Filter users that match input text and aren't already selected
+            filteredUsers = uniqueAllUsers
                 .filter(
                     (user) =>
                         user.toLowerCase().includes(inputValue.toLowerCase()) &&
