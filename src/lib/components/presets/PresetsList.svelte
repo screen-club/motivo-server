@@ -8,6 +8,7 @@
   import PresetTimeline from './PresetTimeline.svelte';
   import PresetCard from './PresetCard.svelte';
   import VideoBuffer from '../../services/videoBuffer';
+  import { webrtcService } from '../../services/webrtc';
 
   let presets = [];
   let selectedType = 'all';
@@ -158,7 +159,17 @@
     saveError = '';
     
     try {
-      videoBuffer.startRecording();
+      // Verify video element is available
+      const videoElement = webrtcService.videoElement;
+      if (!videoElement || !videoElement.videoWidth) {
+        throw new Error('Video stream not available');
+      }
+      
+      // Make sure video source is set
+      videoBuffer.setVideoSource(videoElement);
+      
+      // Record a 3 second video for the thumbnail
+      videoBuffer.startRecording(3000);
       const videoBlob = await videoBuffer.getBuffer();
       
       const base64Thumbnail = await blobToBase64(videoBlob);
@@ -182,17 +193,62 @@
       regeneratingPresetId = preset.id;
       stopCurrentAnimation();
       
-      await loadPresetConfig(preset);
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Verify video element is available
+      const videoElement = webrtcService.videoElement;
+      if (!videoElement || !videoElement.videoWidth) {
+        throw new Error('Video stream not available');
+      }
       
-      videoBuffer.startRecording();
-      const videoBlob = await videoBuffer.getBuffer();
-      const base64Thumbnail = await blobToBase64(videoBlob);
+      // Make sure video source is set
+      videoBuffer.setVideoSource(videoElement);
+      
+      // Special handling for different preset types
+      if (preset.type === 'pose' && preset.data && Array.isArray(preset.data.pose)) {
+        // For pose animations, play the animation while recording
+        await new Promise(async (resolve) => {
+          // Start the animation playback
+          currentAnimationInterval = await PoseService.handleAnimationPlayback(
+            preset, 
+            8, // faster playback for thumbnail
+            1.5 // speed up a bit
+          );
+          
+          // Start recording after a short delay to let the animation begin
+          setTimeout(async () => {
+            videoBuffer.startRecording(3000);
+            const videoBlob = await videoBuffer.getBuffer();
+            const base64Thumbnail = await blobToBase64(videoBlob);
+            
+            // Update the preset with the new thumbnail
+            await DbService.updateConfig(preset.id, {
+              thumbnail: base64Thumbnail
+            });
+            
+            // Stop the animation
+            stopCurrentAnimation();
+            resolve();
+          }, 300);
+        });
+      } else {
+        // For static poses and other types, load normally
+        // Load the preset configuration
+        await loadPresetConfig(preset);
+        
+        // Give time for WebRTC stream to update with the new configuration
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        
+        // Record a 3 second video for the thumbnail
+        videoBuffer.startRecording(3000);
+        const videoBlob = await videoBuffer.getBuffer();
+        const base64Thumbnail = await blobToBase64(videoBlob);
 
-      await DbService.updateConfig(preset.id, {
-        thumbnail: base64Thumbnail
-      });
+        // Update the preset with the new thumbnail
+        await DbService.updateConfig(preset.id, {
+          thumbnail: base64Thumbnail
+        });
+      }
 
+      // Refresh presets list
       await loadPresets();
       
     } catch (error) {
@@ -200,6 +256,7 @@
       saveError = 'Failed to regenerate thumbnail. Please try again.';
     } finally {
       regeneratingPresetId = null;
+      stopCurrentAnimation(); // Ensure animation is stopped
     }
   }
 
@@ -293,7 +350,20 @@
       videoBuffer = new VideoBuffer();
       await videoBuffer.initializeBuffer();
       
-      initializeFrameUpdater();
+      // Set video source once webrtcService's videoElement is available
+      const checkVideoElement = () => {
+        const videoElement = webrtcService.videoElement;
+        if (videoElement) {
+          videoBuffer.setVideoSource(videoElement);
+          // Start continuous capture for thumbnails
+          videoBuffer.startContinuousCapture();
+        } else {
+          // If not available yet, check again after a short delay
+          setTimeout(checkVideoElement, 500);
+        }
+      };
+      
+      checkVideoElement();
     } catch (error) {
       console.error('Failed during initialization:', error);
       loadError = 'Failed to initialize. Please refresh the page.';
@@ -303,36 +373,13 @@
   });
 
   function initializeFrameUpdater() {
-    let retryDelay = 33;
-    const maxDelay = 2000;
-    const backoffFactor = 1.5;
-    
-    const updateFrame = async () => {
-      try {
-        const currentUrl = `${apiUrl}/amjpeg?${Date.now()}`;
-        
-        const response = await fetch(currentUrl, { method: 'HEAD' });
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        videoBuffer.updateFrame(currentUrl);
-        retryDelay = 33;
-      } catch (error) {
-        console.warn('Failed to fetch frame:', error);
-        retryDelay = Math.min(retryDelay * backoffFactor, maxDelay);
-      }
-      
-      setTimeout(updateFrame, retryDelay);
-    };
-    
-    updateFrame();
+    // We no longer need this function for MJPEG. WebRTC will be used directly.
   }
 
   onDestroy(() => {
     stopCurrentAnimation();
-    if (videoBuffer?.stream) {
-      videoBuffer.stream.getTracks().forEach(track => track.stop());
+    if (videoBuffer) {
+      videoBuffer.cleanup();
     }
   });
 

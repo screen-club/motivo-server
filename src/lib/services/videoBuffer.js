@@ -5,6 +5,9 @@ export default class VideoBuffer {
       this.canvas = document.createElement('canvas');
       this.ctx = this.canvas.getContext('2d');
       this.stream = null;
+      this.videoElement = null;
+      this.captureInterval = null;
+      this.isCapturing = false;
     }
   
     async initializeBuffer(width = 320, height = 240) {
@@ -24,23 +27,57 @@ export default class VideoBuffer {
         }
       };
     }
-  
-    updateFrame(imageUrl) {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        this.ctx.drawImage(img, 0, 0, this.canvas.width, this.canvas.height);
-      };
-      img.src = imageUrl;
+    
+    setVideoSource(videoElement) {
+      this.videoElement = videoElement;
+      return !!videoElement;
+    }
+    
+    captureFrame() {
+      if (this.videoElement && this.videoElement.videoWidth > 0) {
+        this.ctx.drawImage(
+          this.videoElement, 
+          0, 0, this.videoElement.videoWidth, this.videoElement.videoHeight,
+          0, 0, this.canvas.width, this.canvas.height
+        );
+        return true;
+      }
+      return false;
+    }
+    
+    startContinuousCapture() {
+      // Clear any existing capture interval
+      this.stopContinuousCapture();
+      
+      // Start capturing frames at 30fps
+      this.isCapturing = true;
+      this.captureInterval = setInterval(() => {
+        if (this.isCapturing) {
+          this.captureFrame();
+        }
+      }, 1000 / 30); // 30fps
+    }
+    
+    stopContinuousCapture() {
+      this.isCapturing = false;
+      if (this.captureInterval) {
+        clearInterval(this.captureInterval);
+        this.captureInterval = null;
+      }
     }
   
-    startRecording() {
+    startRecording(duration = 3000) {
+      // Ensure we're capturing frames
+      if (!this.isCapturing) {
+        this.startContinuousCapture();
+      }
+      
       this.recordedChunks = [];
       this.mediaRecorder.start();
       
       setTimeout(() => {
         this.mediaRecorder.stop();
-      }, 2000);
+      }, duration);
     }
   
     async getBuffer() {
@@ -52,5 +89,12 @@ export default class VideoBuffer {
           resolve(blob);
         };
       });
+    }
+    
+    cleanup() {
+      this.stopContinuousCapture();
+      if (this.stream) {
+        this.stream.getTracks().forEach(track => track.stop());
+      }
     }
   }
