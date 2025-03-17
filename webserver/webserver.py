@@ -672,7 +672,8 @@ def create_config():
             type=data['type'],  # vibe/reward/llm
             data=data['data'],  # json object
             cache_file_path=data.get('cache_file_path'),  # Optional field
-            tags=data.get('tags', [])  # Optional tags field, defaults to empty list
+            tags=data.get('tags', []),  # Optional tags field, defaults to empty list
+            users=data.get('users', [])  # Optional users field, defaults to empty list
         )
         return jsonify({'id': config_id}), 201
     except Exception as e:

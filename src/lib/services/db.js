@@ -33,9 +33,11 @@ export class DbService {
    * @param {string} config.type Type of configuration (vibe/reward/llm)
    * @param {Object} config.data Configuration data
    * @param {string} [config.cache_file_path] Path to cached reward file
+   * @param {string[]} [config.tags] Array of tags
+   * @param {string[]} [config.users] Array of users
    * @returns {Promise<Object>} Created configuration
    */
-  static async addConfig({ title, thumbnail = '', type, data, cache_file_path = null }) {
+  static async addConfig({ title, thumbnail = '', type, data, cache_file_path = null, tags = [], users = [] }) {
     try {
       const response = await fetch(`${API_URL}/api/conf`, {
         method: 'POST',
@@ -47,7 +49,9 @@ export class DbService {
           thumbnail,
           type,
           data,
-          cache_file_path
+          cache_file_path,
+          tags,
+          users
         })
       });
 
@@ -122,6 +126,16 @@ export class DbService {
   static async updatePresetTags(id, tags) {
     return await this.updateConfig(id, { tags });
   }
+  
+  /**
+   * Update preset users
+   * @param {number} id Preset ID
+   * @param {string[]} users Array of users
+   * @returns {Promise<Object>} Updated configuration
+   */
+  static async updatePresetUsers(id, users) {
+    return await this.updateConfig(id, { users });
+  }
 
   /**
    * Get all unique tags from all presets
@@ -130,6 +144,15 @@ export class DbService {
    */
   static getAllUniqueTags(presets) {
     return new Set(presets.flatMap(preset => preset.tags || []));
+  }
+  
+  /**
+   * Get all unique users from all presets
+   * @param {Array} presets Array of all presets
+   * @returns {Set<string>} Set of unique users
+   */
+  static getAllUniqueUsers(presets) {
+    return new Set(presets.flatMap(preset => preset.users || []));
   }
 }
 

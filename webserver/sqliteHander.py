@@ -20,6 +20,7 @@ class Content(BaseModel):
     data = TextField()  # JSON storage as text
     cache_file_path = CharField(null=True)
     tags = TextField(default='[]')  # Store tags as JSON array string
+    users = TextField(default='[]')  # Store users as JSON array string
 
     def get_data(self):
         return json.loads(self.data)
@@ -32,6 +33,12 @@ class Content(BaseModel):
 
     def set_tags(self, tags_list):
         self.tags = json.dumps(tags_list)
+        
+    def get_users(self):
+        return json.loads(self.users)
+
+    def set_users(self, users_list):
+        self.users = json.dumps(users_list)
 
     @classmethod
     def get_all(cls):
@@ -44,11 +51,12 @@ class Content(BaseModel):
                 "type": row.type,
                 "data": row.get_data(),
                 "cache_file_path": row.cache_file_path,
-                "tags": row.get_tags()
+                "tags": row.get_tags(),
+                "users": row.get_users()
             } for row in rows]
 
     @classmethod
-    def add(cls, title, thumbnail, type, data, cache_file_path=None, tags=None):
+    def add(cls, title, thumbnail, type, data, cache_file_path=None, tags=None, users=None):
         with db.connection_context():
             content = Content.create(
                 title=title,
@@ -56,7 +64,8 @@ class Content(BaseModel):
                 type=type,
                 data=json.dumps(data),
                 cache_file_path=cache_file_path,
-                tags=json.dumps(tags or [])
+                tags=json.dumps(tags or []),
+                users=json.dumps(users or [])
             )
             return content.id
 
@@ -71,6 +80,8 @@ class Content(BaseModel):
                     kwargs['data'] = json.dumps(kwargs['data'])
                 if 'tags' in kwargs:
                     kwargs['tags'] = json.dumps(kwargs['tags'])
+                if 'users' in kwargs:
+                    kwargs['users'] = json.dumps(kwargs['users'])
                     
                 # Update only the fields that are provided
                 for field, value in kwargs.items():
@@ -93,6 +104,14 @@ def run_migration():
         # Add tags field if it doesn't exist
         migrate(
             migrator.add_column('content', 'tags', TextField(default='[]'))
+        )
+    except Exception as e:
+        print(f"Migration error (can be ignored if field already exists): {e}")
+        
+    try:
+        # Add users field if it doesn't exist
+        migrate(
+            migrator.add_column('content', 'users', TextField(default='[]'))
         )
     except Exception as e:
         print(f"Migration error (can be ignored if field already exists): {e}")

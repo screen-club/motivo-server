@@ -1,5 +1,6 @@
 <script>
   import TagInput from "./TagsInput.svelte";
+  import UserInput from "./UserInput.svelte";
   import { DbService } from "../../services/db";
   import { fade } from 'svelte/transition';
   import { get } from 'svelte/store';
@@ -13,6 +14,7 @@
   export let isDraggable = true;
   export let isRegenerating = false;
   export let allTags = [];
+  export let allUsers = [];
 
   // Animation state
   let isAnimationPlaying = false;
@@ -132,6 +134,16 @@
       console.error("Failed to update tags:", error);
     }
   }
+  
+  async function handleUsersUpdate(event) {
+    const newUsers = event.detail.users;
+    try {
+      await DbService.updatePresetUsers(preset.id, newUsers);
+      preset.users = newUsers;
+    } catch (error) {
+      console.error("Failed to update users:", error);
+    }
+  }
 
   // Watch for FPS or speed factor changes and update animation
   $: if (isAnimationPlaying && (animationFPS !== prevFPS || speedFactor !== prevSpeed)) {
@@ -174,12 +186,22 @@
   transition:fade
 >
   <!-- Tag input -->
-  <div class="mb-4">
+  <div class="mb-2">
     <TagInput
       tags={preset.tags || []}
       {allTags}
       on:update={handleTagsUpdate}
       placeholder="Add tags..."
+    />
+  </div>
+  
+  <!-- User input -->
+  <div class="mb-4">
+    <UserInput
+      users={preset.users || []}
+      allUsers={allUsers}
+      on:update={handleUsersUpdate}
+      placeholder="Add user..."
     />
   </div>
 

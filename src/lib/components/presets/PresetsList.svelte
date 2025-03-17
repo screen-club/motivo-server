@@ -13,6 +13,7 @@
   let presets = [];
   let selectedType = 'all';
   let selectedTags = [];
+  let selectedUser = 'all';
   let isLoading = true;
   let isSaving = false;
   let videoBuffer;
@@ -387,8 +388,10 @@
     return presets.filter(preset => {
       const matchesType = selectedType === 'all' || preset.type === selectedType;
       const matchesTags = selectedTags.length === 0 || 
-        (preset.tags && selectedTags.some(tag => preset.tags.includes(tag))); // Changed from every to some
-      return matchesType && matchesTags;
+        (preset.tags && selectedTags.some(tag => preset.tags.includes(tag)));
+      const matchesUser = selectedUser === 'all' || 
+        (preset.users && preset.users.includes(selectedUser));
+      return matchesType && matchesTags && matchesUser;
     });
   }
 
@@ -411,7 +414,18 @@
   </div>
   
   <div class="flex justify-between items-center mb-4">
-    <h2 class="text-lg font-bold text-gray-800">Presets</h2>
+    <div class="flex gap-4 items-center">
+      <h2 class="text-lg font-bold text-gray-800">Presets</h2>
+      <select 
+        bind:value={selectedUser}
+        class="border rounded-md px-2 py-1 text-sm"
+      >
+        <option value="all">All Users</option>
+        {#each [...new Set(presets.map(p => p.users || []).flat().filter(Boolean))] as user}
+          <option value={user}>{user}</option>
+        {/each}
+      </select>
+    </div>
     <div class="flex gap-4">
       <select 
         bind:value={selectedType}
@@ -494,6 +508,7 @@
           isRegenerating={regeneratingPresetId === preset.id}
           isDraggable={true}
           allTags={presets.map(p => p.tags).flat().filter(Boolean)}
+          allUsers={presets.map(p => p.users).flat().filter(Boolean)}
         />
       {/each}
     </div>
