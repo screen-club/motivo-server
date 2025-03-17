@@ -30,10 +30,13 @@
   
   const apiUrl = import.meta.env.VITE_API_URL;
 
+  let initialLoadComplete = false;
+  
   async function loadPresets() {
     try {
       presets = await DbService.getAllConfigs();
       loadError = '';
+      initialLoadComplete = true;
     } catch (error) {
       console.error('Failed to load presets:', error);
       loadError = 'Failed to load presets. Please try again.';
@@ -526,6 +529,7 @@
           allUsers={uniqueUsers}
           on:tagsUpdated={() => loadPresets()}
           on:usersUpdated={() => loadPresets()}
+          initialLoading={!initialLoadComplete}
         />
       {/each}
     </div>

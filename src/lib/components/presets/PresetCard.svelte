@@ -17,6 +17,7 @@
   export let isRegenerating = false;
   export let allTags = [];
   export let allUsers = [];
+  export let initialLoading = false;
 
   // Animation state
   let isAnimationPlaying = false;
@@ -127,8 +128,12 @@
     }
   });
 
+  let isTagsLoading = false;
+  let isUsersLoading = false;
+  
   async function handleTagsUpdate(event) {
     const newTags = event.detail.tags;
+    isTagsLoading = true;
     try {
       await DbService.updatePresetTags(preset.id, newTags);
       preset.tags = newTags;
@@ -136,11 +141,14 @@
       dispatch('tagsUpdated', { tags: newTags });
     } catch (error) {
       console.error("Failed to update tags:", error);
+    } finally {
+      isTagsLoading = false;
     }
   }
   
   async function handleUsersUpdate(event) {
     const newUsers = event.detail.users;
+    isUsersLoading = true;
     try {
       await DbService.updatePresetUsers(preset.id, newUsers);
       preset.users = newUsers;
@@ -148,6 +156,8 @@
       dispatch('usersUpdated', { users: newUsers });
     } catch (error) {
       console.error("Failed to update users:", error);
+    } finally {
+      isUsersLoading = false;
     }
   }
 
@@ -362,6 +372,7 @@
       {allTags}
       on:update={handleTagsUpdate}
       placeholder="Add tags..."
+      isLoading={isTagsLoading || initialLoading}
     />
   </div>
   
@@ -382,6 +393,7 @@
       allUsers={allUsers}
       on:update={handleUsersUpdate}
       placeholder="Add user..."
+      isLoading={isUsersLoading || initialLoading}
     />
   </div>
 </div>
