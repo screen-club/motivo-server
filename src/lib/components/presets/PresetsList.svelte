@@ -140,9 +140,17 @@
     saveError = '';
     
     try {
+      // Use the current selected user if available, otherwise save without a user
+      let users = [];
+      if ($selectedUser !== 'all' && $selectedUser !== 'add_new') {
+        users = [$selectedUser];
+      }
+      
       const config = {
         title,
         type: 'timeline',
+        users, // Include the current user or empty array if none selected
+        tags: [], // Initialize with empty tags array
         data: {
           duration: timelineComponent.duration,
           placedPresets: timelineComponent.placedPresets,
