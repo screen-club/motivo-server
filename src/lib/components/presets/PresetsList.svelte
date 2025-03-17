@@ -5,6 +5,7 @@
   import { websocketService } from '../../services/websocket';
   import { parameterStore } from '../../stores/parameterStore';
   import { PoseService } from '../../services/poses';
+  import { selectedUser } from '../../stores/userStore';
   import PresetTimeline from './PresetTimeline.svelte';
   import PresetCard from './PresetCard.svelte';
   import VideoBuffer from '../../services/videoBuffer';
@@ -13,6 +14,7 @@
   let presets = [];
   let selectedType = 'all';
   let selectedTags = [];
+  // We'll use the store's value instead of local state
   let isLoading = true;
   let isSaving = false;
   let videoBuffer;
@@ -22,12 +24,19 @@
   let regeneratingPresetId = null;
   let currentAnimationInterval = null;
   
+  // Computed properties for unique tags and users
+  $: uniqueTags = Array.from(new Set(presets.flatMap(p => p.tags || []).filter(Boolean)));
+  $: uniqueUsers = Array.from(new Set(presets.flatMap(p => p.users || []).filter(Boolean)));
+  
   const apiUrl = import.meta.env.VITE_API_URL;
 
+  let initialLoadComplete = false;
+  
   async function loadPresets() {
     try {
       presets = await DbService.getAllConfigs();
       loadError = '';
+      initialLoadComplete = true;
     } catch (error) {
       console.error('Failed to load presets:', error);
       loadError = 'Failed to load presets. Please try again.';
@@ -328,11 +337,30 @@
     const type = contextData.contextInfo?.active_poses ? 'pose' : 
                 rewardsData ? 'rewards' : 'environment';
     
+    // Use the current selected user if available
+    let users = [];
+    if ($selectedUser !== 'all' && $selectedUser !== 'add_new') {
+      users = [$selectedUser];
+    } else {
+      const username = prompt('Enter your name for this preset:');
+      if (username && username.trim()) {
+        users = [username.trim()];
+        // If we've added a new user, update the selected user in the store
+        if (!uniqueUsers.includes(username.trim())) {
+          // We'll wait for the next loadPresets() to update the uniqueUsers list
+          // but update the selection right away
+          selectedUser.set(username.trim());
+        }
+      }
+    }
+    
     return {
       title,
       type,
       thumbnail,
       cache_file_path: cacheFilePath,
+      tags: [],
+      users,
       data: {
         ...(rewardsData && { ...rewardsData }),
         ...(contextData.contextInfo?.active_poses && { 
@@ -387,8 +415,10 @@
     return presets.filter(preset => {
       const matchesType = selectedType === 'all' || preset.type === selectedType;
       const matchesTags = selectedTags.length === 0 || 
-        (preset.tags && selectedTags.some(tag => preset.tags.includes(tag))); // Changed from every to some
-      return matchesType && matchesTags;
+        (preset.tags && selectedTags.some(tag => preset.tags.includes(tag)));
+      const matchesUser = $selectedUser === 'all' || $selectedUser === 'add_new' ||
+        (preset.users && preset.users.includes($selectedUser));
+      return matchesType && matchesTags && matchesUser;
     });
   }
 
@@ -411,7 +441,9 @@
   </div>
   
   <div class="flex justify-between items-center mb-4">
-    <h2 class="text-lg font-bold text-gray-800">Presets</h2>
+    <div class="flex gap-4 items-center">
+      <h2 class="text-lg font-bold text-gray-800">Presets</h2>
+    </div>
     <div class="flex gap-4">
       <select 
         bind:value={selectedType}
@@ -429,7 +461,7 @@
         bind:value={selectedTags}
         class="border rounded-md px-2 py-1 text-sm min-w-[150px]"
       >
-        {#each [...new Set(presets.map(p => p.tags).flat().filter(Boolean))] as tag}
+        {#each uniqueTags as tag}
           <option value={tag}>{tag}</option>
         {/each}
       </select>
@@ -493,7 +525,11 @@
           onRegenerateThumbnail={regenerateThumbnail}
           isRegenerating={regeneratingPresetId === preset.id}
           isDraggable={true}
-          allTags={presets.map(p => p.tags).flat().filter(Boolean)}
+          allTags={uniqueTags}
+          allUsers={uniqueUsers}
+          on:tagsUpdated={() => loadPresets()}
+          on:usersUpdated={() => loadPresets()}
+          initialLoading={!initialLoadComplete}
         />
       {/each}
     </div>
