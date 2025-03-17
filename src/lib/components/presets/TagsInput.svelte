@@ -36,18 +36,19 @@
     // Ensure allTags is uniquified
     $: uniqueAllTags = Array.from(new Set(allTags));
     
+    // Update filtered tags whenever input value changes or allTags changes
     $: {
         if (inputValue.trim()) {
+            // Filter tags that match input text and aren't already selected
             filteredTags = uniqueAllTags
                 .filter(
                     (tag) =>
                         tag.toLowerCase().includes(inputValue.toLowerCase()) &&
-                        !tags.includes(tag),
-                )
-                .slice(0, 5);
-            showSuggestions = true;
+                        !tags.includes(tag)
+                );
         } else {
-            showSuggestions = false;
+            // Show all available tags that aren't already selected
+            filteredTags = uniqueAllTags.filter(tag => !tags.includes(tag));
         }
     }
 </script>
@@ -82,13 +83,15 @@
         {placeholder}
         bind:value={inputValue}
         on:keydown={handleKeydown}
-        on:focus={() => (showSuggestions = !!inputValue)}
+        on:focus={() => (showSuggestions = true)}
+        on:input={() => (showSuggestions = true)}
+        on:blur={() => setTimeout(() => (showSuggestions = false), 300)}
         class="w-full px-2 py-1 text-sm border rounded"
     />
 
     {#if showSuggestions && filteredTags.length > 0}
         <div
-            class="absolute z-10 w-full bg-white border rounded-b shadow-lg mt-1"
+            class="absolute z-10 w-full bg-white border rounded-b shadow-lg mt-1 max-h-32 overflow-y-auto"
         >
             {#each filteredTags as suggestion}
                 <button

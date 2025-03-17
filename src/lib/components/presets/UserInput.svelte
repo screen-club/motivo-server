@@ -36,6 +36,7 @@
     // Ensure allUsers is uniquified
     $: uniqueAllUsers = Array.from(new Set(allUsers));
     
+    // Update filtered users whenever input value changes or allUsers changes
     $: {
         if (inputValue.trim()) {
             // Filter users that match input text and aren't already selected
@@ -43,12 +44,11 @@
                 .filter(
                     (user) =>
                         user.toLowerCase().includes(inputValue.toLowerCase()) &&
-                        !users.includes(user),
-                )
-                .slice(0, 5);
-            showSuggestions = true;
+                        !users.includes(user)
+                );
         } else {
-            showSuggestions = false;
+            // Show all available users that aren't already selected
+            filteredUsers = uniqueAllUsers.filter(user => !users.includes(user));
         }
     }
 </script>
@@ -83,13 +83,15 @@
         {placeholder}
         bind:value={inputValue}
         on:keydown={handleKeydown}
-        on:focus={() => (showSuggestions = !!inputValue)}
+        on:focus={() => (showSuggestions = true)}
+        on:input={() => (showSuggestions = true)}
+        on:blur={() => setTimeout(() => (showSuggestions = false), 300)}
         class="w-full px-2 py-1 text-sm border rounded"
     />
 
     {#if showSuggestions && filteredUsers.length > 0}
         <div
-            class="absolute z-10 w-full bg-white border rounded-b shadow-lg mt-1"
+            class="absolute z-10 w-full bg-white border rounded-b shadow-lg mt-1 max-h-32 overflow-y-auto"
         >
             {#each filteredUsers as suggestion}
                 <button
