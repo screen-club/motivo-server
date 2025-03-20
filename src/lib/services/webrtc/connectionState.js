@@ -24,20 +24,18 @@ export class ConnectionLogger {
    * @param {string} level - Log level (info, warning, error)
    */
   log(message, level = "info") {
+    return;
     const timestamp = new Date().toLocaleTimeString();
     const entry = { timestamp, message, level };
-    
+
     // Add to beginning of array (newest first)
-    this._logs = [
-      entry,
-      ...this._logs.slice(0, this.maxEntries - 1),
-    ];
-    
+    this._logs = [entry, ...this._logs.slice(0, this.maxEntries - 1)];
+
     // Update the store
     connectionLogs.set(this._logs);
-    
+
     // Also log to console with appropriate level
-    switch(level) {
+    switch (level) {
       case "error":
         console.error(`[WebRTC ${timestamp}] ${message}`);
         break;
@@ -47,10 +45,10 @@ export class ConnectionLogger {
       default:
         console.log(`[WebRTC ${timestamp}] ${message}`);
     }
-    
+
     return entry;
   }
-  
+
   /**
    * Log an error message
    * @param {string} message - Error message
@@ -63,7 +61,7 @@ export class ConnectionLogger {
     }
     return this.log(fullMessage, "error");
   }
-  
+
   /**
    * Log a warning message
    * @param {string} message - Warning message
@@ -71,7 +69,7 @@ export class ConnectionLogger {
   warn(message) {
     return this.log(message, "warning");
   }
-  
+
   /**
    * Get all logs
    * @returns {Array} Log entries
@@ -79,7 +77,7 @@ export class ConnectionLogger {
   getLogs() {
     return [...this._logs];
   }
-  
+
   /**
    * Clear all logs
    */

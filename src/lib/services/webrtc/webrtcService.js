@@ -94,7 +94,14 @@ class WebRTCService {
       this.isConnecting = false;
       
       // Initialize WebRTC with a short delay
-      setTimeout(() => this.initWebRTC(), 500);
+      setTimeout(() => {
+        // Double-check WebSocket is still connected before initializing
+        if (websocketService.getSocket()?.readyState === WebSocket.OPEN) {
+          this.initWebRTC();
+        } else {
+          this.logger.warn("WebSocket disconnected before WebRTC initialization");
+        }
+      }, 500);
     } else {
       this.logger.warn("WebSocket disconnected, cleaning up WebRTC");
       isLoading.set(true);
@@ -264,9 +271,28 @@ class WebRTCService {
       }
     };
     
-    // ICE candidate handling - we don't send ICE candidates to avoid server errors
+    // ICE candidate handling - send candidates to the server
     this.peerConnection.onicecandidate = (event) => {
-      // Explicitly do nothing - don't send ICE candidates to server
+      if (event.candidate) {
+        // Send ICE candidate to server 
+        websocketService.send({
+          type: "webrtc_ice",
+          candidate: {
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+            candidate: event.candidate.candidate,
+            type: event.candidate.type,
+            foundation: event.candidate.foundation,
+            protocol: event.candidate.protocol,
+            ip: event.candidate.ip,
+            port: event.candidate.port,
+            priority: event.candidate.priority,
+            component: event.candidate.component || 0
+          },
+          client_id: this.clientId
+        });
+        this.logger.log("Sent ICE candidate to server");
+      }
     };
     
     // Connection state monitoring
@@ -366,23 +392,29 @@ class WebRTCService {
   }
   
   /**
-   * Handle connection failure with exponential backoff
+   * Handle connection failure with persistent reconnection
    */
   handleConnectionFailure() {
     // Mark connection as failed
     this.isConnecting = false;
     hasStream.set(false);
     
-    // Only retry if we haven't reached max attempts
-    if (this.connectionAttempts < CONNECTION_CONFIG.maxAttempts) {
-      // Calculate backoff time
-      const delay = calculateBackoff(
-        this.connectionAttempts,
-        CONNECTION_CONFIG.baseDelay,
-        CONNECTION_CONFIG.maxDelay
+    // Setup an aggressive retry strategy - keep trying indefinitely
+    const maxRetries = 1000; // Very high number of retries
+    
+    // Only show loading indicator for first few attempts
+    if (this.connectionAttempts > 3) {
+      isLoading.set(false);
+    }
+    
+    if (this.connectionAttempts < maxRetries) {
+      // Use a more consistent backoff strategy with shorter times
+      const delay = Math.min(
+        2000 * Math.min(Math.pow(1.2, Math.min(this.connectionAttempts, 5)), 5), 
+        10000
       );
       
-      this.logger.log(`Connection failed, retrying in ${Math.round(delay/1000)}s (attempt ${this.connectionAttempts}/${CONNECTION_CONFIG.maxAttempts})`);
+      this.logger.log(`Connection failed, retrying in ${Math.round(delay/1000)}s (attempt ${this.connectionAttempts}/${maxRetries})`);
       
       // Clear any existing timeout
       if (this.reconnectTimeout) {
@@ -391,17 +423,27 @@ class WebRTCService {
       
       // Schedule reconnection
       this.reconnectTimeout = setTimeout(() => {
-        // Only reconnect if WebSocket is still open
+        // Only reconnect if WebSocket is open
         if (websocketService.getSocket()?.readyState === WebSocket.OPEN) {
           this.initWebRTC();
         } else {
-          this.logger.warn("WebSocket closed, cannot reconnect WebRTC");
-          isLoading.set(false);
+          this.logger.warn("WebSocket closed, waiting for connection...");
+          // Set a shorter timeout to check again soon
+          setTimeout(() => {
+            if (websocketService.getSocket()?.readyState === WebSocket.OPEN) {
+              this.initWebRTC();
+            } else {
+              this.logger.warn("WebSocket still closed, will retry again later");
+              // Let the next scheduled attempt handle it
+            }
+          }, 5000);
         }
       }, delay);
     } else {
-      this.logger.warn("Maximum reconnection attempts reached");
-      isLoading.set(false);
+      this.logger.warn("Maximum reconnection attempts reached, resetting counter");
+      // Reset counter and keep trying
+      this.connectionAttempts = 0;
+      this.handleConnectionFailure();
     }
   }
   

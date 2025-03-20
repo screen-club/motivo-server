@@ -12,38 +12,54 @@ class GeminiSocketService {
 
     // Flask server with Gemini
     this.flaskUrl = "http://localhost:5002";
-    console.log("GeminiSocketService: Will connect to Flask at", this.flaskUrl);
   }
 
   connect() {
     if (this.socket) {
       console.log("GeminiSocketService: Socket instance already exists");
+      // Even if we have a socket, check if it's actually connected
+      if (!this.socket.connected) {
+        console.log(
+          "GeminiSocketService: Socket exists but is disconnected. Attempting reconnect..."
+        );
+        this.reconnect();
+      }
       return;
     }
 
     try {
-      console.log("GeminiSocketService: Connecting to Flask Socket.IO");
-
       this.socket = io(this.flaskUrl, {
-        transports: ["websocket"],
-        reconnectionAttempts: 10,
+        transports: ["websocket", "polling"], // Allow polling as fallback
+        reconnectionAttempts: 100,
         reconnectionDelay: 1000,
         timeout: 20000,
+        autoConnect: true,
+        forceNew: false, // Don't force new to allow socket.io to manage connections
       });
 
       this.socket.on("connect", () => {
         console.log("GeminiSocketService: Connected to Flask Socket.IO", {
           id: this.socket.id,
+          transport: this.socket.io.engine.transport.name,
         });
         this.connected = true;
         geminiConnected.set(true);
 
         // Immediately check Gemini connection
         this.socket.emit("gemini_connect");
+
+        // Setup periodic status check
+        if (this.statusInterval) {
+          clearInterval(this.statusInterval);
+        }
+        this.statusInterval = setInterval(() => {
+          if (this.socket && this.socket.connected) {
+            this.socket.emit("gemini_connect");
+          }
+        }, 10000); // Check every 10 seconds
       });
 
       this.socket.on("gemini_connection_status", (data) => {
-        console.log("GeminiSocketService: Received connection status", data);
         geminiConnected.set(data.connected);
 
         // Notify all handlers
@@ -53,17 +69,27 @@ class GeminiSocketService {
       });
 
       this.socket.on("gemini_response", (data) => {
-        console.log("GeminiSocketService: Received response", data);
-
         // Add to responses store if it has content
         if (data.content) {
-          geminiResponses.update((responses) => [...responses, data]);
+          // Include image information in the response if available
+          const response = {
+            ...data,
+            // Ensure image path and timestamp are properly passed through
+            image_path: data.image_path,
+            image_timestamp: data.image_timestamp,
+          };
+
+          geminiResponses.update((responses) => [...responses, response]);
         }
 
         // Notify all handlers
-        this.messageHandlers.forEach((handler) =>
-          handler({ type: "gemini_response", ...data })
-        );
+        this.messageHandlers.forEach((handler) => {
+          try {
+            handler({ type: "gemini_response", ...data });
+          } catch (error) {
+            console.error("[DEBUG GEMINI SOCKET] Error in handler:", error);
+          }
+        });
       });
 
       this.socket.on("disconnect", () => {
@@ -80,27 +106,25 @@ class GeminiSocketService {
     }
   }
 
-  sendMessage(text) {
+  sendMessage(text, options = {}) {
     if (!this.socket || !this.socket.connected) {
       console.error("GeminiSocketService: Cannot send message - not connected");
       return false;
     }
 
-    console.log("GeminiSocketService: Sending message", text);
-    this.socket.emit("gemini_message", { text });
-    return true;
-  }
+    // Add support for auto-capture flag and other options
+    const message = {
+      text,
+      add_to_existing: options.addToExisting || false,
+      auto_capture: options.isAutoCapture || false, // Mark if this is an auto-capture reward
+      include_image: options.includeImage !== false,
+    };
 
-  captureFrame() {
-    if (!this.socket || !this.socket.connected) {
-      console.error(
-        "GeminiSocketService: Cannot capture frame - not connected"
-      );
-      return false;
+    if (message.auto_capture) {
+      console.log("GeminiSocketService: Sending auto-capture message");
     }
 
-    console.log("GeminiSocketService: Requesting frame capture");
-    this.socket.emit("gemini_capture");
+    this.socket.emit("gemini_message", message);
     return true;
   }
 
@@ -112,11 +136,34 @@ class GeminiSocketService {
   }
 
   disconnect() {
+    if (this.statusInterval) {
+      clearInterval(this.statusInterval);
+      this.statusInterval = null;
+    }
+
     if (this.socket) {
       this.socket.disconnect();
       this.socket = null;
       this.connected = false;
+      geminiConnected.set(false);
     }
+  }
+
+  reconnect() {
+    // First clean up existing socket if any
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.disconnect();
+      this.socket = null;
+    }
+
+    // Reset connection state
+    this.connected = false;
+    geminiConnected.set(false);
+
+    // Create a new connection
+    console.log("GeminiSocketService: Attempting reconnection...");
+    setTimeout(() => this.connect(), 500);
   }
 
   isConnected() {

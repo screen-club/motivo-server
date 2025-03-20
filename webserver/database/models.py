@@ -1,13 +1,67 @@
 from peewee import *
 import json
+import os
 from playhouse.migrate import SqliteMigrator, migrate
 
-# Database configuration
-db = SqliteDatabase('storage/db.db', pragmas={'foreign_keys': 1})
+# Get the path to the public storage directory
+from pathlib import Path
+PUBLIC_STORAGE_DIR = str(Path(__file__).resolve().parents[3] / 'public' / 'storage')
+
+# Database configuration - store the database in public/storage/db
+DB_DIR = os.path.join(PUBLIC_STORAGE_DIR, 'db')
+os.makedirs(DB_DIR, exist_ok=True)
+db_path = os.path.join(DB_DIR, 'database.db')
+
+db = SqliteDatabase(db_path, pragmas={'foreign_keys': 1})
 
 class BaseModel(Model):
     class Meta:
         database = db
+
+class GeminiMessage(BaseModel):
+    """Model for storing Gemini chat messages with associated image data"""
+    client_id = CharField()
+    role = CharField(choices=[('user', 'User'), ('assistant', 'Assistant'), ('system', 'System')])
+    content = TextField()
+    image_path = CharField(null=True)
+    image_timestamp = FloatField(null=True)
+    timestamp = FloatField()
+    is_complete = BooleanField(default=True)
+    
+    @classmethod
+    def add_message(cls, client_id, role, content, image_path=None, image_timestamp=None, is_complete=True):
+        """Add a new message to the history"""
+        with db.connection_context():
+            message = GeminiMessage.create(
+                client_id=client_id,
+                role=role,
+                content=content,
+                image_path=image_path,
+                image_timestamp=image_timestamp,
+                timestamp=float(os.path.getmtime(__file__) if image_timestamp is None else image_timestamp),
+                is_complete=is_complete
+            )
+            return message.id
+    
+    @classmethod
+    def get_conversation(cls, client_id, limit=50):
+        """Get conversation history for a client"""
+        with db.connection_context():
+            messages = (GeminiMessage
+                       .select()
+                       .where(GeminiMessage.client_id == client_id)
+                       .order_by(GeminiMessage.timestamp)
+                       .limit(limit))
+            
+            return [{
+                "id": msg.id,
+                "role": msg.role,
+                "content": msg.content,
+                "image_path": msg.image_path,
+                "image_timestamp": msg.image_timestamp,
+                "timestamp": msg.timestamp,
+                "is_complete": msg.is_complete
+            } for msg in messages]
 
 class Content(BaseModel):
     title = CharField()
@@ -91,7 +145,9 @@ class Content(BaseModel):
         except Exception as e:
             db.rollback()  # Ensure transaction is rolled back on error
             raise e
-    def deleteItem(self, id):
+            
+    @classmethod
+    def delete_item(cls, id):
         with db.connection_context():
             query = Content.delete().where(Content.id == id)
             query.execute()
@@ -119,7 +175,7 @@ def run_migration():
 def initialize_database():
     """Initialize the database and create tables if they don't exist."""
     db.connect(reuse_if_open=True)
-    db.create_tables([Content], safe=True)
+    db.create_tables([Content, GeminiMessage], safe=True)
     
     # Run migrations
     run_migration()

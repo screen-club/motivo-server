@@ -19,9 +19,10 @@ class WebSocketService {
 
     // Add reconnection settings
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
+    this.maxReconnectAttempts = 1000; // Much higher limit for persistence
     this.reconnectTimeout = null;
-    this.reconnectInterval = 3000; // 3 seconds
+    this.reconnectInterval = 2000; // 2 seconds for faster reconnection
+    this.heartbeatInterval = null;
 
     // Add message handlers collection
     this.messageHandlers = new Set();
@@ -30,6 +31,19 @@ class WebSocketService {
 
     // Debug flags for troubleshooting
     this.debugMode = false; // Set to true to enable additional logging
+
+    // Automatically connect when service is instantiated
+    setTimeout(() => this.connect(), 100);
+
+    // Set up connection monitor to ensure we always stay connected
+    setInterval(() => {
+      if (!this.isReady || this.socket?.readyState !== WebSocket.OPEN) {
+        console.log(
+          "Connection monitor: WebSocket not connected, reconnecting"
+        );
+        this.connect();
+      }
+    }, 30000); // Check every 30 seconds
   }
 
   startStatusCheck() {
@@ -62,13 +76,15 @@ class WebSocketService {
   }
 
   connect() {
+    // Even if already connected, periodically check connection state
     if (this.socket?.readyState === WebSocket.OPEN) {
-      console.log("Already connected, skipping connection attempt");
+      console.log("Connection active, sending keepalive ping");
+      this.sendPing();
       return;
     }
 
     if (this.socket?.readyState === WebSocket.CONNECTING) {
-      console.log("Already connecting, skipping connection attempt");
+      console.log("Already connecting, waiting for completion");
       return;
     }
 
@@ -175,20 +191,27 @@ class WebSocketService {
         this.reconnectAttempts = 0;
         this.notifyReadyStateListeners();
         this.startStatusCheck();
+        this.startHeartbeat();
 
         // Send an initial ping message to test the connection
-        if (this.debugMode) {
-          try {
-            this.socket.send(
-              JSON.stringify({
-                type: "ping",
-                timestamp: new Date().toISOString(),
-              })
-            );
-            console.log("[DEBUG] Sent initial ping message");
-          } catch (e) {
-            console.error("[DEBUG] Error sending initial ping:", e);
-          }
+        try {
+          this.socket.send(
+            JSON.stringify({
+              type: "ping",
+              timestamp: new Date().toISOString(),
+            })
+          );
+          console.log("Sent initial ping message");
+        } catch (e) {
+          console.error("Error sending initial ping:", e);
+        }
+
+        // Process any messages that were queued during disconnection
+        if (this.messageQueue.length > 0) {
+          console.log(
+            `Connection restored, processing ${this.messageQueue.length} queued messages`
+          );
+          setTimeout(() => this.processQueue(), 500); // Short delay to ensure connection is stable
         }
       };
 
@@ -217,26 +240,33 @@ class WebSocketService {
         this.isReady = false;
         this.notifyReadyStateListeners();
         this.stopStatusCheck();
+        this.stopHeartbeat();
 
-        // Only reconnect for specific error codes
-        if (!event.wasClean && event.code !== 1000) {
-          if (this.reconnectAttempts < this.maxReconnectAttempts) {
-            const delay = Math.min(
-              1000 * Math.pow(2, this.reconnectAttempts),
-              10000
-            );
-            console.log(
-              `Scheduling reconnect attempt ${this.reconnectAttempts + 1}/${
-                this.maxReconnectAttempts
-              } in ${delay}ms`
-            );
-            this.reconnectTimeout = setTimeout(() => {
-              this.reconnectAttempts++;
-              this.connect();
-            }, delay);
-          } else {
-            console.log("Max reconnection attempts reached");
-          }
+        // Always attempt to reconnect, even for clean disconnects
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+          // Use a simpler reconnect strategy with more consistent timing
+          const delay = Math.min(
+            this.reconnectInterval * Math.min(this.reconnectAttempts + 1, 5),
+            10000
+          );
+
+          console.log(
+            `Scheduling reconnect attempt ${this.reconnectAttempts + 1}/${
+              this.maxReconnectAttempts
+            } in ${delay}ms`
+          );
+
+          this.reconnectTimeout = setTimeout(() => {
+            this.reconnectAttempts++;
+            this.connect();
+          }, delay);
+        } else {
+          console.log("Max reconnection attempts reached, will keep trying");
+          // Reset counter and keep trying
+          this.reconnectAttempts = 0;
+          this.reconnectTimeout = setTimeout(() => {
+            this.connect();
+          }, 15000);
         }
       };
 
@@ -277,19 +307,30 @@ class WebSocketService {
       // Update computing status
       computingStatus.set(data.is_computing);
 
-      // Broadcast the raw message to all handlers
       this.messageHandlers.forEach((handler) => {
-        handler({
-          type: "debug_model_info",
-          connected_clients: data.connected_clients,
-          unique_clients: data.unique_clients,
-          is_computing: data.is_computing,
-          active_rewards: data.active_rewards,
-        });
+        try {
+          handler({
+            type: "debug_model_info",
+            connected_clients: data.connected_clients,
+            unique_clients: data.unique_clients,
+            is_computing: data.is_computing,
+            active_rewards: data.active_rewards,
+          });
+        } catch (error) {
+          console.error("[DEBUG WEBSOCKET] Error in handler:", error);
+        }
       });
     } else {
-      // Handle other message types
-      this.messageHandlers.forEach((handler) => handler(data));
+      this.messageHandlers.forEach((handler) => {
+        try {
+          handler(data);
+        } catch (error) {
+          console.error(
+            `[DEBUG WEBSOCKET] Error in handler for ${data.type}:`,
+            error
+          );
+        }
+      });
     }
   }
 
@@ -303,8 +344,50 @@ class WebSocketService {
     });
   }
 
+  // Heartbeat mechanism to keep connection alive
+  startHeartbeat() {
+    this.stopHeartbeat(); // Clear any existing interval
+
+    this.heartbeatInterval = setInterval(() => {
+      this.sendPing();
+
+      // Also check if we need to reconnect
+      if (this.socket?.readyState !== WebSocket.OPEN) {
+        console.log("Heartbeat detected closed connection, reconnecting...");
+        this.stopHeartbeat();
+        this.connect();
+      }
+    }, 15000); // Send ping every 15 seconds
+  }
+
+  stopHeartbeat() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+  }
+
+  sendPing() {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      try {
+        this.socket.send(
+          JSON.stringify({
+            type: "ping",
+            timestamp: new Date().toISOString(),
+          })
+        );
+      } catch (e) {
+        console.error("Error sending ping:", e);
+        // Connection might be broken, try reconnecting
+        this.connect();
+      }
+    }
+  }
+
   disconnect() {
     this.stopStatusCheck();
+    this.stopHeartbeat();
+
     // Clear any pending reconnection attempts
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
@@ -353,16 +436,21 @@ class WebSocketService {
     }
   }
 
+  // Message queue for unsent messages during disconnection
+  messageQueue = [];
+  maxQueueSize = 50; // Limit queue size to prevent memory issues
+
   send(data) {
+    // Prepare the full message with timestamp
+    const message = {
+      ...data,
+      timestamp: new Date().toISOString(),
+    };
+
     if (this.socket?.readyState === WebSocket.OPEN) {
       // If this is a clean_rewards message, schedule an immediate debug check
       if (data.type === "clean_rewards") {
-        this.socket.send(
-          JSON.stringify({
-            ...data,
-            timestamp: new Date().toISOString(),
-          })
-        );
+        this.socket.send(JSON.stringify(message));
 
         // Trigger immediate debug check
         setTimeout(() => {
@@ -375,15 +463,78 @@ class WebSocketService {
         }, 100); // Small delay to ensure reset completes first
       } else {
         // Normal message sending
-        this.socket.send(
-          JSON.stringify({
-            ...data,
-            timestamp: new Date().toISOString(),
-          })
+        this.socket.send(JSON.stringify(message));
+      }
+
+      // Process any queued messages if connection is now available
+      this.processQueue();
+    } else {
+      // Queue the message for later delivery
+      // Don't queue debug_model_info messages as they're frequent status checks
+      if (data.type !== "debug_model_info") {
+        this.queueMessage(message);
+        console.warn(
+          "WebSocket is not connected. Message queued for later delivery:",
+          data
+        );
+      } else {
+        console.warn(
+          "WebSocket is not connected. Status check message not sent."
         );
       }
+    }
+  }
+
+  // Make a snapshot request to the server
+  makeSnapshot() {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(
+        JSON.stringify({
+          type: "make_snapshot",
+          timestamp: new Date().toISOString(),
+        })
+      );
+      return true;
+    }
+    return false;
+  }
+
+  queueMessage(message) {
+    // Add message to queue, respecting max size
+    if (this.messageQueue.length < this.maxQueueSize) {
+      this.messageQueue.push(message);
     } else {
-      console.warn("WebSocket is not connected. Message not sent:", data);
+      // Remove oldest message if queue is full
+      this.messageQueue.shift();
+      this.messageQueue.push(message);
+      console.warn("WebSocket message queue full, dropped oldest message");
+    }
+  }
+
+  processQueue() {
+    // Only process if socket is open and we have queued messages
+    if (
+      this.socket?.readyState === WebSocket.OPEN &&
+      this.messageQueue.length > 0
+    ) {
+      console.log(`Processing ${this.messageQueue.length} queued messages`);
+
+      // Create a copy of queue and clear the original
+      const queueCopy = [...this.messageQueue];
+      this.messageQueue = [];
+
+      // Send all queued messages
+      queueCopy.forEach((message) => {
+        try {
+          this.socket.send(JSON.stringify(message));
+        } catch (error) {
+          console.error("Error sending queued message:", error);
+          // Re-queue on failure if it's an important message
+          if (message.type !== "debug_model_info") {
+            this.queueMessage(message);
+          }
+        }
+      });
     }
   }
 }

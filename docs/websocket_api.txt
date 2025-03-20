@@ -22,6 +22,8 @@ AVAILABLE ENDPOINTS
    {
      "type": "request_reward",
      "timestamp": "optional_timestamp",
+     "add_to_existing": false, // Optional, if true, adds to existing rewards instead of replacing
+     "batch_mode": true, // Optional, if true, processes all rewards at once without sequential updates
      "reward": {
        "rewards": [
          {

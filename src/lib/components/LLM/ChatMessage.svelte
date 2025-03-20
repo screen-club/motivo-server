@@ -1,10 +1,18 @@
 <!-- ChatMessage.svelte -->
 <script>
   import { getLastLines } from './utils.js';
+  import { onMount } from 'svelte';
   
   export let message;
   export let selectedModel;
   export let structuredResponse = null;
+  
+  onMount(() => {
+    // Log when we receive a message with an image
+    if (message.role === 'assistant' && (message.imagePath || message.image_path)) {
+      console.log('ChatMessage: Message contains image:', message.imagePath || message.image_path);
+    }
+  });
 </script>
 
 <div class="flex gap-2 {message.role === 'assistant' ? 'bg-gray-50' : message.role === 'system' ? 'bg-gray-100' : ''} p-4 rounded-lg">
@@ -53,18 +61,43 @@
       <div class="space-y-2">
         <!-- For Gemini assistant messages -->
         {#if selectedModel === 'gemini'}
+          
           <!-- Show preview for streaming messages -->
           {#if message.streaming}
             <div class="preview">
               {getLastLines(message.content, 3)}
             </div>
-          <!-- Show only explanation text when complete -->
+          <!-- Show full content and image when complete -->
           {:else}
-            <div class="text-gray-800">
-              {#if structuredResponse && structuredResponse.explanation}
-                {structuredResponse.explanation}
-              {:else}
+            <!-- Container for content and image with flex layout -->
+            <div class="flex flex-row gap-4">
+              <!-- Text content on the left -->
+              <div class="flex-1 text-gray-800">
                 {message.content}
+              </div>
+              
+              <!-- Image on the right side if available -->
+              {#if message.imagePath || message.image_path}
+                <div class="shrink-0 border rounded-md overflow-hidden shadow-sm" style="max-width: 140px;">
+                  <img 
+                    src={message.imagePath || message.image_path} 
+                    alt="Input for Gemini" 
+                    class="w-full h-auto" 
+                    style="max-height: 120px; object-fit: cover;" 
+                  />
+                  <div class="bg-gray-50 text-[10px] text-gray-500 px-1.5 py-0.5 text-right">
+                    {#if message.timestamp_str}
+                      {message.timestamp_str}
+                    {:else if message.imageTimestamp || message.image_timestamp}
+                      {new Date((message.imageTimestamp || message.image_timestamp) * 1000)
+                        .toLocaleDateString('en-GB', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                        })}
+                    {/if}
+                  </div>
+                </div>
               {/if}
             </div>
           {/if}

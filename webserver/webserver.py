@@ -24,8 +24,8 @@ from dotenv import load_dotenv
 import requests
 
 # Local imports
-from gemini_service import GeminiService
-from sqliteHander import Content, initialize_database
+from services.gemini import GeminiService
+from database.models import Content, initialize_database
 
 # ============================================================================
 # CONFIGURATION
