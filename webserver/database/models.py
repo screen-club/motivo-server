@@ -3,14 +3,12 @@ import json
 import os
 from playhouse.migrate import SqliteMigrator, migrate
 
-# Get the path to the public storage directory
-from pathlib import Path
-PUBLIC_STORAGE_DIR = str(Path(__file__).resolve().parents[3] / 'public' / 'storage')
+# Simple hardcoded path directly to storage/db.db
+db_path = 'storage/db.db'
+print(f"Using database at: {db_path}")
 
-# Database configuration - store the database in public/storage/db
-DB_DIR = os.path.join(PUBLIC_STORAGE_DIR, 'db')
-os.makedirs(DB_DIR, exist_ok=True)
-db_path = os.path.join(DB_DIR, 'database.db')
+# Make sure the directory exists
+os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
 db = SqliteDatabase(db_path, pragmas={'foreign_keys': 1})
 
