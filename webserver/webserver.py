@@ -24,8 +24,15 @@ from dotenv import load_dotenv
 import requests
 
 # Local imports
-from webserver.services.gemini import GeminiService
-from webserver.database.models import Content, initialize_database
+# Use relative imports when running directly from this file
+try:
+    # Try absolute imports first (for when imported as a package)
+    from webserver.services.gemini import GeminiService
+    from webserver.database.models import Content, initialize_database
+except ImportError:
+    # Fall back to relative imports when run directly
+    from services.gemini import GeminiService
+    from database.models import Content, initialize_database
 
 # ============================================================================
 # CONFIGURATION
