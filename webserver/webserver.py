@@ -24,8 +24,8 @@ from dotenv import load_dotenv
 import requests
 
 # Local imports
-from services.gemini import GeminiService
-from database.models import Content, initialize_database
+from webserver.services.gemini import GeminiService
+from webserver.database.models import Content, initialize_database
 
 # ============================================================================
 # CONFIGURATION
@@ -651,12 +651,12 @@ def clear_chat():
         print(f"Error clearing chat: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-# Database routes
+# Database routes - keep both API routes for backward compatibility
+# Original routes
 @app.route('/api/conf', methods=['GET'])
 def get_configs():
     try:
-        db = Content()
-        configs = db.get_all()  # This will now include tags from our updated model
+        configs = Content.get_all()
         return jsonify(configs)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -665,15 +665,14 @@ def get_configs():
 def create_config():
     try:
         data = request.json
-        db = Content()
-        config_id = db.add(
+        config_id = Content.add(
             title=data['title'],
             thumbnail=data['thumbnail'],
-            type=data['type'],  # vibe/reward/llm
-            data=data['data'],  # json object
-            cache_file_path=data.get('cache_file_path'),  # Optional field
-            tags=data.get('tags', []),  # Optional tags field, defaults to empty list
-            users=data.get('users', [])  # Optional users field, defaults to empty list
+            type=data['type'],
+            data=data['data'],
+            cache_file_path=data.get('cache_file_path'),
+            tags=data.get('tags', []),
+            users=data.get('users', [])
         )
         return jsonify({'id': config_id}), 201
     except Exception as e:
@@ -683,16 +682,9 @@ def create_config():
 def update_config(config_id):
     try:
         data = request.json
-        db = Content()
-        
-        # Remove any None values from the data
         update_data = {k: v for k, v in data.items() if v is not None}
-        
-        # Update the configuration
-        updated_config = db.update_content(config_id, **update_data)
-        
-        return jsonify(updated_config)
-        
+        Content.update_content(config_id, **update_data)
+        return jsonify({"success": True})
     except Exception as e:
         print(f"Error updating configuration: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -700,10 +692,58 @@ def update_config(config_id):
 @app.route('/api/conf/<int:config_id>', methods=['DELETE'])
 def delete_config(config_id):
     try:
-        db = Content()
-        db.deleteItem(config_id)
+        Content.delete_item(config_id)
         return jsonify({'success': True})
     except Exception as e:
+        print(f"Error deleting configuration: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+# New routes with /api/presets
+@app.route('/api/presets', methods=['GET'])
+def get_presets():
+    try:
+        presets = Content.get_all()
+        return jsonify(presets)
+    except Exception as e:
+        print(f"Error fetching presets: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/presets', methods=['POST'])
+def create_preset():
+    try:
+        data = request.json
+        preset_id = Content.add(
+            title=data['title'],
+            thumbnail=data['thumbnail'],
+            type=data['type'],
+            data=data['data'],
+            cache_file_path=data.get('cache_file_path'),
+            tags=data.get('tags', []),
+            users=data.get('users', [])
+        )
+        return jsonify({'id': preset_id}), 201
+    except Exception as e:
+        print(f"Error creating preset: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/presets/<int:preset_id>', methods=['PUT'])
+def update_preset(preset_id):
+    try:
+        data = request.json
+        update_data = {k: v for k, v in data.items() if v is not None}
+        Content.update_content(preset_id, **update_data)
+        return jsonify({"success": True})
+    except Exception as e:
+        print(f"Error updating preset: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    
+@app.route('/api/presets/<int:preset_id>', methods=['DELETE'])
+def delete_preset(preset_id):
+    try:
+        Content.delete_item(preset_id)
+        return jsonify({'success': True})
+    except Exception as e:
+        print(f"Error deleting preset: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 # Utility routes

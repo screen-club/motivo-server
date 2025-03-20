@@ -141,7 +141,7 @@ class WebServer:
             })
             
         # API configuration
-        @self.app.route('/api/conf')
+        @self.app.route('/api/server_conf')
         def get_api_conf():
             """Return API configuration information"""
             gemini_connected = self.gemini_service.is_connected() if hasattr(self.gemini_service, 'is_connected') else False
@@ -227,7 +227,7 @@ class WebServer:
             
       
         
-        # Content management
+        # Content management endpoints
         @self.app.route('/api/content', methods=['GET'])
         def get_all_content():
             content = Content.get_all()
@@ -251,7 +251,8 @@ class WebServer:
                     type=data['type'],
                     data=data['data'],
                     cache_file_path=data.get('cache_file_path'),
-                    tags=data.get('tags', [])
+                    tags=data.get('tags', []),
+                    users=data.get('users', [])
                 )
                 return jsonify({"success": True, "id": content_id})
             except Exception as e:
@@ -275,6 +276,124 @@ class WebServer:
                 return jsonify({"success": True})
             except Exception as e:
                 logger.error(f"Error updating content: {str(e)}")
+                return jsonify({"error": str(e)}), 500
+                
+        # Modern presets API endpoints
+        @self.app.route('/api/presets', methods=['GET'])
+        def get_all_presets():
+            """Return all presets from the database"""
+            try:
+                presets = Content.get_all()
+                return jsonify(presets)
+            except Exception as e:
+                logger.error(f"Error fetching presets: {str(e)}")
+                return jsonify({"error": str(e)}), 500
+        
+        @self.app.route('/api/presets', methods=['POST'])
+        def add_preset():
+            """Add a new preset to the database"""
+            data = request.json
+            required_fields = ['title', 'thumbnail', 'type', 'data']
+            
+            # Validate required fields
+            for field in required_fields:
+                if field not in data:
+                    return jsonify({"error": f"Missing required field: {field}"}), 400
+            
+            # Add preset to database
+            try:
+                preset_id = Content.add(
+                    title=data['title'],
+                    thumbnail=data['thumbnail'],
+                    type=data['type'],
+                    data=data['data'],
+                    cache_file_path=data.get('cache_file_path'),
+                    tags=data.get('tags', []),
+                    users=data.get('users', [])
+                )
+                return jsonify({"id": preset_id}), 201
+            except Exception as e:
+                logger.error(f"Error adding preset: {str(e)}")
+                return jsonify({"error": str(e)}), 500
+        
+        @self.app.route('/api/presets/<int:preset_id>', methods=['DELETE'])
+        def delete_preset(preset_id):
+            """Delete a preset from the database"""
+            try:
+                Content.delete_item(preset_id)
+                return jsonify({"success": True})
+            except Exception as e:
+                logger.error(f"Error deleting preset: {str(e)}")
+                return jsonify({"error": str(e)}), 500
+        
+        @self.app.route('/api/presets/<int:preset_id>', methods=['PUT'])
+        def update_preset(preset_id):
+            """Update an existing preset"""
+            data = request.json
+            try:
+                Content.update_content(preset_id, **data)
+                return jsonify({"success": True})
+            except Exception as e:
+                logger.error(f"Error updating preset: {str(e)}")
+                return jsonify({"error": str(e)}), 500
+                
+        # Legacy conf API endpoints - maintained for backward compatibility
+        @self.app.route('/api/conf', methods=['GET'])
+        def get_all_configs():
+            """Return all configurations from the database"""
+            try:
+                configs = Content.get_all()
+                return jsonify(configs)
+            except Exception as e:
+                logger.error(f"Error fetching configs: {str(e)}")
+                return jsonify({"error": str(e)}), 500
+        
+        @self.app.route('/api/conf', methods=['POST'])
+        def add_config():
+            """Add a new configuration to the database"""
+            data = request.json
+            required_fields = ['title', 'thumbnail', 'type', 'data']
+            
+            # Validate required fields
+            for field in required_fields:
+                if field not in data:
+                    return jsonify({"error": f"Missing required field: {field}"}), 400
+            
+            # Add config to database
+            try:
+                config_id = Content.add(
+                    title=data['title'],
+                    thumbnail=data['thumbnail'],
+                    type=data['type'],
+                    data=data['data'],
+                    cache_file_path=data.get('cache_file_path'),
+                    tags=data.get('tags', []),
+                    users=data.get('users', [])
+                )
+                return jsonify({"id": config_id}), 201
+            except Exception as e:
+                logger.error(f"Error adding config: {str(e)}")
+                return jsonify({"error": str(e)}), 500
+        
+        @self.app.route('/api/conf/<int:config_id>', methods=['DELETE'])
+        def delete_config(config_id):
+            """Delete a configuration from the database"""
+            try:
+                Content.delete_item(config_id)
+                return jsonify({"success": True})
+            except Exception as e:
+                logger.error(f"Error deleting config: {str(e)}")
+                return jsonify({"error": str(e)}), 500
+        
+        @self.app.route('/api/conf/<int:config_id>', methods=['PUT'])
+        def update_config(config_id):
+            """Update an existing configuration"""
+            data = request.json
+            try:
+                Content.update_content(config_id, **data)
+                return jsonify({"success": True})
+            except Exception as e:
+                logger.error(f"Error updating config: {str(e)}")
                 return jsonify({"error": str(e)}), 500
     
     def _register_socketio_handlers(self):
