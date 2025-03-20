@@ -14,9 +14,16 @@ export class DbService {
    */
   static async getAllConfigs() {
     try {
-      const response = await fetch(`${API_URL}/api/conf`);
+      // Use the new API endpoint
+      const response = await fetch(`${API_URL}/api/presets`);
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        // Fallback to the old endpoint if the new one fails
+        console.warn('New API endpoint failed, falling back to legacy endpoint');
+        const legacyResponse = await fetch(`${API_URL}/api/conf`);
+        if (!legacyResponse.ok) {
+          throw new Error(`HTTP error! status: ${legacyResponse.status}`);
+        }
+        return await legacyResponse.json();
       }
       return await response.json();
     } catch (error) {
@@ -39,7 +46,8 @@ export class DbService {
    */
   static async addConfig({ title, thumbnail = '', type, data, cache_file_path = null, tags = [], users = [] }) {
     try {
-      const response = await fetch(`${API_URL}/api/conf`, {
+      // Use the new API endpoint
+      const response = await fetch(`${API_URL}/api/presets`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -56,7 +64,28 @@ export class DbService {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        // Fallback to the old endpoint if the new one fails
+        console.warn('New API endpoint failed, falling back to legacy endpoint');
+        const legacyResponse = await fetch(`${API_URL}/api/conf`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            title,
+            thumbnail,
+            type,
+            data,
+            cache_file_path,
+            tags,
+            users
+          })
+        });
+
+        if (!legacyResponse.ok) {
+          throw new Error(`HTTP error! status: ${legacyResponse.status}`);
+        }
+        return await legacyResponse.json();
       }
       return await response.json();
     } catch (error) {
@@ -78,7 +107,8 @@ export class DbService {
    */
   static async updateConfig(id, config) {
     try {
-      const response = await fetch(`${API_URL}/api/conf/${id}`, {
+      // Use the new API endpoint
+      const response = await fetch(`${API_URL}/api/presets/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -87,7 +117,20 @@ export class DbService {
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        // Fallback to the old endpoint if the new one fails
+        console.warn('New API endpoint failed, falling back to legacy endpoint');
+        const legacyResponse = await fetch(`${API_URL}/api/conf/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(config)
+        });
+
+        if (!legacyResponse.ok) {
+          throw new Error(`HTTP error! status: ${legacyResponse.status}`);
+        }
+        return await legacyResponse.json();
       }
       return await response.json();
     } catch (error) {
@@ -103,12 +146,22 @@ export class DbService {
    */
   static async deleteConfig(id) {
     try {
-      const response = await fetch(`${API_URL}/api/conf/${id}`, {
+      // Use the new API endpoint
+      const response = await fetch(`${API_URL}/api/presets/${id}`, {
         method: 'DELETE'
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        // Fallback to the old endpoint if the new one fails
+        console.warn('New API endpoint failed, falling back to legacy endpoint');
+        const legacyResponse = await fetch(`${API_URL}/api/conf/${id}`, {
+          method: 'DELETE'
+        });
+
+        if (!legacyResponse.ok) {
+          throw new Error(`HTTP error! status: ${legacyResponse.status}`);
+        }
+        return await legacyResponse.json();
       }
       return await response.json();
     } catch (error) {
