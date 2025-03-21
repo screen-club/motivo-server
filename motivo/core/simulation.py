@@ -115,64 +115,67 @@ async def cleanup_stale_connections():
 
 async def render_and_process_frame(frame_count, q_percentage, last_frame_save_time):
     """Render current frame and process it for display and streaming"""
-    # Render frame
-    frame = app_state.env.render()
-    
-    # Apply overlays
-    frame_with_overlays = app_state.display_manager.show_frame(
-        frame,
-        q_percentage=q_percentage,
-        is_computing=app_state.message_handler.is_computing_reward
-    )
-    
-    # Instead of saving frames on every render, we'll only save when explicitly requested
-    # via the webserver's gemini_capture event
-    
-    # Update WebRTC stream with proper task management
-    frame_copy = frame_with_overlays.copy()
-    
-    # Use a more controlled approach for creating and tracking tasks
     try:
-        # Create a task with a timeout to prevent stalled tasks
-        webrtc_task = asyncio.create_task(
-            asyncio.wait_for(
-                app_state.webrtc_manager.broadcast_frame(frame_copy),
-                timeout=0.5  # 500ms timeout to prevent blocking
-            )
+        # IMPORTANT: DON'T use threads for rendering! We need this on the main thread
+        # for OpenGL/GPU context reasons
+        
+        # Render frame directly
+        frame = app_state.env.render()
+        
+        # Apply overlays directly
+        frame_with_overlays = app_state.display_manager.show_frame(
+            frame,
+            q_percentage=q_percentage,
+            is_computing=app_state.message_handler.is_computing_reward
         )
         
-        # Optionally add task to a global task set for cleanup
-        # This prevents tasks from lingering and causing memory leaks
-        if not hasattr(app_state, 'pending_webrtc_tasks'):
-            app_state.pending_webrtc_tasks = set()
+        # Make a copy for WebRTC to avoid any potential memory issues
+        frame_copy = frame_with_overlays.copy()
         
-        app_state.pending_webrtc_tasks.add(webrtc_task)
+        # Update WebRTC stream with proper task management - async operations
+        try:
+            # Create a task with a timeout to prevent stalled tasks
+            webrtc_task = asyncio.create_task(
+                asyncio.wait_for(
+                    app_state.webrtc_manager.broadcast_frame(frame_copy),
+                    timeout=0.5  # Back to 500ms timeout
+                )
+            )
+            
+            # Task management - ensure we have a place to track pending tasks
+            if not hasattr(app_state, 'pending_webrtc_tasks'):
+                app_state.pending_webrtc_tasks = set()
+            
+            app_state.pending_webrtc_tasks.add(webrtc_task)
+            
+            # Set up cleanup callback
+            def task_done(task):
+                try:
+                    app_state.pending_webrtc_tasks.discard(task)
+                except:
+                    pass
+            
+            webrtc_task.add_done_callback(task_done)
+            
+            # Periodically clean up completed tasks (every 100 frames)
+            if frame_count % 100 == 0 and hasattr(app_state, 'pending_webrtc_tasks'):
+                done_tasks = {task for task in app_state.pending_webrtc_tasks if task.done()}
+                for task in done_tasks:
+                    app_state.pending_webrtc_tasks.discard(task)
+                logger.debug(f"Cleaned up {len(done_tasks)} completed WebRTC tasks, {len(app_state.pending_webrtc_tasks)} pending")
         
-        # Set up cleanup callback
-        def task_done(task):
-            try:
-                app_state.pending_webrtc_tasks.discard(task)
-            except:
-                pass
+        except Exception as e:
+            logger.error(f"Error setting up WebRTC broadcast: {e}")
         
-        webrtc_task.add_done_callback(task_done)
-        
-        # Periodically clean up completed tasks (every 100 frames)
-        if frame_count % 100 == 0 and hasattr(app_state, 'pending_webrtc_tasks'):
-            done_tasks = {task for task in app_state.pending_webrtc_tasks if task.done()}
-            for task in done_tasks:
-                app_state.pending_webrtc_tasks.discard(task)
-            logger.debug(f"Cleaned up {len(done_tasks)} completed WebRTC tasks, {len(app_state.pending_webrtc_tasks)} pending")
+        # Check for key presses (quit/save) - KEEP THIS ON MAIN THREAD TOO
+        should_quit, should_save = app_state.display_manager.check_key()
+        if should_quit:
+            app_state.is_running = False
+        elif should_save:
+            save_current_frame(frame)
     
     except Exception as e:
-        logger.error(f"Error setting up WebRTC broadcast: {e}")
-    
-    # Check for key presses (quit/save)
-    should_quit, should_save = app_state.display_manager.check_key()
-    if should_quit:
-        app_state.is_running = False
-    elif should_save:
-        save_current_frame(frame)
+        logger.error(f"Error in render_and_process_frame: {str(e)}")
 
 def save_current_frame(frame):
     """Save the current frame data"""

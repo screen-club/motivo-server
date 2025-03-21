@@ -21,7 +21,7 @@ class Config:
         
         # Derived paths
         self.cache_dir = os.path.join(self.storage_dir, 'cache')
-        self.shared_frames_dir = os.path.join(self.storage_dir, 'shared_frames')
+        self.shared_frames_dir = os.path.join(  self.public_dir, 'public', 'shared_frames')
         self.gemini_frame_path = os.path.join(self.shared_frames_dir, 'latest_frame.jpg')
         self.captured_frames_dir = os.path.join(self.storage_dir, 'captured_frames')
         self.downloads_dir = os.path.join(self.public_dir, 'downloads')

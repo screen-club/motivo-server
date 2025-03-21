@@ -23,22 +23,24 @@ from anthropic import Anthropic
 from dotenv import load_dotenv
 import requests
 
-# Local imports
-# Use relative imports when running directly from this file
+
+# Try imports as package first, then as local modules if that fails
 try:
-    # Try absolute imports first (for when imported as a package)
     from webserver.services.gemini import GeminiService
     from webserver.database.models import Content, initialize_database
 except ImportError:
-    # Fall back to relative imports when run directly
+   
+    # Try local imports
     from services.gemini import GeminiService
     from database.models import Content, initialize_database
+
 
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 # Load environment variables
 load_dotenv()
+
 
 # Environment variables
 VITE_API_URL = os.getenv('VITE_API_URL') or 'localhost'
@@ -69,7 +71,6 @@ STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'sto
 SHARED_FRAMES_DIR =  os.path.abspath(os.path.join(STORAGE_DIR, 'shared_frames'))
 GEMINI_FRAME_PATH = os.path.join(SHARED_FRAMES_DIR, 'latest_frame.jpg')
 
-print(STORAGE_DIR)
 ALLOWED_EXTENSIONS = {'mp4', 'webm', 'ogg'}
 STATUS_LOG_INTERVAL = 10  # Only log status checks every 10 seconds
 
@@ -95,6 +96,7 @@ CORS(app, resources={
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 client_logger = logging.getLogger('client_connections')
@@ -104,21 +106,17 @@ client_logger.setLevel(logging.INFO)
 try:
     # Initialize Anthropic client
     anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
-    print("Successfully initialized Anthropic client")
     
     # Initialize database
     initialize_database()
-    print("Database initialized successfully")
     
     # Load system instructions
     with open('system_instructions.txt', 'r', encoding='utf-8') as f:
         SYSTEM_INSTRUCTIONS = f.read()
-    print("Successfully loaded system instructions")
     
     # Initialize Gemini service
     gemini_service = GeminiService(port=5002, api_key=GOOGLE_API_KEY)
     gemini_service.start()
-    print("Gemini service initialized successfully")
     
 except Exception as e:
     print(f"Initialization error: {str(e)}")
@@ -213,17 +211,17 @@ def process_gemini_messages():
                     if message.get("message_id"):
                         response_data["id"] = message.get("message_id")
                     
-                    # Include image information if present in the message
                     if "image_path" in message:
                         # Make sure to use the same field names the frontend expects
+                        print("image_path", message["image_path"])
                         response_data["image_path"] = message["image_path"]
                         response_data["image_timestamp"] = message.get("image_timestamp", time.time())
                         response_data["timestamp_str"] = message.get("timestamp_str", time.strftime('%d/%m/%Y %H:%M:%S'))
+                    else:
+                        print("No image path in message")
                     
                     # Add message ID to response for frontend tracking
                     response_data["message_id"] = message.get("message_id", "unknown")
-                    
-                    print(response_data)
                     
                     # Broadcast message to all connected clients
                     socketio.emit('gemini_response',response_data)
@@ -351,22 +349,16 @@ def handle_gemini_message(data):
                 if frame_url:
                     # Handle frame URL from storage/shared_frames
                     
-                    frame_name = os.path.basename(frame_url)
-                    full_path = os.path.join(SHARED_FRAMES_DIR, frame_name)
-                  
-
-                    # Validate file exists
-                    if not os.path.exists(full_path):
-                        raise FileNotFoundError(f"Image file not found at {full_path}")
                     
                     # Get file stats
-                    file_stats = os.stat(full_path)
+                    file_stats = os.stat(frame_url)
+
                     
                     # Create comprehensive capture info
                     capture_info = {
                         "path": frame_url,
-                        "fullpath": full_path,
-                        "filename": os.path.basename(full_path),
+                        "fullpath": frame_url,
+                        "filename": os.path.basename(frame_url),
                         "timestamp": int(time.time()),
                         "timestamp_str": time.strftime('%d/%m/%Y %H:%M:%S'),
                         "file_size": file_stats.st_size,
@@ -531,7 +523,7 @@ def serve_image():
         else:
             return jsonify({'error': 'File not found'}), 404
     except Exception as e:
-        print(f"Error serving image: {str(e)}")
+        logging.error(f"Error serving image: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/shared_frame', methods=['GET'])
@@ -544,7 +536,7 @@ def get_latest_frame():
         else:
             return jsonify({'error': 'No frame available'}), 404
     except Exception as e:
-        print(f"Error serving frame: {str(e)}")
+        logging.error(f"Error serving frame: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/video/<string:video_type>/<path:filename>')
@@ -572,24 +564,22 @@ def serve_video(video_type, filename):
         return send_file(file_path)
         
     except Exception as e:
-        print(f"Error serving video: {str(e)}")
+        logging.error(f"Error serving video: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/downloads/<path:filename>')
 def download_file(filename):
     try:
         downloads_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../motivo/downloads'))
-        print(f"Looking for file in: {downloads_dir}")
         os.makedirs(downloads_dir, exist_ok=True)
         return send_from_directory(downloads_dir, filename)
     except Exception as e:
-        print(f"Error serving download file: {str(e)}")
+        logging.error(f"Error serving download file: {str(e)}")
         return jsonify({'error': str(e)}), 404
 
 # API routes
 @app.route('/generate-reward', methods=['POST'])
 def generate_reward():
-    print("\n=== New Request ===")
     
     session_id = request.json.get('sessionId', str(datetime.now().timestamp()))
     prompt = request.json.get('prompt')
@@ -601,8 +591,7 @@ def generate_reward():
         if session_id not in chat_histories:
             chat_histories[session_id] = []
         
-        print(f"Sending prompt: {prompt}")
-        print(f"System instructions length: {len(SYSTEM_INSTRUCTIONS)}")
+     
         
         message = anthropic.messages.create(
             model="claude-3-sonnet-20240229",
@@ -617,12 +606,10 @@ def generate_reward():
             ]
         )
         
-        print(f"Raw message response: {message}")
-        print(f"Message content: {message.content}")
+       
         
         response_content = message.content[0].text if isinstance(message.content, list) else message.content
         
-        print(f"Final response content: {response_content}")
         
         chat_histories[session_id].extend([
             {"role": "user", "content": prompt},
@@ -636,7 +623,7 @@ def generate_reward():
         })
         
     except Exception as e:
-        print(f"Error in generate_reward: {str(e)}")
+        logging.error(f"Error in generate_reward: {str(e)}")
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
@@ -696,12 +683,8 @@ def upload_video():
             timeout=600
         )
 
-        print(f"Response: {response}")
         response.raise_for_status()
         response_data = response.json()
-        
-        # Debug print to see response structure
-        print("Response data:", json.dumps(response_data, indent=2))
         
         render_url = None
         if 'output' in response_data and 'video' in response_data['output']:
@@ -729,14 +712,14 @@ def upload_video():
                 
                 render_url = f'{VITE_API_URL}/video/renders/{render_filename}'
                 response_data['output']['video_url'] = render_url
-                print(f"Successfully saved rendered video to {render_filepath}")
+                logging.info(f"Successfully saved rendered video to {render_filepath}")
                 
             except Exception as e:
-                print(f"Error decoding base64 data: {str(e)}")
-                print(f"First 100 chars of b64 data: {b64_data[:100]}")
+                logging.error(f"Error decoding base64 data: {str(e)}")
+                logging.debug(f"First 100 chars of b64 data: {b64_data[:100]}")
         else:
-            print("No video data found in response")
-            print("Available keys in output:", response_data.get('output', {}).keys())
+            logging.warning("No video data found in response")
+            logging.debug(f"Available keys in output: {response_data.get('output', {}).keys()}")
         
         return json.dumps({
             'success': True,
@@ -763,7 +746,7 @@ def clear_chat():
             chat_histories[session_id] = []
         return jsonify({'success': True})
     except Exception as e:
-        print(f"Error clearing chat: {str(e)}")
+        logging.error(f"Error clearing chat: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 # Database routes - keep both API routes for backward compatibility
@@ -801,7 +784,7 @@ def update_config(config_id):
         Content.update_content(config_id, **update_data)
         return jsonify({"success": True})
     except Exception as e:
-        print(f"Error updating configuration: {str(e)}")
+        logging.error(f"Error updating configuration: {str(e)}")
         return jsonify({'error': str(e)}), 500
     
 @app.route('/api/conf/<int:config_id>', methods=['DELETE'])
@@ -810,7 +793,7 @@ def delete_config(config_id):
         Content.delete_item(config_id)
         return jsonify({'success': True})
     except Exception as e:
-        print(f"Error deleting configuration: {str(e)}")
+        logging.error(f"Error deleting configuration: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 # New routes with /api/presets
@@ -820,7 +803,7 @@ def get_presets():
         presets = Content.get_all()
         return jsonify(presets)
     except Exception as e:
-        print(f"Error fetching presets: {str(e)}")
+        logging.error(f"Error fetching presets: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/presets', methods=['POST'])
@@ -838,7 +821,7 @@ def create_preset():
         )
         return jsonify({'id': preset_id}), 201
     except Exception as e:
-        print(f"Error creating preset: {str(e)}")
+        logging.error(f"Error creating preset: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/presets/<int:preset_id>', methods=['PUT'])
@@ -849,7 +832,7 @@ def update_preset(preset_id):
         Content.update_content(preset_id, **update_data)
         return jsonify({"success": True})
     except Exception as e:
-        print(f"Error updating preset: {str(e)}")
+        logging.error(f"Error updating preset: {str(e)}")
         return jsonify({'error': str(e)}), 500
     
 @app.route('/api/presets/<int:preset_id>', methods=['DELETE'])
@@ -858,7 +841,7 @@ def delete_preset(preset_id):
         Content.delete_item(preset_id)
         return jsonify({'success': True})
     except Exception as e:
-        print(f"Error deleting preset: {str(e)}")
+        logging.error(f"Error deleting preset: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 # Utility routes
@@ -882,6 +865,6 @@ if __name__ == '__main__':
     try:
         socketio.run(app, host='0.0.0.0', port=5002, debug=True, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
-        print("Shutting down...")
+        logging.info("Shutting down...")
         if gemini_service:
             gemini_service.stop()

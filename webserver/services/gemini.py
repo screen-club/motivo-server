@@ -13,7 +13,6 @@ import logging
 from pathlib import Path
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gemini_service")
 logger.setLevel(logging.WARNING)  # Only log warnings and errors
 
@@ -108,7 +107,6 @@ class GeminiService:
 
     def queue_message(self, message, message_id=None, client_id=None, include_image=True, capture_info=None, add_to_existing=False, auto_capture=False):
 
-        print(f"Queueing message: {message}")
         """Queue a message to be sent to Gemini"""
         if message_id is None:
             message_id = str(uuid.uuid4())
@@ -128,7 +126,6 @@ class GeminiService:
         if not self.running:
             self.start()
         
-        print(f"Queueing message: {message}")
         # CRITICAL: Handle image to send with Gemini request
         if include_image:
             # Require capture_info when include_image is True
@@ -495,7 +492,6 @@ class GeminiService:
             try:
                 # Receive message from Gemini
                 raw_response = await self.ws.recv()
-                print(f"Received message from Gemini: {raw_response}")
                
                 # Parse JSON response
                 try:

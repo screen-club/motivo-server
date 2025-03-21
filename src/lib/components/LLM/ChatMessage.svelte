@@ -7,10 +7,17 @@
   export let selectedModel;
   export let structuredResponse = null;
   
+  // Process image path to strip everything before '/public'
+  function processImagePath(path) {
+    if (!path) return '';
+    const publicIndex = path.indexOf('/public');
+    return publicIndex >= 0 ? path.substring(publicIndex) : path;
+  }
+  
   onMount(() => {
     // Log when we receive a message with an image
-    if (message.role === 'assistant' && (message.imagePath || message.image_path)) {
-      console.log('ChatMessage: Message contains image:', message.imagePath || message.image_path);
+    if (message.role === 'assistant' && (message.image_path)) {
+      console.log('ChatMessage: Message contains image:', message.image_path);
     }
   });
 </script>
@@ -80,7 +87,7 @@
               {#if message.imagePath || message.image_path}
                 <div class="shrink-0 border rounded-md overflow-hidden shadow-sm" style="max-width: 140px;">
                   <img 
-                    src={message.imagePath || message.image_path} 
+                    src={processImagePath(message.imagePath || message.image_path)} 
                     alt="Input for Gemini" 
                     class="w-full h-auto" 
                     style="max-height: 120px; object-fit: cover;" 

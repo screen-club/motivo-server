@@ -1,5 +1,4 @@
 // GeminiClient.js - Handler for Gemini communication
-
 import { io } from "socket.io-client";
 import { extractStructuredResponse, processRewards } from "./utils.js";
 import { v4 as uuidv4 } from "uuid";
@@ -21,11 +20,11 @@ export function createGeminiClient(
     apiUrl = url;
     try {
       flaskSocket = io(apiUrl, {
-        transports: ["websocket", "polling"], // Allow polling fallback if websocket fails
+        transports: ["websocket", "polling"],
         reconnectionAttempts: 10,
         reconnectionDelay: 1000,
         timeout: 20000,
-        forceNew: false, // Don't force new connection to allow socket.io manager to reuse connections
+        forceNew: false,
       });
 
       flaskSocket.on("connect", () => {
@@ -61,137 +60,51 @@ export function createGeminiClient(
     let qualityScore = null;
 
     if (data.content) {
+      console.log("GEMINI RESPONSE DATA:", data);
+
       const lastMessage = updatedConversation[updatedConversation.length - 1];
 
-      // Check if this is part of streaming response
+      // Handle streaming or complete responses
       if (lastMessage && lastMessage.role === "assistant" && !data.complete) {
+        // Update existing streaming message
         lastMessage.content = data.content;
         lastMessage.streaming = true;
-        // Add image info if available (store both camelCase and snake_case for compatibility)
+
         if (data.image_path) {
-          lastMessage.imagePath = data.image_path;
-          lastMessage.imageTimestamp = data.image_timestamp || Date.now();
-          // Also keep original names for consistency
-          lastMessage.image_path = data.image_path;
-          lastMessage.image_timestamp = data.image_timestamp || Date.now();
+          addImageInfo(lastMessage, data);
         }
+      } else if (
+        lastMessage &&
+        lastMessage.role === "assistant" &&
+        data.complete
+      ) {
+        // Finalize existing message
+        lastMessage.content = data.content;
+        lastMessage.streaming = false;
+
+        if (data.image_path) {
+          addImageInfo(lastMessage, data);
+        }
+
+        console.log("PROCESSING COMPLETE MESSAGE - EXISTING MESSAGE");
+        processCompleteMessage(lastMessage.content);
       } else {
-        // Final message or new message
-        if (lastMessage && lastMessage.role === "assistant" && data.complete) {
-          lastMessage.content = data.content;
-          lastMessage.streaming = false;
+        // New message
+        const newMessage = {
+          role: "assistant",
+          content: data.content,
+          streaming: !data.complete,
+        };
 
-          // Add image info if available (store both camelCase and snake_case for compatibility)
-          if (data.image_path) {
-            lastMessage.imagePath = data.image_path;
-            lastMessage.imageTimestamp = data.image_timestamp || Date.now();
-            // Also keep original names for consistency
-            lastMessage.image_path = data.image_path;
-            lastMessage.image_timestamp = data.image_timestamp || Date.now();
-          }
+        if (data.image_path) {
+          addImageInfo(newMessage, data);
+        }
 
-          // Extract structured data when complete
-          structuredResponse = extractStructuredResponse(data.content);
+        updatedConversation.push(newMessage);
 
-          // Look for quality score in auto-correct responses
-          qualityScore = extractQualityScore(data.content);
-
-          // For Gemini responses, always clear the rewards list but preserve the environment
-          // First, clear rewards but preserve the environment context (current_z)
-          websocketService.send({
-            type: "clear_active_rewards",
-            preserve_z: true,
-          });
-
-          // Clean local rewards store for UI
-          rewardStore.cleanRewardsLocal();
-
-          // Process new rewards (if any)
-          const addToExisting = true; // Always add to existing (empty but preserved environment)
-          if (structuredResponse.result) {
-            // Enable batch mode for multiple rewards
-            const hasMultipleRewards =
-              structuredResponse.result.rewards &&
-              structuredResponse.result.rewards.length > 1;
-
-            // Mark all rewards as auto_capture to ensure they preserve the environment
-            if (structuredResponse.result.rewards) {
-              structuredResponse.result.rewards =
-                structuredResponse.result.rewards.map((reward) => ({
-                  ...reward,
-                  auto_capture: true,
-                }));
-            }
-
-            processRewards(
-              structuredResponse.result,
-              rewardStore,
-              websocketService,
-              uuidFn,
-              addToExisting
-            );
-          }
-        } else {
-          const newMessage = {
-            role: "assistant",
-            content: data.content,
-            streaming: !data.complete,
-          };
-
-          // Add image info if available (store both camelCase and snake_case for compatibility)
-          if (data.image_path) {
-            newMessage.imagePath = data.image_path;
-            newMessage.imageTimestamp = data.image_timestamp || Date.now();
-            // Also keep original names for consistency
-            newMessage.image_path = data.image_path;
-            newMessage.image_timestamp = data.image_timestamp || Date.now();
-          }
-
-          updatedConversation.push(newMessage);
-
-          // Extract structured data if complete
-          if (data.complete) {
-            structuredResponse = extractStructuredResponse(data.content);
-
-            // Look for quality score in auto-correct responses
-            qualityScore = extractQualityScore(data.content);
-
-            // For Gemini responses, always clear the rewards list but preserve the environment
-            // First, clear rewards but preserve the environment context (current_z)
-            websocketService.send({
-              type: "clear_active_rewards",
-              preserve_z: true,
-            });
-
-            // Clean local rewards store for UI
-            rewardStore.cleanRewardsLocal();
-
-            // Process new rewards (if any)
-            const addToExisting = true; // Always add to existing (empty but preserved environment)
-            if (structuredResponse.result) {
-              // Enable batch mode for multiple rewards
-              const hasMultipleRewards =
-                structuredResponse.result.rewards &&
-                structuredResponse.result.rewards.length > 1;
-
-              // Mark all rewards as auto_capture to ensure they preserve the environment
-              if (structuredResponse.result.rewards) {
-                structuredResponse.result.rewards =
-                  structuredResponse.result.rewards.map((reward) => ({
-                    ...reward,
-                    auto_capture: true,
-                  }));
-              }
-
-              processRewards(
-                structuredResponse.result,
-                rewardStore,
-                websocketService,
-                uuidFn,
-                addToExisting
-              );
-            }
-          }
+        if (data.complete) {
+          console.log("PROCESSING COMPLETE MESSAGE - NEW MESSAGE");
+          processCompleteMessage(newMessage.content);
         }
       }
     }
@@ -202,58 +115,109 @@ export function createGeminiClient(
       qualityScore,
       isComplete: data.complete || false,
     };
+
+    // Helper function to process a complete message
+    function processCompleteMessage(content) {
+      structuredResponse = extractStructuredResponse(content);
+
+      qualityScore = extractQualityScore(content);
+
+      // Only proceed if we have rewards
+      if (
+        structuredResponse.result &&
+        structuredResponse.result.rewards &&
+        structuredResponse.result.rewards.length > 0
+      ) {
+        console.log(structuredResponse.result.rewards.length + " REWARDS");
+
+        // IMPORTANT: Only clear rewards ONCE here, then set a flag so the reward
+        // processing function doesn't clear again
+        websocketService.send({
+          type: "clear_active_rewards",
+          preserve_z: true,
+        });
+
+        rewardStore.cleanRewardsLocal();
+
+        // Mark rewards as auto_capture
+        structuredResponse.result.rewards =
+          structuredResponse.result.rewards.map((reward) => ({
+            ...reward,
+            auto_capture: true,
+          }));
+
+        // Add special flag to prevent double-clearing
+        structuredResponse.result.rewards_already_cleared = true;
+
+        // Log the structured response to help with debugging
+
+        // Wait a moment to ensure the clear completes first
+        setTimeout(() => {
+          // Now send all rewards in one batch
+          processRewards(
+            structuredResponse.result,
+            rewardStore,
+            websocketService,
+            uuidFn,
+            true // Always add to existing
+          );
+        }, 100); // Short delay to ensure clear completes first
+      } else {
+        console.log("NO REWARDS FOUND IN RESPONSE");
+      }
+    }
+
+    // Helper to add image info to message
+    function addImageInfo(message, data) {
+      message.imagePath = data.image_path;
+      message.imageTimestamp = data.image_timestamp || Date.now();
+      message.image_path = data.image_path;
+      message.image_timestamp = data.image_timestamp || Date.now();
+    }
   };
 
-  // Helper function to extract quality score from a response
   const extractQualityScore = (content) => {
     try {
-      // Try to find a quality score in the text
+      // First attempt: Try to extract from JSON inside code blocks
+      const codeBlockRegex = /```json\s*({[\s\S]*?})\s*```/;
+      const codeMatch = content.match(codeBlockRegex);
+
+      if (codeMatch && codeMatch[1]) {
+        try {
+          const jsonData = JSON.parse(codeMatch[1]);
+          if (jsonData.quality_score !== undefined) {
+            const score = parseFloat(jsonData.quality_score);
+            if (!isNaN(score) && score >= 0 && score <= 1) {
+              return score;
+            }
+          }
+        } catch (jsonError) {
+          console.log("Failed to parse JSON from code block", jsonError);
+          // Continue to next method if JSON parsing fails
+        }
+      }
+
+      // Second attempt: Try the original regex method
       const qualityRegex = /quality[_\s]?score[:\s]*([0-9]*\.?[0-9]+)/i;
       const match = content.match(qualityRegex);
 
       if (match && match[1]) {
         const score = parseFloat(match[1]);
         if (!isNaN(score) && score >= 0 && score <= 1) {
-          console.log(`Found quality score: ${score}`);
           return score;
         }
       }
 
-      // If we couldn't find a score in the text format, check if there's
-      // a quality_score field in structured JSON
-      const jsonRegex =
-        /```(?:json)?\s*(\{[\s\S]*?\})\s*```|`(\{[\s\S]*?\})`|(\{[\s\S]*?\})/g;
-      const matches = [...content.matchAll(jsonRegex)];
-
-      for (const match of matches) {
-        const jsonString = (match[1] || match[2] || match[3]).trim();
-        try {
-          const parsedJson = JSON.parse(jsonString);
-          if (parsedJson.quality_score !== undefined) {
-            const score = parseFloat(parsedJson.quality_score);
-            if (!isNaN(score) && score >= 0 && score <= 1) {
-              console.log(`Found quality score in JSON: ${score}`);
-              return score;
-            }
-          }
-        } catch (e) {
-          // Skip invalid JSON
-          continue;
-        }
-      }
-
-      return null; // No quality score found
+      return null;
     } catch (error) {
       console.error("Error extracting quality score", error);
       return null;
     }
   };
 
-  // Enhanced connection check that also verifies the API endpoint
   const checkConnection = () => {
     const socketConnected = flaskSocket && flaskSocket.connected;
 
-    // If Socket.IO seems connected, emit a check
     if (socketConnected) {
       flaskSocket.emit("gemini_connect");
     }
@@ -262,122 +226,86 @@ export function createGeminiClient(
   };
 
   const sendMessage = (message, options = {}) => {
-    if (flaskSocket && flaskSocket.connected) {
-      console.log("Sending message to Gemini");
-
-      // Use a Promise to handle the asynchronous operations
-      return new Promise(async (resolve) => {
-        try {
-          // Generate a unique message ID if not provided
-          const messageId = options.id || uuidFn();
-
-          // Capture frame
-          const frameCaptureResult = await captureFrame();
-
-          // Now send the message with image
-          try {
-            flaskSocket.emit("gemini_message", {
-              message,
-              id: messageId, // Include explicit message ID
-              add_to_existing: options.add_to_existing || false,
-              include_image: options.include_image !== false,
-              frame_url: frameCaptureResult?.frameUrl,
-              auto_correct: options.auto_correct || false,
-            });
-            resolve(true);
-          } catch (error) {
-            console.error("Error sending message:", error);
-            addSystemMessage("Error: Problem sending message");
-            resolve(false);
-          }
-        } catch (error) {
-          console.error("Error in sendMessage sequence:", error);
-          addSystemMessage("Error: Problem processing message sequence");
-          resolve(false);
-        }
-      });
-    } else {
+    if (!flaskSocket || !flaskSocket.connected) {
       addSystemMessage(
         "Error: Could not send message - Gemini service not connected"
       );
       return Promise.resolve(false);
     }
+
+    return new Promise(async (resolve) => {
+      try {
+        const messageId = options.id || uuidFn();
+        const frameCaptureResult = await captureFrame();
+
+        flaskSocket.emit("gemini_message", {
+          message,
+          id: messageId,
+          add_to_existing: options.add_to_existing || false,
+          include_image: options.include_image !== false,
+          frame_url: frameCaptureResult?.frameUrl,
+          auto_correct: options.auto_correct || false,
+        });
+        resolve(true);
+      } catch (error) {
+        console.error("Error in sendMessage:", error);
+        addSystemMessage("Error: Problem sending message");
+        resolve(false);
+      }
+    });
   };
 
   const captureFrame = () => {
     return new Promise((resolve) => {
       try {
-        // Use websocketService to send the capture_frame command
-        if (websocketService.getSocket()?.readyState === WebSocket.OPEN) {
-          // Generate a unique request ID
-          const requestId = uuidFn();
-          let responseTimeout;
-
-          // Create a one-time message handler
-          const messageHandler = (data) => {
-            // Check if this is the frame_captured response matching our request
-            if (
-              data.type === "frame_captured" &&
-              data.requestId === requestId
-            ) {
-              // Clear the timeout and cleanup listener
-              clearTimeout(responseTimeout);
-              cleanup();
-
-              // Resolve with success/error based on response status
-              if (data.status === "success" && data.frame_path) {
-                // Extract the image URL
-                const frameUrl = data.frame_path;
-
-                // Construct the full URL that the backend can access
-                const baseUrl =
-                  import.meta.env.VITE_API_URL || window.location.origin;
-
-                // Ensure frameUrl starts with a slash
-                const formattedUrl = frameUrl.startsWith("/")
-                  ? frameUrl
-                  : `/${frameUrl}`;
-
-                // For debugging: create a complete URL that could be accessed in a browser
-                const fullUrl = `${baseUrl}${formattedUrl}`;
-
-                // Return both URLs
-                resolve({
-                  success: true,
-                  frameUrl: formattedUrl, // Use the properly formatted URL
-                  fullUrl: fullUrl, // Add the full URL that the backend can access
-                });
-              } else {
-                resolve({
-                  success: false,
-                  error: data.error || "Missing frame_path",
-                });
-              }
-            }
-          };
-
-          // Register the message handler
-          const cleanup = websocketService.addMessageHandler(messageHandler);
-
-          // Set a timeout to resolve as false if no response within 5 seconds
-          responseTimeout = setTimeout(() => {
-            cleanup(); // Remove the message handler
-            console.warn("Frame capture timed out after 5 seconds");
-            resolve({ success: false, error: "Timeout" });
-          }, 5000);
-
-          // Send the capture frame command with the request ID
-          websocketService.send({
-            type: "capture_frame",
-            requestId: requestId,
-            timestamp: new Date().toISOString(),
-          });
-
-          console.log("Frame capture request sent with ID:", requestId);
-        } else {
-          console.warn("WebSocket not connected, cannot capture frame");
+        if (websocketService.getSocket()?.readyState !== WebSocket.OPEN) {
           resolve({ success: false, error: "WebSocket not connected" });
+          return;
         }
+
+        const requestId = uuidFn();
+        let responseTimeout;
+
+        const messageHandler = (data) => {
+          if (data.type === "frame_captured" && data.requestId === requestId) {
+            clearTimeout(responseTimeout);
+            cleanup();
+
+            if (data.status === "success" && data.frame_path) {
+              const frameUrl = data.frame_path;
+              const baseUrl =
+                import.meta.env.VITE_API_URL || window.location.origin;
+              const formattedUrl = frameUrl.startsWith("/")
+                ? frameUrl
+                : `/${frameUrl}`;
+              const fullUrl = `${baseUrl}${formattedUrl}`;
+
+              resolve({
+                success: true,
+                frameUrl: formattedUrl,
+                fullUrl: fullUrl,
+              });
+            } else {
+              resolve({
+                success: false,
+                error: data.error || "Missing frame_path",
+              });
+            }
+          }
+        };
+
+        const cleanup = websocketService.addMessageHandler(messageHandler);
+
+        responseTimeout = setTimeout(() => {
+          cleanup();
+          resolve({ success: false, error: "Timeout" });
+        }, 5000);
+
+        websocketService.send({
+          type: "capture_frame",
+          requestId: requestId,
+          timestamp: new Date().toISOString(),
+        });
       } catch (error) {
         console.error("Error requesting frame capture:", error);
         resolve({ success: false, error: error.message });

@@ -14,7 +14,6 @@
   import ChatInput from './LLM/ChatInput.svelte';
   import { createGeminiClient } from './LLM/GeminiClient.js';
   import { createClaudeClient } from './LLM/ClaudeClient.js';
-  import { processRewards } from './LLM/utils.js';
   
   // Import styles
   import './LLM/styles.css';
@@ -59,14 +58,10 @@
   
   // When chatStore updates or model changes, update the appropriate conversation
   $effect(() => {
-    if (selectedModel === 'claude') {
-      if ($chatStore.conversation && $chatStore.conversation.length > 0) {
-        claudeConversation = [...$chatStore.conversation];
-      }
-    } else {
-      if ($chatStore.conversation && $chatStore.conversation.length > 0) {
-        geminiConversation = [...$chatStore.conversation];
-      }
+    if (selectedModel === 'claude' && $chatStore.conversation?.length > 0) {
+      claudeConversation = [...$chatStore.conversation];
+    } else if ($chatStore.conversation?.length > 0) {
+      geminiConversation = [...$chatStore.conversation];
     }
   });
 
@@ -100,7 +95,6 @@
       if (data.type === 'llm_response') {
         isProcessing = false;
       } else if (data.type === 'debug_model_info') {
-        // Store computation status for use in the UI
         isComputingRewards = data.is_computing;
       }
     });
@@ -108,18 +102,12 @@
     // WebSocket handler specifically for Gemini messages
     cleanupGeminiHandler = geminiSocketService.addMessageHandler((data) => {
       if (data.type === 'gemini_response' || data.type === 'text') {
-      
-        
-        
-        
         const result = geminiClient.handleResponse(data, geminiConversation);
-        console.log(result)
         geminiConversation = result.conversation;
         
         if (result.structuredResponse) {
           structuredResponse = result.structuredResponse;
         }
-        console.log(structuredResponse)
         
         // Handle quality score for auto-correction
         if (result.qualityScore !== null && autoCorrectActive) {
@@ -137,20 +125,11 @@
           isProcessing = false;
         }
         
-        // Scroll chat to bottom
-        setTimeout(() => {
-          chatContainer?.scrollTo({
-            top: chatContainer.scrollHeight,
-            behavior: 'smooth'
-          });
-        }, 100);
+        scrollChatToBottom();
       } else if (data.type === 'gemini_connection_status') {
         isGeminiConnected = data.connected;
-      } else if (data.type === 'frame_captured') {
-        // Just handle the error case
-        if (!data.success) {
-          addSystemMessage(`Error capturing frame: ${data.error || 'Unknown error'}`);
-        }
+      } else if (data.type === 'frame_captured' && !data.success) {
+        addSystemMessage(`Error capturing frame: ${data.error || 'Unknown error'}`);
       }
     });
     
@@ -159,10 +138,7 @@
     
     // Set up more robust Gemini connection monitoring
     const checkConnectionInterval = setInterval(() => {
-      const isConnectedNow = geminiClient.checkConnection();
-      
-      // If checkConnection returns false, actively try to reconnect
-      if (!isConnectedNow) {
+      if (!geminiClient.checkConnection()) {
         console.log("Gemini connection appears to be down, attempting reconnection...");
         geminiSocketService.reconnect();
       }
@@ -171,13 +147,8 @@
     // Clean up on destroy
     onDestroy(() => {
       clearInterval(checkConnectionInterval);
-      
-      if (cleanupHandler) {
-        cleanupHandler();
-      }
-      
+      if (cleanupHandler) cleanupHandler();
       geminiClient.disconnect();
-      
       stopAutoCapture();
     });
 
@@ -185,7 +156,14 @@
     isGeminiConnected = geminiSocketService.isConnected();
   });
 
-
+  function scrollChatToBottom() {
+    setTimeout(() => {
+      chatContainer?.scrollTo({
+        top: chatContainer.scrollHeight,
+        behavior: 'smooth'
+      });
+    }, 100);
+  }
 
   function toggleAutoCapture() {
     if (autoCapture) {
@@ -196,26 +174,19 @@
   }
   
   function showAutoCorrectPrompt() {
-    // Show a dialog to get the initial prompt for auto-correction
-    if (!isGeminiConnected) {
-      return;
-    }
+    if (!isGeminiConnected) return;
     
     // Ask for the prompt that should be auto-corrected
     const initialPrompt = prompt.trim() || window.prompt("Enter the goal to auto-correct (what motion do you want to create?)", "");
     
-    if (!initialPrompt) {
-      return; // User cancelled
-    }
+    if (!initialPrompt) return; // User cancelled
     
     autoCorrectPrompt = initialPrompt;
     startAutoCorrect(initialPrompt);
   }
 
   function startAutoCorrect(initialPrompt) {
-    if (!isGeminiConnected || !initialPrompt) {
-      return;
-    }
+    if (!isGeminiConnected || !initialPrompt) return;
     
     autoCapture = true;
     autoCorrectActive = true;
@@ -236,7 +207,7 @@
     
     // Set up interval for auto-correction (every 10 seconds)
     autoCorrectInterval = setInterval(async () => {
-      // CRITICAL: Wait for rewards computation to finish completely before attempting capture
+      // Wait for rewards computation to finish before attempting capture
       if (isComputingRewards) {
         console.log("Rewards are being computed, delaying auto-correction until computation completes");
         return;
@@ -245,8 +216,6 @@
       // Only continue if we're not already processing a response
       if (!isProcessing) {
         try {
-          // First check if humanoid is ready by asking for model info
-          // This check will happen before any frame capture attempt
           await checkHumanoidReady();
         } catch (error) {
           console.error("Error in auto-correction cycle:", error);
@@ -261,30 +230,23 @@
   }
   
   function performAutoCorrection() {
-    console.log("[DEBUG] performAutoCorrection called - checking conditions...");
-    
     // Increment attempts
     autoCorrectAttempts++;
-    console.log(`[DEBUG] Auto-correct attempt #${autoCorrectAttempts}`);
     
     // Check if we've reached a satisfactory quality or max attempts
     if (autoCorrectQuality >= 0.8 || autoCorrectAttempts > 20) {
-      console.log(`[DEBUG] performAutoCorrection: stopping auto capture due to quality (${autoCorrectQuality}) or attempts (${autoCorrectAttempts})`);
       stopAutoCapture();
       return;
     }
-    
-    console.log("[DEBUG] performAutoCorrection: quality check passed, continuing...");
 
     // First verify WebSocket connection is available
     if (websocketService.getSocket()?.readyState !== WebSocket.OPEN) {
       addSystemMessage("WebSocket disconnected. Waiting for reconnection...");
-      // Retry after a delay
       setTimeout(performAutoCorrection, 3000);
       return;
     }
     
-    // Check if rewards are currently being computed by querying debug info
+    // Check if rewards are currently being computed
     websocketService.send({
       type: "debug_model_info"
     });
@@ -300,29 +262,20 @@
     // Wait for debug info response before continuing
     const debugInfoHandler = websocketService.addMessageHandler((data) => {
       if (data.type === 'debug_model_info') {
-        // Clean up handler and clear timeout
         debugInfoHandler();
         clearTimeout(timeoutId);
-        
-        // Process the debug info
         proceedWithAutoCorrection(data.is_computing);
       }
     });
     
     // Function to proceed with auto-correction after checking computation status
     function proceedWithAutoCorrection(isComputing) {
-      console.log(`[DEBUG] proceedWithAutoCorrection called, isComputing=${isComputing}`);
-      
       // Check if rewards are being computed
       if (isComputing) {
-        // If computing, schedule retry after short delay
-        console.log("[DEBUG] Rewards are being computed, scheduling retry");
         addSystemMessage("Waiting for reward computation to complete before auto-correction...");
         setTimeout(performAutoCorrection, 2000);
         return;
       }
-      
-      console.log("[DEBUG] Ready to perform auto-correction (not computing)");
       
       // Verify WebSocket is still connected before proceeding
       if (websocketService.getSocket()?.readyState !== WebSocket.OPEN) {
@@ -332,32 +285,22 @@
       }
       
       // Send a follow-up correction request
-      console.log("[DEBUG] Preparing auto-correction prompt");
-      const correctionPrompt = `Based on the current frame, improve your previous suggestion to better achieve: "${autoCorrectPrompt}". Rate the current implementation quality from 0.0 to 1.0 and explain how it can be improved. Format your response with a "quality_score" field.`;
+      const correctionPrompt = `Based on the current frame, improve your previous suggestion to better achieve: "${autoCorrectPrompt}". Rate the current implementation quality from 0.0 to 1.0 and explain how it can be improved. *mandatory* Add a "quality_score" field to your response.`;
       
       if (selectedModel === 'gemini') {
-        console.log("[DEBUG] Sending auto-correction to Gemini");
-        
-        // Set a flag to show we're processing a request
         isProcessing = true;
         
-        // This will automatically include the latest frame
+        console.log("correctionPrompt", correctionPrompt);
         geminiClient.sendMessage(correctionPrompt, { 
           add_to_existing: true, 
           include_image: true,
           auto_correct: true
-        }).then(() => {
-          console.log("[DEBUG] Auto-correction message sent successfully");
         }).catch(error => {
           console.error("Error sending auto-correction message:", error);
           addSystemMessage("Error in auto-correction process");
         }).finally(() => {
-          // Clear the processing flag when done
           isProcessing = false;
-          console.log("[DEBUG] Auto-correction message handling complete");
         });
-      } else {
-        console.log("[DEBUG] Skipping auto-correction - selected model is not Gemini");
       }
     }
   }
@@ -384,8 +327,6 @@
   // Check if the humanoid is ready before attempting capture
   async function checkHumanoidReady() {
     return new Promise((resolve, reject) => {
-      console.log("Checking if humanoid is ready for auto-correction");
-      
       // Request debug info to check computing status
       websocketService.send({
         type: "debug_model_info"
@@ -394,8 +335,7 @@
       // Set a timeout in case we don't get a debug_model_info response
       const timeoutId = setTimeout(() => {
         if (debugInfoHandler) {
-          debugInfoHandler(); // Clean up handler
-          console.log("Debug info timeout - proceeding anyway");
+          debugInfoHandler();
           resolve(true); // Proceed anyway after timeout
         }
       }, 2000);
@@ -403,7 +343,6 @@
       // Wait for debug info response before continuing
       const debugInfoHandler = websocketService.addMessageHandler((data) => {
         if (data.type === 'debug_model_info') {
-          // Clean up handler and clear timeout
           debugInfoHandler();
           clearTimeout(timeoutId);
           
@@ -411,11 +350,8 @@
           isComputingRewards = data.is_computing === true;
           
           if (isComputingRewards) {
-            console.log("Humanoid is still computing rewards, will try again later");
             resolve(false); // Not ready yet
           } else {
-            console.log("Humanoid is ready for auto-correction, proceeding with capture");
-            
             // Now that we know humanoid is ready, capture frame
             captureFrame().then(success => {
               if (success) {
@@ -423,7 +359,6 @@
                 performAutoCorrection();
                 resolve(true);
               } else {
-                console.log("Frame capture failed, skipping this auto-correction cycle");
                 resolve(false);
               }
             }).catch(err => {
@@ -465,19 +400,11 @@
     
     // Update the appropriate conversation
     updateConversation(newConversation);
-    
-    setTimeout(() => {
-      chatContainer?.scrollTo({
-        top: chatContainer.scrollHeight,
-        behavior: 'smooth'
-      });
-    }, 100);
+    scrollChatToBottom();
   }
 
   async function handleSubmit() {
-    if (!prompt.trim()) {
-      return;
-    }
+    if (!prompt.trim()) return;
     
     isProcessing = true;
     const currentPrompt = prompt.trim();
@@ -492,13 +419,7 @@
     
     // Update the appropriate conversation
     updateConversation(newConversation);
-    
-    setTimeout(() => {
-      chatContainer?.scrollTo({
-        top: chatContainer.scrollHeight,
-        behavior: 'smooth'
-      });
-    }, 100);
+    scrollChatToBottom();
     
     if (selectedModel === 'gemini') {
       geminiClient.sendMessage(currentPrompt, { add_to_existing: addToExisting })
@@ -517,13 +438,7 @@
       const result = await claudeClient.sendMessage(API_URL, currentPrompt, $chatStore.sessionId, addToExisting);
       if (result.success) {
         claudeConversation = result.conversation;
-        
-        setTimeout(() => {
-          chatContainer?.scrollTo({
-            top: chatContainer.scrollHeight,
-            behavior: 'smooth'
-          });
-        }, 100);
+        scrollChatToBottom();
       }
       
       isProcessing = false;
@@ -561,14 +476,7 @@
     
     // Update the model
     selectedModel = model;
-    
-    // Scroll to bottom after a short delay to ensure the new conversation renders
-    setTimeout(() => {
-      chatContainer?.scrollTo({
-        top: chatContainer.scrollHeight,
-        behavior: 'smooth'
-      });
-    }, 100);
+    scrollChatToBottom();
   }
 </script>
 

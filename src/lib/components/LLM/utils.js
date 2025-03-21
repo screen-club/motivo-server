@@ -32,24 +32,89 @@ export function extractStructuredResponse(content) {
     const matches = [...content.matchAll(jsonRegex)];
 
     if (matches.length > 0) {
-      // Find the first match that contains valid JSON
+      console.log(`Found ${matches.length} potential JSON matches in Gemini response`);
+      
+      // First, try to collect all rewards from all valid JSON blocks
+      const allRewards = [];
+      const allWeights = [];
+      let combinationType = "geometric";
+      
       for (const match of matches) {
         const jsonString = (match[1] || match[2] || match[3]).trim();
         try {
           const parsedJson = JSON.parse(jsonString);
-
-          // If we find response field, use it directly
-          if (parsedJson.response) {
+          
+          // Look for rewards array
+          if (parsedJson.rewards && Array.isArray(parsedJson.rewards)) {
+            // Collect all rewards
+            allRewards.push(...parsedJson.rewards);
+            
+            // Collect weights if available
+            if (parsedJson.weights && Array.isArray(parsedJson.weights)) {
+              allWeights.push(...parsedJson.weights);
+            } else {
+              // Add placeholder weights of 1.0 for each reward
+              allWeights.push(...Array(parsedJson.rewards.length).fill(1.0));
+            }
+            
+            // Track combinationType (use the last one found)
+            if (parsedJson.combinationType) {
+              combinationType = parsedJson.combinationType;
+            }
+          } else if (parsedJson.result && parsedJson.result.rewards) {
+            // Handle nested result structure
+            allRewards.push(...parsedJson.result.rewards);
+            
+            if (parsedJson.result.weights) {
+              allWeights.push(...parsedJson.result.weights);
+            } else {
+              allWeights.push(...Array(parsedJson.result.rewards.length).fill(1.0));
+            }
+            
+            if (parsedJson.result.combinationType) {
+              combinationType = parsedJson.result.combinationType;
+            }
+          }
+          
+          // Also check if we find a response field to use as explanation
+          if (parsedJson.response && !structured.explanation) {
             structured.explanation = parsedJson.response;
-            structured.result = parsedJson.result;
-            break;
-          } else {
-            // Otherwise store the whole JSON as the result
-            structured.result = parsedJson;
           }
         } catch (e) {
           // Skip invalid JSON
+          console.log("Invalid JSON in match:", e.message);
           continue;
+        }
+      }
+      
+      // If we found any rewards, consolidate them
+      if (allRewards.length > 0) {
+        console.log(`Consolidated ${allRewards.length} rewards from ${matches.length} JSON blocks`);
+        structured.result = {
+          rewards: allRewards,
+          weights: allWeights,
+          combinationType: combinationType
+        };
+      } else {
+        // If no rewards were found, fall back to using the first valid JSON
+        for (const match of matches) {
+          const jsonString = (match[1] || match[2] || match[3]).trim();
+          try {
+            const parsedJson = JSON.parse(jsonString);
+  
+            // If we find response field, use it directly
+            if (parsedJson.response) {
+              structured.explanation = parsedJson.response;
+              structured.result = parsedJson.result;
+              break;
+            } else {
+              // Otherwise store the whole JSON as the result
+              structured.result = parsedJson;
+            }
+          } catch (e) {
+            // Skip invalid JSON
+            continue;
+          }
         }
       }
     }
@@ -90,6 +155,9 @@ export function processRewards(
   addToExisting = false
 ) {
   try {
+    console.log("PROCESS REWARDS CALLED with data:", JSON.stringify(rewardData).substring(0, 500) + "...");
+    console.log("addToExisting:", addToExisting);
+    
     // Handle both direct reward objects and objects containing a rewards array
     const rewardConfig =
       typeof rewardData === "string" ? JSON.parse(rewardData) : rewardData;
@@ -103,10 +171,17 @@ export function processRewards(
       const combinationType = rewardConfig.combinationType || "geometric";
 
       if (rewardsArray && Array.isArray(rewardsArray)) {
-        // Only clear rewards if we're not adding to existing ones and it's not an auto-capture
-        const isAutoCaptureReward = rewardsArray.some(r => r.auto_capture === true);
+        console.log("REWARD ARRAY LENGTH:", rewardsArray.length);
+        console.log("REWARD NAMES:", rewardsArray.map(r => r.name).join(", "));
         
-        if (!addToExisting && !isAutoCaptureReward) {
+        // Only clear rewards if we're not adding to existing ones and it's not an auto-capture
+        // AND if rewards haven't already been cleared in GeminiClient
+        const isAutoCaptureReward = rewardsArray.some(r => r.auto_capture === true);
+        const rewardsAlreadyCleared = rewardConfig.rewards_already_cleared === true;
+        
+        if (rewardsAlreadyCleared) {
+          console.log("Rewards already cleared by parent component - skipping clearing phase");
+        } else if (!addToExisting && !isAutoCaptureReward) {
           console.log("Clearing existing rewards before adding new ones");
           // Use websocketService.send which now handles queuing
           websocketService.send({
@@ -115,9 +190,9 @@ export function processRewards(
           });
 
           rewardStore.cleanRewardsLocal();
-        } else if (isAutoCaptureReward) {
+        } else if (isAutoCaptureReward && !rewardsAlreadyCleared) {
           console.log("Auto-capture reward detected - preserving environment while clearing reward array");
-          // Clear rewards for tracking but preserve the environment Z
+          // Send the clear command only if it hasn't been sent already
           websocketService.send({
             type: "clear_active_rewards",
             preserve_z: true
@@ -126,28 +201,22 @@ export function processRewards(
           rewardStore.cleanRewardsLocal();
         }
 
-        // Send the rewards to the server with appropriate flag
-        // Use websocketService.send which now handles queuing
-        console.log(
-          "Sending rewards to server with rewardsArray:",
-          rewardsArray
-        );
-        
         // When processing rewards, check if they are from auto-capture
         const isAutoRewards = rewardsArray.some(r => r.auto_capture === true);
         
         // Enable batch mode when sending multiple rewards
         const isBatchMode = rewardsArray.length > 1;
         console.log(
-          isBatchMode ? "Using batch mode for multiple rewards" : "Standard mode for single reward",
-          isAutoRewards ? "(auto-capture)" : ""
+          `SENDING ${rewardsArray.length} REWARDS AS A SINGLE BATCH: ${isBatchMode ? "batch mode" : "standard mode"}`
         );
         
+        // CRITICAL: All rewards must be sent in a single message to the backend
+        // NOT as multiple individual requests
         websocketService.send({
           type: "request_reward",
           add_to_existing: addToExisting,
-          batch_mode: isBatchMode, // Enable batch mode for multiple rewards
-          auto_capture: isAutoRewards, // Flag for auto-capture rewards
+          batch_mode: true, // Always use batch mode
+          auto_capture: isAutoRewards,
           reward: {
             rewards: rewardsArray,
             weights: weights,
@@ -167,7 +236,11 @@ export function processRewards(
             rewardStore.updateWeight(index, weights[index]);
           }
         });
+      } else {
+        console.log("No valid rewards array found", rewardConfig);
       }
+    } else {
+      console.log("No valid reward configuration");
     }
   } catch (error) {
     console.error("Error processing rewards", error);
