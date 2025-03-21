@@ -807,8 +807,7 @@ class MessageHandler:
             resize_width = data.get("resize_width", 640)
             frame_path = save_shared_frame(frame_with_overlays, resize_width=resize_width)
             
-            # Extract just the filename from the path
-            frame_filename = os.path.basename(frame_path)
+            
             
             # Log the path information
             logger.info(f"Frame captured and saved at absolute path: '{frame_path}'")
@@ -817,7 +816,7 @@ class MessageHandler:
             response = {
                 "type": "frame_captured",
                 "status": "success",
-                "frame_path": frame_filename,
+                "frame_path": frame_path,
                 "timestamp": datetime.now().isoformat()
             }
             

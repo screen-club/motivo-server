@@ -271,19 +271,14 @@ export function createGeminiClient(
             clearTimeout(responseTimeout);
             cleanup();
 
+            console.log("FRAME CAPTURED:", data);
             if (data.status === "success" && data.frame_path) {
               const frameUrl = data.frame_path;
-              const baseUrl =
-                import.meta.env.VITE_API_URL || window.location.origin;
-              const formattedUrl = frameUrl.startsWith("/")
-                ? frameUrl
-                : `/${frameUrl}`;
-              const fullUrl = `${baseUrl}${formattedUrl}`;
 
               resolve({
                 success: true,
-                frameUrl: formattedUrl,
-                fullUrl: fullUrl,
+                frameUrl: frameUrl,
+                fullUrl: frameUrl,
               });
             } else {
               resolve({

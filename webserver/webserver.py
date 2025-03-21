@@ -211,6 +211,7 @@ def process_gemini_messages():
                     if message.get("message_id"):
                         response_data["id"] = message.get("message_id")
                     
+                    print("message", message)
                     if "image_path" in message:
                         # Make sure to use the same field names the frontend expects
                         print("image_path", message["image_path"])
@@ -351,9 +352,9 @@ def handle_gemini_message(data):
                     
                     
                     # Get file stats
+                    print("frame_url", frame_url)
                     file_stats = os.stat(frame_url)
 
-                    
                     # Create comprehensive capture info
                     capture_info = {
                         "path": frame_url,

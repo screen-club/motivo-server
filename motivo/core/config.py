@@ -16,7 +16,7 @@ class Config:
         self.default_model = "metamotivo-M-1"
         
         # Base paths
-        self.public_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+        self.public_dir = os.path.join(os.path.dirname(os.getcwd()), 'public')
         self.storage_dir = os.path.join(self.public_dir, 'storage')
         
         # Derived paths
