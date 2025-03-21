@@ -66,9 +66,10 @@ for folder in [RAW_VIDEO_FOLDER, TRIMMED_VIDEO_FOLDER, RENDERS_FOLDER]:
 
 # Define the shared frames path
 STORAGE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'storage'))
-SHARED_FRAMES_DIR = os.path.join(STORAGE_DIR, 'shared_frames')
+SHARED_FRAMES_DIR =  os.path.abspath(os.path.join(STORAGE_DIR, 'shared_frames'))
 GEMINI_FRAME_PATH = os.path.join(SHARED_FRAMES_DIR, 'latest_frame.jpg')
 
+print(STORAGE_DIR)
 ALLOWED_EXTENSIONS = {'mp4', 'webm', 'ogg'}
 STATUS_LOG_INTERVAL = 10  # Only log status checks every 10 seconds
 
@@ -194,15 +195,38 @@ def process_gemini_messages():
             def handle_message(message):
                 try:
                     # Log the received message type for debugging
-                    logger.info(f"Processing Gemini message type: {message.get('type')}")
+                    logger.info(f"Processing Gemini message : {message.get('type')}")
+                    
+                    content = message.get("content", "")
+                    complete = message.get("complete", False)
+                    
+                    # Create response with standard fields
+                    response_data = {
+                        "message": content,
+                        "content": content,
+                        "complete": complete,
+                        'timestamp': message.get('timestamp', time.time()),
+
+                    }
+                    
+                    # Use the message_id from the Gemini message for consistency
+                    if message.get("message_id"):
+                        response_data["id"] = message.get("message_id")
+                    
+                    # Include image information if present in the message
+                    if "image_path" in message:
+                        # Make sure to use the same field names the frontend expects
+                        response_data["image_path"] = message["image_path"]
+                        response_data["image_timestamp"] = message.get("image_timestamp", time.time())
+                        response_data["timestamp_str"] = message.get("timestamp_str", time.strftime('%d/%m/%Y %H:%M:%S'))
+                    
+                    # Add message ID to response for frontend tracking
+                    response_data["message_id"] = message.get("message_id", "unknown")
+                    
+                    print(response_data)
                     
                     # Broadcast message to all connected clients
-                    socketio.emit('gemini_response', {
-                        'type': message.get('type', 'gemini_response'),
-                        'content': message.get('content', ''),
-                        'timestamp': message.get('timestamp', time.time()),
-                        'complete': message.get('complete', False)  # Include completion status
-                    })
+                    socketio.emit('gemini_response',response_data)
                     logger.info(f"Broadcasted message to clients: {message.get('type')}")
                 except Exception as e:
                     logger.error(f"Error handling Gemini message: {str(e)}")
@@ -297,25 +321,108 @@ def handle_gemini_connect():
 
 @socketio.on('gemini_message')
 def handle_gemini_message(data):
-    """Handle text message to Gemini"""
+    """Handle text message to Gemini with image support"""
     if not gemini_service:
         emit('gemini_error', {
             'message': 'Gemini service not available',
             'timestamp': time.time()
         })
         return
+
     
-    text = data.get('text', '')
-    client_id = request.sid
-    client_info = active_clients.get(client_id, {'ip': 'unknown', 'browser': 'unknown'})
-    
-    success = gemini_service.send_text(text)
-    
-    # Acknowledge receipt
-    emit('gemini_message_sent', {
-        'success': success,
-        'timestamp': time.time()
-    })
+    try:
+        # Extract all possible fields from data
+        message_text = data.get('message', data.get('text', ''))
+        message_id = data.get('id', str(uuid.uuid4()))
+        include_image = data.get('include_image', True)
+        add_to_existing = data.get('add_to_existing', False)
+        frame_url = data.get('frame_url')
+        auto_correct = data.get('auto_correct', False)
+        
+        # Get client info
+        client_id = request.sid
+        
+        client_logger.info(f"Handling Gemini message: ID={message_id}, include_image={include_image}, frame_url={frame_url}")
+        
+        try:
+            capture_info = None
+            if include_image:
+                if frame_url:
+                    # Handle frame URL from storage/shared_frames
+                    
+                    frame_name = os.path.basename(frame_url)
+                    full_path = os.path.join(SHARED_FRAMES_DIR, frame_name)
+                  
+
+                    # Validate file exists
+                    if not os.path.exists(full_path):
+                        raise FileNotFoundError(f"Image file not found at {full_path}")
+                    
+                    # Get file stats
+                    file_stats = os.stat(full_path)
+                    
+                    # Create comprehensive capture info
+                    capture_info = {
+                        "path": frame_url,
+                        "fullpath": full_path,
+                        "filename": os.path.basename(full_path),
+                        "timestamp": int(time.time()),
+                        "timestamp_str": time.strftime('%d/%m/%Y %H:%M:%S'),
+                        "file_size": file_stats.st_size,
+                        "last_modified": file_stats.st_mtime,
+                        "created": file_stats.st_ctime,
+                        "is_shared_frame": frame_url.startswith('/storage/shared_frames/'),
+                        "client_id": client_id
+                    }
+                    
+                    client_logger.info(f"Prepared capture info for {frame_url}: {capture_info}")
+                else:
+                    # No frame URL provided
+                    client_logger.warning("Include image requested but no frame_url provided")
+                    include_image = False
+
+            # Queue the message
+            success = gemini_service.queue_message(
+                message=message_text,
+                message_id=message_id,
+                client_id=client_id,
+                include_image=include_image,
+                capture_info=capture_info,
+                add_to_existing=add_to_existing,
+            )
+            
+            # Acknowledge receipt
+            emit('gemini_message_sent', {
+                'success': success,
+                'message_id': message_id,
+                'timestamp': time.time(),
+                'capture_info': capture_info,  # Include capture info in acknowledgment
+                'include_image': include_image
+            })
+          
+            
+        except (ValueError, FileNotFoundError) as e:
+            error_msg = f"Error processing image: {str(e)}"
+            client_logger.error(error_msg)
+            emit('gemini_error', {
+                "error": error_msg,
+                "id": message_id,
+                "type": "image_error",
+                "timestamp": time.time(),
+                "frame_url": frame_url,
+                "client_id": client_id
+            })
+            return
+            
+    except Exception as e:
+        error_msg = f"Error in gemini_message handler: {str(e)}"
+        client_logger.error(f"{error_msg}\n{traceback.format_exc()}")
+        emit('gemini_error', {
+            "error": error_msg,
+            "id": message_id if 'message_id' in locals() else data.get('id', 'unknown'),
+            "timestamp": time.time(),
+            "client_id": request.sid
+        })
 
 @socketio.on('gemini_message_with_system')
 def handle_gemini_message_with_system(data):

@@ -11,7 +11,8 @@ class GeminiSocketService {
     this.messageHandlers = [];
 
     // Flask server with Gemini
-    this.flaskUrl = "http://localhost:5002";
+    this.flaskUrl = import.meta.env.VITE_API_URL;
+    console.log("GeminiSocketService: Flask URL", this.flaskUrl);
   }
 
   connect() {

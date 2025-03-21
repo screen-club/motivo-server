@@ -73,7 +73,7 @@
             <div class="flex flex-row gap-4">
               <!-- Text content on the left -->
               <div class="flex-1 text-gray-800">
-                {message.content}
+                {structuredResponse?.explanation}
               </div>
               
               <!-- Image on the right side if available -->

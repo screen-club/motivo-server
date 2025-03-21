@@ -113,11 +113,13 @@
         
         
         const result = geminiClient.handleResponse(data, geminiConversation);
+        console.log(result)
         geminiConversation = result.conversation;
         
         if (result.structuredResponse) {
           structuredResponse = result.structuredResponse;
         }
+        console.log(structuredResponse)
         
         // Handle quality score for auto-correction
         if (result.qualityScore !== null && autoCorrectActive) {
