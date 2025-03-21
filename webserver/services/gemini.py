@@ -166,30 +166,9 @@ class GeminiService:
             has_connection = self.ws is not None
             
         if not has_connection:
-            logger.warning("Cannot send text - no WebSocket connection")
-            # Format the message and put it in the queue anyway for when connection is established
-            parts = [{"text": text}]
-            
-            msg = {
-                "clientContent": {
-                    "turns": [
-                        {
-                            "role": "user",
-                            "parts": parts
-                        }
-                    ],
-                    "turn_complete": True
-                }
-            }
-            
-            # Add to queue for sending after reconnection
-            self.outgoing_queue.put(msg)
-            
-            if client_id:
-                self.client_sessions[client_id] = {
-                    "last_message": text,
-                    "timestamp": time.time()
-                }
+            logger.info("No active connection detected, attempting to reconnect")
+            self.ensure_connection()
+          
                 
             return True
         
@@ -404,13 +383,22 @@ class GeminiService:
                     await self.ws.send(json.dumps(setup_msg))
                     
                     # Wait for response with timeout
-                    raw_response = await asyncio.wait_for(self.ws.recv(), timeout=10)
-                    setup_response = json.loads(raw_response)
+                    try :
+                        raw_response = await asyncio.wait_for(self.ws.recv(), timeout=10)
+                        setup_response = json.loads(raw_response)
                     
-                    # Broadcast successful connection
-                    self.connection_state = "connected"
-                    self.connection_attempts = 0
-                    self._broadcast_connection_status(True)
+                        # Broadcast successful connection
+                        self.connection_state = "connected"
+                        self.connection_attempts = 0
+                        self._broadcast_connection_status(True)
+                    except Exception as e:
+                        logger.error(f"Error during Gemini setup: {str(e)}")
+                       
+                        await self.ws.close()
+                        self.ws = None
+                        self.connection_state = "setup_failed"
+                        self._broadcast_connection_status(False)
+                        #await asyncio.sleep(retry_delay)
                 except asyncio.TimeoutError:
                     logger.error("Timeout waiting for setup response from Gemini")
                     await self.ws.close()

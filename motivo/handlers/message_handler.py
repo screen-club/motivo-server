@@ -807,21 +807,17 @@ class MessageHandler:
             resize_width = data.get("resize_width", 640)
             frame_path = save_shared_frame(frame_with_overlays, resize_width=resize_width)
             
-            # Convert absolute path to a relative URL
             # Extract just the filename from the path
             frame_filename = os.path.basename(frame_path)
             
-            # Create a relative URL path for the frame
-            relative_url = f"/storage/shared_frames/{frame_filename}"
-            
-            # Log the conversion for debugging
-            logger.info(f"Converting absolute path '{frame_path}' to relative URL '{relative_url}'")
+            # Log the path information
+            logger.info(f"Frame captured and saved at absolute path: '{frame_path}'")
             
             # Respond with success
             response = {
                 "type": "frame_captured",
                 "status": "success",
-                "frame_path": relative_url,
+                "frame_path": frame_filename,
                 "timestamp": datetime.now().isoformat()
             }
             
