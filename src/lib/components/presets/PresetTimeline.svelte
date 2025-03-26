@@ -256,8 +256,9 @@
     selectedPreset = selectedPreset === preset ? null : preset;
   }
 
-  // Handle keydown for delete
+  // Handle keydown for delete and spacebar
   function handleKeydown(event) {
+    // Handle Delete key to remove selected preset
     if (event.key === 'Delete' && selectedPreset) {
       stopPresetAnimation(selectedPreset);
       placedPresets = placedPresets.filter(p => p !== selectedPreset);
@@ -266,6 +267,19 @@
       // Save timeline changes after deleting a preset
       if (timelineId) {
         saveTimelineChanges();
+      }
+    }
+    
+    // Handle Spacebar for play/pause toggle
+    if (event.code === 'Space') {
+      // Check if the event target is an input field or textarea
+      const tagName = event.target.tagName.toLowerCase();
+      const isInput = tagName === 'input' || tagName === 'textarea';
+      
+      // Only toggle playback if spacebar was not pressed inside an input field
+      if (!isInput) {
+        event.preventDefault(); // Prevent page scroll
+        togglePlayback();
       }
     }
   }
@@ -506,11 +520,13 @@
       }, 100);
     }
   }
-  // Cleanup on component destroy
+  // Setup on component mount and cleanup on destroy
   onMount(() => {
-    window.addEventListener('keydown', handleKeydown);
+    // Use document instead of window to ensure all keydown events are captured
+    document.addEventListener('keydown', handleKeydown);
+    
     return () => {
-      window.removeEventListener('keydown', handleKeydown);
+      document.removeEventListener('keydown', handleKeydown);
       if (animationFrame) {
         cancelAnimationFrame(animationFrame);
       }
@@ -533,10 +549,13 @@
     </button>
 
     <button 
-      class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600"
+      class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 relative group"
       on:click={togglePlayback}
     >
       {isPlaying ? '⏸️ Pause' : '▶️ Play'}
+      <span class="absolute hidden group-hover:inline-block text-xs -bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-2 py-1 rounded whitespace-nowrap">
+        Press Space to Play/Pause
+      </span>
     </button>
 
     <button 
