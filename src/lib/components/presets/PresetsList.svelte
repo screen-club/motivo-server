@@ -523,22 +523,54 @@
   {#if isLoading}
     <p class="text-gray-500">Loading presets...</p>
   {:else}
+    <!-- Display timelines first -->
     <div class="flex flex-wrap gap-4 max-h-[600px] overflow-y-auto pb-4">
-      {#each filterPresets(presets) as preset (preset.id)}
-        <PresetCard
-          {preset}
-          onLoad={loadPresetConfig}
-          onDelete={deletePreset}
-          onRegenerateThumbnail={regenerateThumbnail}
-          isRegenerating={regeneratingPresetId === preset.id}
-          isDraggable={true}
-          allTags={uniqueTags}
-          allUsers={uniqueUsers}
-          on:tagsUpdated={() => loadPresets()}
-          on:usersUpdated={() => loadPresets()}
-          initialLoading={!initialLoadComplete}
-        />
-      {/each}
+      {#if filterPresets(presets).some(p => p.type === 'timeline')}
+        <div class="w-full mb-2">
+          <h3 class="text-md font-medium text-gray-700 mb-2">Timelines</h3>
+          <div class="flex flex-wrap gap-4">
+            {#each filterPresets(presets).filter(p => p.type === 'timeline') as preset (preset.id)}
+              <PresetCard
+                {preset}
+                onLoad={loadPresetConfig}
+                onDelete={deletePreset}
+                onRegenerateThumbnail={regenerateThumbnail}
+                isRegenerating={regeneratingPresetId === preset.id}
+                isDraggable={true}
+                allTags={uniqueTags}
+                allUsers={uniqueUsers}
+                on:tagsUpdated={() => loadPresets()}
+                on:usersUpdated={() => loadPresets()}
+                initialLoading={!initialLoadComplete}
+              />
+            {/each}
+          </div>
+        </div>
+      {/if}
+      
+      <!-- Display other types (poses, rewards, environment) -->
+      {#if filterPresets(presets).some(p => p.type !== 'timeline')}
+        <div class="w-full">
+          <h3 class="text-md font-medium text-gray-700 mb-2">Animations, Poses & Rewards</h3>
+          <div class="flex flex-wrap gap-4">
+            {#each filterPresets(presets).filter(p => p.type !== 'timeline') as preset (preset.id)}
+              <PresetCard
+                {preset}
+                onLoad={loadPresetConfig}
+                onDelete={deletePreset}
+                onRegenerateThumbnail={regenerateThumbnail}
+                isRegenerating={regeneratingPresetId === preset.id}
+                isDraggable={true}
+                allTags={uniqueTags}
+                allUsers={uniqueUsers}
+                on:tagsUpdated={() => loadPresets()}
+                on:usersUpdated={() => loadPresets()}
+                initialLoading={!initialLoadComplete}
+              />
+            {/each}
+          </div>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>

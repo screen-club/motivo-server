@@ -248,7 +248,7 @@
   <!-- Title and type -->
   <div class="flex justify-between items-start mb-2">
     <h3 class="font-semibold text-gray-800">{preset.title}</h3>
-    <span class="text-xs px-2 py-1 bg-gray-100 rounded-full">
+    <span class="text-xs px-2 py-1 rounded-full {preset.type === 'pose' ? 'bg-blue-100 text-blue-800' : preset.type === 'rewards' ? 'bg-green-100 text-green-800' : preset.type === 'timeline' ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-800'}">
       {preset.type}
     </span>
   </div>
@@ -342,7 +342,7 @@
           class="text-sm text-blue-600 hover:text-blue-800"
           on:click={() => onLoad(preset)}
         >
-          Load
+          Play
         </button>
       {/if}
     {/if}
