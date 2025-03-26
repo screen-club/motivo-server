@@ -24,6 +24,10 @@
   let regeneratingPresetId = null;
   let currentAnimationInterval = null;
   
+  // Toggle state for collapsible sections
+  let showTimelines = true;
+  let showPoses = true;
+  
   // Computed properties for unique tags and users
   $: uniqueTags = Array.from(new Set(presets.flatMap(p => p.tags || []).filter(Boolean)));
   $: uniqueUsers = Array.from(new Set(presets.flatMap(p => p.users || []).filter(Boolean)));
@@ -523,52 +527,90 @@
   {#if isLoading}
     <p class="text-gray-500">Loading presets...</p>
   {:else}
-    <!-- Display timelines first -->
+    <!-- Toggle states are defined in the script section -->
+    
     <div class="flex flex-wrap gap-4 max-h-[600px] overflow-y-auto pb-4">
+      <!-- Display timelines first -->
       {#if filterPresets(presets).some(p => p.type === 'timeline')}
         <div class="w-full mb-2">
-          <h3 class="text-md font-medium text-gray-700 mb-2">Timelines</h3>
-          <div class="flex flex-wrap gap-4">
-            {#each filterPresets(presets).filter(p => p.type === 'timeline') as preset (preset.id)}
-              <PresetCard
-                {preset}
-                onLoad={loadPresetConfig}
-                onDelete={deletePreset}
-                onRegenerateThumbnail={regenerateThumbnail}
-                isRegenerating={regeneratingPresetId === preset.id}
-                isDraggable={true}
-                allTags={uniqueTags}
-                allUsers={uniqueUsers}
-                on:tagsUpdated={() => loadPresets()}
-                on:usersUpdated={() => loadPresets()}
-                initialLoading={!initialLoadComplete}
-              />
-            {/each}
-          </div>
+          <button 
+            class="flex items-center w-full text-left mb-2 focus:outline-none" 
+            on:click={() => showTimelines = !showTimelines}
+          >
+            <svg 
+              xmlns="http://www.w3.org/2000/svg" 
+              fill="none" 
+              viewBox="0 0 24 24" 
+              stroke-width="1.5" 
+              stroke="currentColor" 
+              class="w-4 h-4 mr-2 text-gray-700 transition-transform duration-200 {showTimelines ? 'transform rotate-90' : ''}"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+            </svg>
+            <h3 class="text-md font-medium text-gray-700">Timelines</h3>
+          </button>
+          
+          {#if showTimelines}
+            <div class="flex flex-wrap gap-4 transition-all duration-300">
+              {#each filterPresets(presets).filter(p => p.type === 'timeline') as preset (preset.id)}
+                <PresetCard
+                  {preset}
+                  onLoad={loadPresetConfig}
+                  onDelete={deletePreset}
+                  onRegenerateThumbnail={regenerateThumbnail}
+                  isRegenerating={regeneratingPresetId === preset.id}
+                  isDraggable={true}
+                  allTags={uniqueTags}
+                  allUsers={uniqueUsers}
+                  on:tagsUpdated={() => loadPresets()}
+                  on:usersUpdated={() => loadPresets()}
+                  initialLoading={!initialLoadComplete}
+                />
+              {/each}
+            </div>
+          {/if}
         </div>
       {/if}
       
       <!-- Display other types (poses, rewards, environment) -->
       {#if filterPresets(presets).some(p => p.type !== 'timeline')}
         <div class="w-full">
-          <h3 class="text-md font-medium text-gray-700 mb-2">Animations, Poses & Rewards</h3>
-          <div class="flex flex-wrap gap-4">
-            {#each filterPresets(presets).filter(p => p.type !== 'timeline') as preset (preset.id)}
-              <PresetCard
-                {preset}
-                onLoad={loadPresetConfig}
-                onDelete={deletePreset}
-                onRegenerateThumbnail={regenerateThumbnail}
-                isRegenerating={regeneratingPresetId === preset.id}
-                isDraggable={true}
-                allTags={uniqueTags}
-                allUsers={uniqueUsers}
-                on:tagsUpdated={() => loadPresets()}
-                on:usersUpdated={() => loadPresets()}
-                initialLoading={!initialLoadComplete}
-              />
-            {/each}
-          </div>
+          <button 
+            class="flex items-center w-full text-left mb-2 focus:outline-none" 
+            on:click={() => showPoses = !showPoses}
+          >
+            <svg 
+              xmlns="http://www.w3.org/2000/svg" 
+              fill="none" 
+              viewBox="0 0 24 24" 
+              stroke-width="1.5" 
+              stroke="currentColor" 
+              class="w-4 h-4 mr-2 text-gray-700 transition-transform duration-200 {showPoses ? 'transform rotate-90' : ''}"
+            >
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+            </svg>
+            <h3 class="text-md font-medium text-gray-700">Animations, Poses & Rewards</h3>
+          </button>
+          
+          {#if showPoses}
+            <div class="flex flex-wrap gap-4 transition-all duration-300">
+              {#each filterPresets(presets).filter(p => p.type !== 'timeline') as preset (preset.id)}
+                <PresetCard
+                  {preset}
+                  onLoad={loadPresetConfig}
+                  onDelete={deletePreset}
+                  onRegenerateThumbnail={regenerateThumbnail}
+                  isRegenerating={regeneratingPresetId === preset.id}
+                  isDraggable={true}
+                  allTags={uniqueTags}
+                  allUsers={uniqueUsers}
+                  on:tagsUpdated={() => loadPresets()}
+                  on:usersUpdated={() => loadPresets()}
+                  initialLoading={!initialLoadComplete}
+                />
+              {/each}
+            </div>
+          {/if}
         </div>
       {/if}
     </div>

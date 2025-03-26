@@ -255,21 +255,8 @@
 
   <!-- Preset info -->
   <div class="text-sm text-gray-600 mb-4">
-    {#if preset.data?.environmentParams}
-      G: {preset.data.environmentParams.gravity}
-      D: {preset.data.environmentParams.density}
-    {/if}
-    {#if preset.data?.rewards}
-      <br />
-      {preset.data.rewards.length} rewards
-      {#if preset.cache_file_path}
-        <span class="text-green-600">📁 Cached</span>
-      {/if}
-    {/if}
     {#if preset.data?.pose || preset.data?.qpos}
-      <br />
       {#if isAnimation(preset)}
-        <p>Frames: {preset.data.pose?.length || preset.data.qpos?.length}</p>
         <p>Duration: {(getAnimationDuration()).toFixed(2)}s</p>
         <!-- Animation Controls -->
         <div class="mt-2 space-y-2">
@@ -286,18 +273,6 @@
             />
             <span class="text-xs ml-2">{animationFPS}</span>
           </div>
-          <!-- <div class="flex items-center">
-            <label class="text-xs mr-2">Speed:</label>
-            <input 
-              type="range"
-              bind:value={speedFactor}
-              min="0.1"
-              max="5"
-              step="0.1"
-              class="flex-1 h-4"
-            />
-            <span class="text-xs ml-2">{speedFactor}x</span>
-          </div> -->
           
           <!-- Progress Bar - always visible -->
           <div class="space-y-1">
