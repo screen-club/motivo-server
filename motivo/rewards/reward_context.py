@@ -76,6 +76,12 @@ def cleanup_process_executor():
         _global_process_executor.shutdown(wait=False)
         _global_process_executor = None
 
+def create_reward_function_for_process(rewards, combination_type):
+    """Create a picklable reward function that can be passed to ProcessPoolExecutor"""
+    def reward_fn(*args, **kwargs):
+        return combine_rewards(rewards, combination_type, *args, **kwargs)
+    return reward_fn
+
 class RewardContextComputer:
     """Class to manage reward context computation with persistent resources"""
     
@@ -168,10 +174,8 @@ class RewardContextComputer:
         for reward_type, weight in zip(reward_config['rewards'], weights):
             rewards.append(create_reward_function(reward_type, weight))
         
-        # Create a picklable reward function that uses the standalone combine_rewards
-        def reward_fn(*args, **kwargs):
-            """Picklable reward function for processing"""
-            return combine_rewards(rewards, combination_type, *args, **kwargs)
+        # Use the factory function instead of defining a local function
+        reward_fn = create_reward_function_for_process(rewards, combination_type)
         
         print(f"Computing reward context with {combination_type} combination")
         computed_rewards = relabel(
@@ -227,10 +231,8 @@ class RewardContextComputer:
             return model.get_default_z() if hasattr(model, 'get_default_z') else model.prior.sample((1,))
 
         try:
-            # Create a picklable reward function for relabel fallback
-            def reward_fn(*args, **kwargs):
-                """Picklable reward function for processing"""
-                return combine_rewards(rewards, combination_type, *args, **kwargs)
+            # Use the factory function instead of defining a local function
+            reward_fn = create_reward_function_for_process(rewards, combination_type)
             
             # Try GPU-optimized computation first
             try:
@@ -634,25 +636,6 @@ def get_compute_device():
         return torch.device('cuda'), torch.float32
     return torch.device('cpu'), torch.float64  # CPU can handle float64
 
-def get_available_memory():
-    """Get available memory based on device type"""
-    device = get_compute_device()[0]
-    if device.type == 'cuda':
-        total_memory = torch.cuda.get_device_properties(0).total_memory
-        free_memory = torch.cuda.memory_reserved(0) - torch.cuda.memory_allocated(0)
-        return total_memory, free_memory
-    elif device.type == 'mps':
-        # MPS doesn't provide direct memory info, use system memory as proxy
-        import psutil
-        total_memory = psutil.virtual_memory().total
-        free_memory = psutil.virtual_memory().available
-        return total_memory, free_memory
-    else:
-        # For CPU, use system memory
-        import psutil
-        total_memory = psutil.virtual_memory().total
-        free_memory = psutil.virtual_memory().available
-        return total_memory, free_memory
 
 def parallel_reward_compute(reward_fn, weight, batch_data, device, dtype, env, chunk_size=1000, scaler=None, process_executor=None):
     """Optimized parallel reward computation with mixed precision support"""
