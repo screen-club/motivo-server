@@ -252,7 +252,7 @@ class RewardContextComputer:
                     raise ValueError("No valid rewards were computed")
                     
                 # Combine rewards using geometric mean
-                computed_rewards = torch.prod(torch.stack(rewards_list), dim=0) ** (1.0 / len(rewards))
+                computed_rewards = torch.prod(torch.stack(rewards_list), dim=0) ** (1.0 / len(rewards_list))
             
             except Exception as e:
                 print(f"GPU-optimized computation failed: {str(e)}, falling back to relabel")
@@ -638,33 +638,25 @@ def get_compute_device():
 
 
 def parallel_reward_compute(reward_fn, weight, batch_data, device, dtype, env, chunk_size=1000, scaler=None, process_executor=None):
-    """Optimized parallel reward computation with mixed precision support"""
+    """Optimized parallel reward computation using thread pool for both CPU and GPU"""
     batch_size = next(iter(batch_data.values())).shape[0]
     rewards_batch = torch.zeros(batch_size, device=device, dtype=dtype)
     
     # Convert weight to correct dtype
     weight = torch.as_tensor(weight, device=device, dtype=dtype)
     
-    # Use multiple workers for CPU computation
-    num_workers = min(os.cpu_count(), 40) if device.type == 'cpu' else 40  # Cap at 8 workers
+    # Use multiple workers - adjust based on your system
+    num_workers = min(os.cpu_count() * 2, 40)  # Use more workers since threads are lighter
     
-    # Pre-allocate shared memory for parallel processing
+    # Pre-allocate shared memory for CPU (not needed for pickling, but still helpful)
     if device.type == 'cpu':
         shared_rewards = torch.zeros(batch_size, dtype=dtype).share_memory_()
     else:
         shared_rewards = None
     
-    # Decide which executor to use
-    # If we're on CPU and have a process_executor, use it 
-    # Otherwise, create a ThreadPoolExecutor
-    if device.type == 'cpu' and process_executor is not None:
-        executor = process_executor
-        use_process_pool = True
-        print(f"Using shared ProcessPoolExecutor for reward computation")
-    else:
-        executor = ThreadPoolExecutor(max_workers=num_workers)
-        use_process_pool = False
-        print(f"Using ThreadPoolExecutor with {num_workers} workers")
+    # Always use ThreadPoolExecutor - ignore process_executor
+    executor = ThreadPoolExecutor(max_workers=num_workers)
+    print(f"Using ThreadPoolExecutor with {num_workers} workers for {device.type} computation")
     
     try:
         futures = []
@@ -673,29 +665,13 @@ def parallel_reward_compute(reward_fn, weight, batch_data, device, dtype, env, c
             end_idx = min(i + chunk_size, batch_size)
             chunk_data = {k: v[i:end_idx].clone() for k, v in batch_data.items()}
             
-            if use_process_pool:
-                # Convert tensors to numpy for process pool
-                chunk_data_np = {
-                    'next_qpos': chunk_data['next_qpos'].cpu().numpy(),
-                    'next_qvel': chunk_data['next_qvel'].cpu().numpy(),
-                    'action': chunk_data['action'].cpu().numpy()
-                }
-                
-                # Submit to process pool
-                future = executor.submit(
-                    _compute_chunk_rewards_process,
-                    reward_fn, float(weight.cpu().numpy()), chunk_data_np, 
-                    i, end_idx, env, shared_rewards is not None
-                )
-                
-            else:
-                # Use thread pool for GPU or when process pool is not available
-                future = executor.submit(
-                    _compute_chunk_rewards,
-                    reward_fn, weight, chunk_data, device, dtype, env,
-                    shared_rewards[i:end_idx] if shared_rewards is not None else None,
-                    scaler=scaler
-                )
+            # Always use thread pool version - both for CPU and GPU
+            future = executor.submit(
+                _compute_chunk_rewards,
+                reward_fn, weight, chunk_data, device, dtype, env,
+                shared_rewards[i:end_idx] if shared_rewards is not None else None,
+                scaler=scaler
+            )
                 
             futures.append((i, future))
         
@@ -703,68 +679,17 @@ def parallel_reward_compute(reward_fn, weight, batch_data, device, dtype, env, c
             chunk_rewards = future.result()
             end_idx = min(i + chunk_size, batch_size)
             
-            if use_process_pool:
-                # For process pool, we need to copy the results back
-                if shared_rewards is not None:
-                    # Results are already in shared memory
-                    pass
-                else:
-                    # Copy results to device
-                    rewards_batch[i:end_idx] = torch.tensor(
-                        chunk_rewards, device=device, dtype=dtype
-                    )
-            else:
-                # For thread pool with GPU
-                if shared_rewards is None:
-                    rewards_batch[i:end_idx] = chunk_rewards
+            if shared_rewards is None:
+                rewards_batch[i:end_idx] = chunk_rewards
         
-        # Copy from shared memory if using CPU
+        # Copy from shared memory if using CPU 
         if shared_rewards is not None:
             rewards_batch.copy_(shared_rewards)
         
         return rewards_batch
     
     finally:
-        # Only close the executor if we created it
-        if not use_process_pool:
-            executor.shutdown()
-
-def _compute_chunk_rewards_process(reward_fn, weight, chunk_data, start_idx, end_idx, env, use_shared_memory):
-    """Process-safe version of _compute_chunk_rewards for use with ProcessPoolExecutor"""
-    chunk_size = chunk_data['next_qpos'].shape[0]
-    rewards = np.zeros(chunk_size)
-    
-    try:
-        # Get numpy arrays
-        qpos_np = chunk_data['next_qpos']
-        qvel_np = chunk_data['next_qvel']
-        action_np = chunk_data['action']
-        
-        # Vectorize reward computation if possible
-        if hasattr(reward_fn, 'compute_vectorized'):
-            rewards = reward_fn.compute_vectorized(
-                env.unwrapped.model,
-                qpos_np,
-                qvel_np,
-                action_np
-            )
-            rewards = rewards * weight
-        else:
-            # Fallback to per-sample computation
-            for j in range(chunk_size):
-                reward = reward_fn(
-                    env.unwrapped.model,
-                    qpos_np[j],
-                    qvel_np[j],
-                    action_np[j]
-                )
-                rewards[j] = reward * weight
-                
-        return rewards
-        
-    except Exception as e:
-        print(f"Error in process reward computation: {str(e)}")
-        raise 
+        executor.shutdown()
 
 def _compute_chunk_rewards(reward_fn, weight, chunk_data, device, dtype, env, shared_output=None, scaler=None):
     """Helper function to compute rewards for a chunk of data"""
