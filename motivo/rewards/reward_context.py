@@ -638,111 +638,51 @@ def get_compute_device():
 
 
 def parallel_reward_compute(reward_fn, weight, batch_data, device, dtype, env, chunk_size=1000, scaler=None, process_executor=None):
-    """Optimized parallel reward computation using thread pool for both CPU and GPU"""
+    """Simplified reward computation with direct implementation"""
     batch_size = next(iter(batch_data.values())).shape[0]
-    rewards_batch = torch.zeros(batch_size, device=device, dtype=dtype)
     
     # Convert weight to correct dtype
     weight = torch.as_tensor(weight, device=device, dtype=dtype)
     
-    # Use multiple workers - adjust based on your system
-    num_workers = min(os.cpu_count() * 2, 40)  # Use more workers since threads are lighter
+    # Convert data to numpy once
+    qpos_np = batch_data['next_qpos'].cpu().numpy()
+    qvel_np = batch_data['next_qvel'].cpu().numpy()
+    action_np = batch_data['action'].cpu().numpy()
     
-    # Pre-allocate shared memory for CPU (not needed for pickling, but still helpful)
-    if device.type == 'cpu':
-        shared_rewards = torch.zeros(batch_size, dtype=dtype).share_memory_()
-    else:
-        shared_rewards = None
-    
-    # Always use ThreadPoolExecutor - ignore process_executor
-    executor = ThreadPoolExecutor(max_workers=num_workers)
-    print(f"Using ThreadPoolExecutor with {num_workers} workers for {device.type} computation")
-    
-    try:
-        futures = []
-        
-        for i in range(0, batch_size, chunk_size):
-            end_idx = min(i + chunk_size, batch_size)
-            chunk_data = {k: v[i:end_idx].clone() for k, v in batch_data.items()}
-            
-            # Always use thread pool version - both for CPU and GPU
-            future = executor.submit(
-                _compute_chunk_rewards,
-                reward_fn, weight, chunk_data, device, dtype, env,
-                shared_rewards[i:end_idx] if shared_rewards is not None else None,
-                scaler=scaler
+    # Vectorize reward computation if possible
+    if hasattr(reward_fn, 'compute_vectorized'):
+        # MPS doesn't support autocast, so we only use it for CUDA
+        with (torch.cuda.amp.autocast() if device.type == 'cuda' else nullcontext()):
+            rewards = reward_fn.compute_vectorized(
+                env.unwrapped.model,
+                qpos_np,
+                qvel_np,
+                action_np
             )
+            rewards_tensor = torch.tensor(rewards, device=device, dtype=dtype)
+            if scaler is not None and device.type == 'cuda':
+                rewards_tensor = scaler.scale(rewards_tensor)
+            return rewards_tensor * weight
+    else:
+        # Fallback to per-sample computation - use a single thread
+        rewards_batch = torch.zeros(batch_size, device=device, dtype=dtype)
+        for j in range(batch_size):
+            with (torch.cuda.amp.autocast() if device.type == 'cuda' else nullcontext()):
+                reward = reward_fn(
+                    env.unwrapped.model,
+                    qpos_np[j],
+                    qvel_np[j],
+                    action_np[j]
+                )
                 
-            futures.append((i, future))
-        
-        for i, future in futures:
-            chunk_rewards = future.result()
-            end_idx = min(i + chunk_size, batch_size)
-            
-            if shared_rewards is None:
-                rewards_batch[i:end_idx] = chunk_rewards
-        
-        # Copy from shared memory if using CPU 
-        if shared_rewards is not None:
-            rewards_batch.copy_(shared_rewards)
+                if scaler is not None and device.type == 'cuda':
+                    reward = scaler.scale(torch.tensor(reward, device=device, dtype=dtype))
+                else:
+                    reward = torch.tensor(reward, device=device, dtype=dtype)
+                
+                rewards_batch[j] = reward * weight
         
         return rewards_batch
-    
-    finally:
-        executor.shutdown()
-
-def _compute_chunk_rewards(reward_fn, weight, chunk_data, device, dtype, env, shared_output=None, scaler=None):
-    """Helper function to compute rewards for a chunk of data"""
-    chunk_size = next(iter(chunk_data.values())).shape[0]
-    
-    # Use shared memory if provided (CPU mode), otherwise create new tensor
-    if shared_output is not None:
-        chunk_rewards = shared_output
-    else:
-        chunk_rewards = torch.zeros(chunk_size, device=device, dtype=dtype)
-    
-    try:
-        # Convert data to numpy once outside the loop
-        qpos_np = chunk_data['next_qpos'].cpu().numpy()
-        qvel_np = chunk_data['next_qvel'].cpu().numpy()
-        action_np = chunk_data['action'].cpu().numpy()
-        
-        # Vectorize reward computation if possible
-        if hasattr(reward_fn, 'compute_vectorized'):
-            # MPS doesn't support autocast, so we only use it for CUDA
-            with (torch.cuda.amp.autocast() if device.type == 'cuda' else nullcontext()):
-                rewards = reward_fn.compute_vectorized(
-                    env.unwrapped.model,
-                    qpos_np,
-                    qvel_np,
-                    action_np
-                )
-                rewards_tensor = torch.tensor(rewards, device=device, dtype=dtype)
-                if scaler is not None and device.type == 'cuda':
-                    rewards_tensor = scaler.scale(rewards_tensor)
-                chunk_rewards[:] = rewards_tensor * weight
-        else:
-            # Fallback to per-sample computation
-            for j in range(chunk_size):
-                with (torch.cuda.amp.autocast() if device.type == 'cuda' else nullcontext()):
-                    reward = reward_fn(
-                        env.unwrapped.model,
-                        qpos_np[j],
-                        qvel_np[j],
-                        action_np[j]
-                    )
-                    
-                    if scaler is not None and device.type == 'cuda':
-                        reward = scaler.scale(torch.tensor(reward, device=device, dtype=dtype))
-                    else:
-                        reward = torch.tensor(reward, device=device, dtype=dtype)
-                    
-                    chunk_rewards[j] = reward * weight
-    except Exception as e:
-        print(f"Error in reward computation: {str(e)}")
-        raise
-    
-    return chunk_rewards 
 
 # Add this standalone function outside the class
 def combine_rewards(rewards, combination_type, *args, **kwargs):
