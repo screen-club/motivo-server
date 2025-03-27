@@ -20,6 +20,7 @@ async def initialize_model_and_env():
         device = "mps"
     else:
         device = "cpu"
+    
     logger.info(f"Using device: {device}")
     
     # Load model

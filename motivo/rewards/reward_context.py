@@ -83,6 +83,41 @@ class RewardContextComputer:
         """Initialize the reward context computer"""
         self.process_executor = get_process_executor(max_workers)
     
+    def additive_reward_fn(self, rewards, *args, **kwargs):
+        """Additive reward combination"""
+        total_reward = 0
+        for reward_fn, weight in rewards:
+            total_reward += weight * reward_fn(*args, **kwargs)
+        return total_reward
+    
+    def multiplicative_reward_fn(self, rewards, *args, **kwargs):
+        """Multiplicative reward combination"""
+        total_reward = 1
+        for reward_fn, weight in rewards:
+            total_reward *= reward_fn(*args, **kwargs) ** weight
+        return total_reward
+    
+    def min_reward_fn(self, rewards, *args, **kwargs):
+        """Minimum reward combination"""
+        rewards_list = []
+        for reward_fn, weight in rewards:
+            rewards_list.append(weight * reward_fn(*args, **kwargs))
+        return min(rewards_list)
+    
+    def max_reward_fn(self, rewards, *args, **kwargs):
+        """Maximum reward combination"""
+        rewards_list = []
+        for reward_fn, weight in rewards:
+            rewards_list.append(weight * reward_fn(*args, **kwargs))
+        return max(rewards_list)
+    
+    def geometric_mean_reward_fn(self, rewards, *args, **kwargs):
+        """Geometric mean reward combination"""
+        rewards_list = []
+        for reward_fn, weight in rewards:
+            rewards_list.append(max(1e-8, reward_fn(*args, **kwargs)) ** weight)
+        return np.prod(rewards_list) ** (1.0 / len(rewards_list))
+
     def compute_reward_context(self, reward_config, env, model, buffer_data, use_gpu=True):
         """Compute reward context with optional GPU acceleration"""
         if not reward_config or 'rewards' not in reward_config or not reward_config['rewards']:
@@ -118,45 +153,15 @@ class RewardContextComputer:
         for reward_type, weight in zip(reward_config['rewards'], weights):
             rewards.append(create_reward_function(reward_type, weight))
         
-        def additive_reward_fn(*args, **kwargs):
-            total_reward = 0
-            for reward_fn, weight in rewards:
-                total_reward += weight * reward_fn(*args, **kwargs)
-            return total_reward
-        
-        def multiplicative_reward_fn(*args, **kwargs):
-            total_reward = 1
-            for reward_fn, weight in rewards:
-                total_reward *= reward_fn(*args, **kwargs) ** weight
-            return total_reward
-        
-        def min_reward_fn(*args, **kwargs):
-            rewards_list = []
-            for reward_fn, weight in rewards:
-                rewards_list.append(weight * reward_fn(*args, **kwargs))
-            return min(rewards_list)
-        
-        def max_reward_fn(*args, **kwargs):
-            rewards_list = []
-            for reward_fn, weight in rewards:
-                rewards_list.append(weight * reward_fn(*args, **kwargs))
-            return max(rewards_list)
-        
-        def geometric_mean_reward_fn(*args, **kwargs):
-            rewards_list = []
-            for reward_fn, weight in rewards:
-                rewards_list.append(max(1e-8, reward_fn(*args, **kwargs)) ** weight)
-            return np.prod(rewards_list) ** (1.0 / len(rewards_list))
-
         reward_combiners = {
-            'additive': additive_reward_fn,
-            'multiplicative': multiplicative_reward_fn,
-            'min': min_reward_fn,
-            'max': max_reward_fn,
-            'geometric': geometric_mean_reward_fn
+            'additive': self.additive_reward_fn,
+            'multiplicative': self.multiplicative_reward_fn,
+            'min': self.min_reward_fn,
+            'max': self.max_reward_fn,
+            'geometric': self.geometric_mean_reward_fn
         }
         
-        combined_reward_fn = reward_combiners.get(combination_type, additive_reward_fn)
+        combined_reward_fn = reward_combiners.get(combination_type, self.additive_reward_fn)
         
         print(f"Computing reward context with {combined_reward_fn.__name__}")
         computed_rewards = relabel(
@@ -164,7 +169,7 @@ class RewardContextComputer:
             qpos=batch['next_qpos'],
             qvel=batch['next_qvel'],
             action=batch['action'],
-            reward_fn=combined_reward_fn,
+            reward_fn=lambda *args, **kwargs: combined_reward_fn(rewards, *args, **kwargs),
             max_workers=40,
             process_executor=self.process_executor  # Use persistent process executor
         )
