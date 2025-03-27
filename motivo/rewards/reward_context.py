@@ -168,9 +168,11 @@ class RewardContextComputer:
         for reward_type, weight in zip(reward_config['rewards'], weights):
             rewards.append(create_reward_function(reward_type, weight))
         
-        # Store current rewards and combination type for the compute_reward method
-        self.current_rewards = rewards
-        self.current_combination_type = combination_type
+        # Instead of storing on self and using a method, create a standalone function
+        # that captures only picklable objects
+        def reward_fn(*args, **kwargs):
+            """Picklable reward function for CPU processing"""
+            return combine_rewards(rewards, combination_type, *args, **kwargs)
         
         print(f"Computing reward context with {combination_type} combination")
         computed_rewards = relabel(
@@ -178,7 +180,7 @@ class RewardContextComputer:
             qpos=batch['next_qpos'],
             qvel=batch['next_qvel'],
             action=batch['action'],
-            reward_fn=self.compute_reward,
+            reward_fn=reward_fn,
             max_workers=40,
             process_executor=self.process_executor  # Use persistent process executor
         )
@@ -897,3 +899,32 @@ def _compute_chunk_rewards(reward_fn, weight, chunk_data, device, dtype, env, sh
         raise
     
     return chunk_rewards 
+
+# Add this standalone function outside the class
+def combine_rewards(rewards, combination_type, *args, **kwargs):
+    """Standalone reward combination function that is picklable"""
+    if combination_type == 'additive':
+        total_reward = 0
+        for reward_fn, weight in rewards:
+            total_reward += weight * reward_fn(*args, **kwargs)
+        return total_reward
+    elif combination_type == 'multiplicative':
+        total_reward = 1
+        for reward_fn, weight in rewards:
+            total_reward *= reward_fn(*args, **kwargs) ** weight
+        return total_reward
+    elif combination_type == 'min':
+        rewards_list = []
+        for reward_fn, weight in rewards:
+            rewards_list.append(weight * reward_fn(*args, **kwargs))
+        return min(rewards_list)
+    elif combination_type == 'max':
+        rewards_list = []
+        for reward_fn, weight in rewards:
+            rewards_list.append(weight * reward_fn(*args, **kwargs))
+        return max(rewards_list)
+    else:  # default to geometric
+        rewards_list = []
+        for reward_fn, weight in rewards:
+            rewards_list.append(max(1e-8, reward_fn(*args, **kwargs)) ** weight)
+        return np.prod(rewards_list) ** (1.0 / len(rewards_list)) 
