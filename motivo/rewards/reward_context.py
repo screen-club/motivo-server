@@ -168,10 +168,9 @@ class RewardContextComputer:
         for reward_type, weight in zip(reward_config['rewards'], weights):
             rewards.append(create_reward_function(reward_type, weight))
         
-        # Instead of storing on self and using a method, create a standalone function
-        # that captures only picklable objects
+        # Create a picklable reward function that uses the standalone combine_rewards
         def reward_fn(*args, **kwargs):
-            """Picklable reward function for CPU processing"""
+            """Picklable reward function for processing"""
             return combine_rewards(rewards, combination_type, *args, **kwargs)
         
         print(f"Computing reward context with {combination_type} combination")
@@ -182,32 +181,13 @@ class RewardContextComputer:
             action=batch['action'],
             reward_fn=reward_fn,
             max_workers=40,
-            process_executor=self.process_executor  # Use persistent process executor
+            process_executor=self.process_executor
         )
         
         print(f"Computed rewards: {computed_rewards}")
         
-        # Prepare the inference dictionary following the official approach
-        device = getattr(model, 'device', getattr(model.cfg, 'device', torch.device('cpu')))
-        td = {
-            "reward": torch.tensor(computed_rewards, dtype=torch.float32, device=device),
-        }
-        
-        # Check if B exists in the batch data
-        if "B" in batch:
-            td["B_vect"] = torch.tensor(batch["B"], dtype=torch.float32, device=device)
-        else:
-            td["next_obs"] = torch.tensor(batch["next_observation"], dtype=torch.float32, device=device)
-        
-        # Get the inference function dynamically if possible
-        inference_fn_name = getattr(model, 'inference_function', 'reward_wr_inference')
-        inference_fn = getattr(model, inference_fn_name, model.reward_wr_inference)
-        
-        # Call the inference function with the dictionary
-        z = inference_fn(**td).reshape(1, -1)
-        print(f"Computed z: {z}")
-        
-        return z
+        # Prepare and return the inference result
+        return self._prepare_inference_result(model, batch, computed_rewards)
     
     def compute_reward_context_gpu(self, reward_config, env, model, buffer_data):
         """GPU/MPS-accelerated implementation with optimized batching"""
@@ -231,11 +211,83 @@ class RewardContextComputer:
         idx = np.random.randint(0, len(buffer_data['next_qpos']), batch_size)
         
         # Device-specific data transfer optimizations
+        batch = self._prepare_batch_for_device(buffer_data, idx, device, dtype)
+        
+        # Create reward functions
+        rewards = []
+        weights = torch.tensor(reward_config.get('weights', [1.0]), device=device, dtype=dtype)
+        
+        for reward_type, weight in zip(reward_config['rewards'], weights):
+            reward_tuple = create_reward_function(reward_type, weight)
+            if reward_tuple is not None:
+                rewards.append(reward_tuple)
+        
+        if not rewards:
+            print("\nNo valid rewards could be created - using default context")
+            return model.get_default_z() if hasattr(model, 'get_default_z') else model.prior.sample((1,))
+
+        try:
+            # Create a picklable reward function for relabel fallback
+            def reward_fn(*args, **kwargs):
+                """Picklable reward function for processing"""
+                return combine_rewards(rewards, combination_type, *args, **kwargs)
+            
+            # Try GPU-optimized computation first
+            try:
+                # Use custom parallel computation optimized for GPU
+                rewards_list = []
+                epsilon = torch.tensor(1e-8, device=device, dtype=dtype)
+                
+                for reward_fn, weight in rewards:
+                    reward_result = parallel_reward_compute(
+                        reward_fn, weight, batch, device, dtype, env,
+                        process_executor=self.process_executor
+                    )
+                    if reward_result is not None:
+                        rewards_list.append(torch.max(reward_result, epsilon))
+                
+                if not rewards_list:
+                    raise ValueError("No valid rewards were computed")
+                    
+                # Combine rewards using geometric mean
+                computed_rewards = torch.prod(torch.stack(rewards_list), dim=0) ** (1.0 / len(rewards))
+            
+            except Exception as e:
+                print(f"GPU-optimized computation failed: {str(e)}, falling back to relabel")
+                # Fall back to relabel - same approach as CPU
+                qpos_np = batch['next_qpos'].cpu().numpy()
+                qvel_np = batch['next_qvel'].cpu().numpy()
+                action_np = batch['action'].cpu().numpy()
+                
+                computed_rewards = relabel(
+                    env,
+                    qpos=qpos_np,
+                    qvel=qvel_np,
+                    action=action_np,
+                    reward_fn=reward_fn,  # Using the same picklable function
+                    max_workers=8,
+                    process_executor=self.process_executor
+                )
+                
+                computed_rewards = torch.tensor(computed_rewards, device=device, dtype=dtype)
+            
+            # Prepare and return the inference result
+            return self._prepare_inference_result(model, batch, computed_rewards)
+            
+        except Exception as e:
+            print(f"Error in reward computation: {str(e)}")
+            return model.get_default_z() if hasattr(model, 'get_default_z') else model.prior.sample((1,))
+        finally:
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+    
+    def _prepare_batch_for_device(self, buffer_data, idx, device, dtype):
+        """Helper to prepare batch data for the specified device"""
         key_set = ['next_qpos', 'next_qvel', 'action', 'next_observation']
         # Add 'B' key if it exists
         if 'B' in buffer_data:
             key_set.append('B')
-            
+        
         if device.type == 'cuda':
             # For CUDA: Use pinned memory for faster transfers
             print(f"Using pinned memory optimization for CUDA transfer")
@@ -246,7 +298,7 @@ class RewardContextComputer:
                     tensor_data = torch.tensor(buffer_data[key][idx], dtype=dtype).pin_memory()
                     # Store in dictionary
                     pin_memory_batch[key] = tensor_data
-            
+        
             # Transfer data to device with non_blocking=True for overlap
             batch = {
                 k: v.to(device, non_blocking=True) for k, v in pin_memory_batch.items()
@@ -261,153 +313,37 @@ class RewardContextComputer:
                 for k in key_set if k in buffer_data
             }
         
-        rewards = []
-        weights = torch.tensor(reward_config.get('weights', [1.0]), device=device, dtype=dtype)
-        
-        for reward_type, weight in zip(reward_config['rewards'], weights):
-            reward_tuple = create_reward_function(reward_type, weight)
-            if reward_tuple is not None:
-                rewards.append(reward_tuple)
-        
-        if not rewards:
-            print("\nNo valid rewards could be created - using default context")
-            return model.get_default_z() if hasattr(model, 'get_default_z') else model.prior.sample((1,))
+        return batch
 
-        try:
-            # For direct relabel approach - similar to original implementation
-            if combination_type == 'simple':
-                # Setup reward functions
-                combined_reward_fn = self._get_combined_reward_fn(combination_type, rewards)
-                
-                # Convert tensors to numpy for relabel
-                qpos_np = batch['next_qpos'].cpu().numpy()
-                qvel_np = batch['next_qvel'].cpu().numpy()
-                action_np = batch['action'].cpu().numpy()
-                
-                print(f"Computing rewards using relabel with {combination_type} combination")
-                computed_rewards = relabel(
-                    env,
-                    qpos=qpos_np,
-                    qvel=qvel_np,
-                    action=action_np,
-                    reward_fn=combined_reward_fn,
-                    max_workers=8,  # Use fewer workers in GPU mode
-                    process_executor=self.process_executor  # Use persistent process executor
-                )
-                
-                computed_rewards = torch.tensor(computed_rewards, device=device, dtype=dtype)
-            else:
-                # Use custom parallel computation optimized for GPU
-                try:
-                    rewards_list = []
-                    epsilon = torch.tensor(1e-8, device=device, dtype=dtype)
-                    
-                    for reward_fn, weight in rewards:
-                        # Use the persistent process executor for any internal parallelization
-                        # that might happen during reward computation
-                        reward_result = parallel_reward_compute(
-                            reward_fn, weight, batch, device, dtype, env,
-                            process_executor=self.process_executor
-                        )
-                        if reward_result is not None:
-                            rewards_list.append(torch.max(reward_result, epsilon))
-                    
-                    if not rewards_list:
-                        print("\nNo valid rewards were computed - using default context")
-                        return model.get_default_z() if hasattr(model, 'get_default_z') else model.prior.sample((1,))
-                        
-                    # Combine rewards using geometric mean
-                    computed_rewards = torch.prod(torch.stack(rewards_list), dim=0) ** (1.0 / len(rewards))
-                except Exception as e:
-                    print(f"Custom parallel computation failed: {str(e)}, falling back to relabel")
-                    # Fall back to relabel
-                    combined_reward_fn = self._get_combined_reward_fn(combination_type, rewards)
-                    
-                    qpos_np = batch['next_qpos'].cpu().numpy()
-                    qvel_np = batch['next_qvel'].cpu().numpy()
-                    action_np = batch['action'].cpu().numpy()
-                    
-                    computed_rewards = relabel(
-                        env,
-                        qpos=qpos_np,
-                        qvel=qvel_np,
-                        action=action_np,
-                        reward_fn=combined_reward_fn,
-                        max_workers=8,
-                        process_executor=self.process_executor
-                    )
-                    
-                    computed_rewards = torch.tensor(computed_rewards, device=device, dtype=dtype)
-            
-            # Prepare the inference dictionary following the official approach
-            td = {
-                "reward": computed_rewards.reshape(-1, 1),
-            }
-            
-            # Check if B exists in the batch data
-            if "B" in batch:
-                td["B_vect"] = batch["B"]
-            else:
-                td["next_obs"] = batch["next_observation"]
-            
-            # Get the inference function dynamically if possible
-            inference_fn_name = getattr(model, 'inference_function', 'reward_wr_inference')
-            inference_fn = getattr(model, inference_fn_name, model.reward_wr_inference)
-            
-            with torch.no_grad():
-                # Call the inference function with the dictionary
-                z = inference_fn(**td).reshape(1, -1)
-            
-            return z
-            
-        except Exception as e:
-            print(f"Error in reward computation: {str(e)}")
-            return model.get_default_z() if hasattr(model, 'get_default_z') else model.prior.sample((1,))
-        finally:
-            if device.type == 'cuda':
-                torch.cuda.empty_cache()
-    
-    def _get_combined_reward_fn(self, combination_type, rewards):
-        """Helper to create a combined reward function based on type"""
-        def additive_reward_fn(*args, **kwargs):
-            total_reward = 0
-            for reward_fn, weight in rewards:
-                total_reward += weight * reward_fn(*args, **kwargs)
-            return total_reward
+    def _prepare_inference_result(self, model, batch, computed_rewards):
+        """Helper to prepare inference result from computed rewards"""
+        device = next(model.parameters()).device
         
-        def multiplicative_reward_fn(*args, **kwargs):
-            total_reward = 1
-            for reward_fn, weight in rewards:
-                total_reward *= reward_fn(*args, **kwargs) ** weight
-            return total_reward
+        # Ensure reward is properly shaped
+        if isinstance(computed_rewards, torch.Tensor):
+            reward_tensor = computed_rewards.reshape(-1, 1)
+        else:
+            reward_tensor = torch.tensor(computed_rewards, device=device).reshape(-1, 1)
         
-        def min_reward_fn(*args, **kwargs):
-            rewards_list = []
-            for reward_fn, weight in rewards:
-                rewards_list.append(weight * reward_fn(*args, **kwargs))
-            return min(rewards_list)
+        # Prepare the inference dictionary
+        td = {"reward": reward_tensor}
         
-        def max_reward_fn(*args, **kwargs):
-            rewards_list = []
-            for reward_fn, weight in rewards:
-                rewards_list.append(weight * reward_fn(*args, **kwargs))
-            return max(rewards_list)
+        # Check if B exists in the batch data
+        if "B" in batch:
+            td["B_vect"] = batch["B"] if isinstance(batch["B"], torch.Tensor) else torch.tensor(batch["B"], device=device)
+        else:
+            td["next_obs"] = batch["next_observation"] if isinstance(batch["next_observation"], torch.Tensor) else torch.tensor(batch["next_observation"], device=device)
         
-        def geometric_mean_reward_fn(*args, **kwargs):
-            rewards_list = []
-            for reward_fn, weight in rewards:
-                rewards_list.append(max(1e-8, reward_fn(*args, **kwargs)) ** weight)
-            return np.prod(rewards_list) ** (1.0 / len(rewards_list))
-
-        reward_combiners = {
-            'additive': additive_reward_fn,
-            'multiplicative': multiplicative_reward_fn,
-            'min': min_reward_fn,
-            'max': max_reward_fn,
-            'geometric': geometric_mean_reward_fn
-        }
+        # Get the inference function dynamically
+        inference_fn_name = getattr(model, 'inference_function', 'reward_wr_inference')
+        inference_fn = getattr(model, inference_fn_name, model.reward_wr_inference)
         
-        return reward_combiners.get(combination_type, geometric_mean_reward_fn)
+        # Call the inference function with the dictionary
+        with torch.no_grad():
+            z = inference_fn(**td).reshape(1, -1)
+        
+        print(f"Computed z: {z}")
+        return z
 
 # Create global instance for backward compatibility
 _reward_context_computer = None
