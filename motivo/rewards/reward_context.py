@@ -82,6 +82,8 @@ class RewardContextComputer:
     def __init__(self, max_workers=None):
         """Initialize the reward context computer"""
         self.process_executor = get_process_executor(max_workers)
+        self.current_rewards = None
+        self.current_combination_type = None
     
     def additive_reward_fn(self, rewards, *args, **kwargs):
         """Additive reward combination"""
@@ -118,6 +120,19 @@ class RewardContextComputer:
             rewards_list.append(max(1e-8, reward_fn(*args, **kwargs)) ** weight)
         return np.prod(rewards_list) ** (1.0 / len(rewards_list))
 
+    def compute_reward(self, *args, **kwargs):
+        """Class method to compute reward that can be pickled"""
+        reward_combiners = {
+            'additive': self.additive_reward_fn,
+            'multiplicative': self.multiplicative_reward_fn,
+            'min': self.min_reward_fn,
+            'max': self.max_reward_fn,
+            'geometric': self.geometric_mean_reward_fn
+        }
+        
+        combined_reward_fn = reward_combiners.get(self.current_combination_type, self.additive_reward_fn)
+        return combined_reward_fn(self.current_rewards, *args, **kwargs)
+
     def compute_reward_context(self, reward_config, env, model, buffer_data, use_gpu=True):
         """Compute reward context with optional GPU acceleration"""
         if not reward_config or 'rewards' not in reward_config or not reward_config['rewards']:
@@ -153,23 +168,17 @@ class RewardContextComputer:
         for reward_type, weight in zip(reward_config['rewards'], weights):
             rewards.append(create_reward_function(reward_type, weight))
         
-        reward_combiners = {
-            'additive': self.additive_reward_fn,
-            'multiplicative': self.multiplicative_reward_fn,
-            'min': self.min_reward_fn,
-            'max': self.max_reward_fn,
-            'geometric': self.geometric_mean_reward_fn
-        }
+        # Store current rewards and combination type for the compute_reward method
+        self.current_rewards = rewards
+        self.current_combination_type = combination_type
         
-        combined_reward_fn = reward_combiners.get(combination_type, self.additive_reward_fn)
-        
-        print(f"Computing reward context with {combined_reward_fn.__name__}")
+        print(f"Computing reward context with {combination_type} combination")
         computed_rewards = relabel(
             env,
             qpos=batch['next_qpos'],
             qvel=batch['next_qvel'],
             action=batch['action'],
-            reward_fn=lambda *args, **kwargs: combined_reward_fn(rewards, *args, **kwargs),
+            reward_fn=self.compute_reward,
             max_workers=40,
             process_executor=self.process_executor  # Use persistent process executor
         )
