@@ -256,18 +256,76 @@
     selectedPreset = selectedPreset === preset ? null : preset;
   }
 
-  // Handle keydown for delete
+  // Handle keydown for delete, spacebar, and arrow keys
   function handleKeydown(event) {
-    if (event.key === 'Delete' && selectedPreset) {
-      stopPresetAnimation(selectedPreset);
-      placedPresets = placedPresets.filter(p => p !== selectedPreset);
-      selectedPreset = null;
+    // Check if event is in an input field or textarea
+    const tagName = event.target.tagName.toLowerCase();
+    const isInput = tagName === 'input' || tagName === 'textarea';
+    
+    // Only handle keyboard shortcuts if not in an input field
+    if (!isInput) {
+      // Handle Delete key to remove selected preset
+      if (event.key === 'Delete' && selectedPreset) {
+        stopPresetAnimation(selectedPreset);
+        placedPresets = placedPresets.filter(p => p !== selectedPreset);
+        selectedPreset = null;
+        
+        // Save timeline changes after deleting a preset
+        if (timelineId) {
+          saveTimelineChanges();
+        }
+      }
       
-      // Save timeline changes after deleting a preset
-      if (timelineId) {
-        saveTimelineChanges();
+      // Handle Spacebar for play/pause toggle
+      if (event.code === 'Space') {
+        event.preventDefault(); // Prevent page scroll
+        togglePlayback();
+      }
+      
+      // Handle left/right arrow keys to move 5 frames backward/forward
+      // Using fps of 30 frames per second, 5 frames = 5/30 = 0.1667 seconds
+      const frameJumpTime = 5 / 30; // 5 frames at 30fps
+      
+      if (event.code === 'ArrowLeft') {
+        event.preventDefault(); // Prevent default scrolling
+        jumpByTime(-frameJumpTime); // Jump backward
+      }
+      
+      if (event.code === 'ArrowRight') {
+        event.preventDefault(); // Prevent default scrolling
+        jumpByTime(frameJumpTime); // Jump forward
       }
     }
+  }
+  
+  // Function to jump by a specific time offset (positive or negative)
+  function jumpByTime(timeOffset) {
+    // Stop all animations when manually jumping
+    stopAllAnimations();
+    
+    // Calculate new time, ensuring it stays within bounds
+    const newTime = Math.max(0, Math.min(duration, currentTime + timeOffset));
+    currentTime = newTime;
+    
+    // Update startTime if playing
+    if (isPlaying) {
+      startTime = Date.now() - (currentTime * 1000);
+      playTimeline();
+    }
+    
+    // Apply envelope values for the new time if available
+    if (showEnvelope && envelopes) {
+      applyEnvelopeValues(currentTime);
+    }
+    
+    // Check if we need to activate any presets at the new time
+    placedPresets.forEach(preset => {
+      const presetEnd = preset.position + (preset.duration || 2);
+      
+      if (currentTime >= preset.position && currentTime < presetEnd) {
+        activatePreset(preset);
+      }
+    });
   }
 
   // Animation control functions
@@ -506,11 +564,13 @@
       }, 100);
     }
   }
-  // Cleanup on component destroy
+  // Setup on component mount and cleanup on destroy
   onMount(() => {
-    window.addEventListener('keydown', handleKeydown);
+    // Use document instead of window to ensure all keydown events are captured
+    document.addEventListener('keydown', handleKeydown);
+    
     return () => {
-      window.removeEventListener('keydown', handleKeydown);
+      document.removeEventListener('keydown', handleKeydown);
       if (animationFrame) {
         cancelAnimationFrame(animationFrame);
       }
@@ -526,21 +586,44 @@
   
   <div class="flex items-center gap-4 mb-4">
     <button 
-      class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600"
+      class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600 relative group"
       on:click={moveToPreviousPreset}
     >
       ⏮️ Previous
     </button>
 
     <button 
-      class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600"
-      on:click={togglePlayback}
+      class="bg-gray-400 text-white px-3 py-2 rounded-md hover:bg-gray-500 relative group"
+      on:click={() => jumpByTime(-5/30)}
     >
-      {isPlaying ? '⏸️ Pause' : '▶️ Play'}
+      ◀️ -5 frames
+      <span class="absolute hidden group-hover:inline-block text-xs -bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-2 py-1 rounded whitespace-nowrap">
+        Press ← Left Arrow
+      </span>
     </button>
 
     <button 
-      class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600"
+      class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 relative group"
+      on:click={togglePlayback}
+    >
+      {isPlaying ? '⏸️ Pause' : '▶️ Play'}
+      <span class="absolute hidden group-hover:inline-block text-xs -bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-2 py-1 rounded whitespace-nowrap">
+        Press Space
+      </span>
+    </button>
+
+    <button 
+      class="bg-gray-400 text-white px-3 py-2 rounded-md hover:bg-gray-500 relative group"
+      on:click={() => jumpByTime(5/30)}
+    >
+      +5 frames ▶️
+      <span class="absolute hidden group-hover:inline-block text-xs -bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-2 py-1 rounded whitespace-nowrap">
+        Press → Right Arrow
+      </span>
+    </button>
+
+    <button 
+      class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600 relative group"
       on:click={moveToNextPreset}
     >
       ⏭️ Next

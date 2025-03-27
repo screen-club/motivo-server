@@ -27,7 +27,13 @@ class GeminiService:
         self.model = model
         self.port = port
         self.host = "generativelanguage.googleapis.com"
-        self.uri = f"wss://{self.host}/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key={self.api_key}"
+        
+        # Only set URI if API key is available
+        if self.api_key:
+            self.uri = f"wss://{self.host}/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key={self.api_key}"
+        else:
+            self.uri = None
+            logger.warning("Gemini URI not set due to missing API key")
         
         # WebSocket connection
         self.ws = None
@@ -108,6 +114,11 @@ class GeminiService:
     def queue_message(self, message, message_id=None, client_id=None, include_image=True, capture_info=None, add_to_existing=False, auto_capture=False):
 
         """Queue a message to be sent to Gemini"""
+        # Check if API key is available first
+        if not self.api_key:
+            logger.error("Cannot send message to Gemini: API key is not set")
+            return None
+            
         if message_id is None:
             message_id = str(uuid.uuid4())
             
@@ -154,6 +165,11 @@ class GeminiService:
         
     def send_text(self, text, message_id, client_id=None, include_image=True, capture_info=None, add_to_existing=False, auto_capture=False):
         """Send text message to Gemini API, optionally with the provided image"""
+        # Check if API key is available first
+        if not self.api_key:
+            logger.error("Cannot send text to Gemini: API key is not set")
+            return False
+            
         if not self.running:
             self.start()
         
@@ -166,6 +182,9 @@ class GeminiService:
             logger.info("No active connection detected, attempting to reconnect")
             self.ensure_connection()
           
+            # If API key is missing, return immediately
+            if not self.api_key:
+                return False
                 
             return True
         
@@ -304,12 +323,13 @@ class GeminiService:
                 # Reload system instructions on each connection attempt
                 self.load_system_instructions()
                 
-                # Verify API key is set
-                if not self.api_key:
-                    logger.error("Cannot connect to Gemini: API key is not set")
-                    self.connection_state = "failed"
+                # Verify API key and URI are set
+                if not self.api_key or not self.uri:
+                    logger.error("Cannot connect to Gemini: API key is not set or URI is not configured")
+                    self.connection_state = "api_key_missing"
                     self._broadcast_connection_status(False)
-                    await asyncio.sleep(5)
+                    # Sleep longer when API key is missing as this is a configuration issue
+                    await asyncio.sleep(30)
                     continue
                 
                 # Try to connect with more detailed error handling
@@ -637,6 +657,12 @@ class GeminiService:
     
     def ensure_connection(self):
         """Ensure that the service is connected, triggering connection if needed"""
+        # Check if API key is available first
+        if not self.api_key:
+            logger.error("Cannot ensure connection to Gemini: API key is not set")
+            self.connection_state = "api_key_missing"
+            return False
+            
         if not self.is_connected() and self.running:
             
             # If not already attempting to reconnect

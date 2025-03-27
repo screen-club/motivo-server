@@ -50,7 +50,10 @@ ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY' or "")
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY' or "")
 
 if not ANTHROPIC_API_KEY:
-    raise ValueError("ANTHROPIC_API_KEY environment variable is not set")
+    print("WARNING: ANTHROPIC_API_KEY environment variable is not set. Some functionality will be limited.")
+
+if not GOOGLE_API_KEY:
+    print("WARNING: GOOGLE_API_KEY environment variable is not set. Gemini functionality will be disabled.")
 
 # Record server start time
 SERVER_START_TIME = time.time()
@@ -104,24 +107,37 @@ client_logger.setLevel(logging.INFO)
 
 # Initialize services
 try:
-    # Initialize Anthropic client
-    anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
-    
     # Initialize database
     initialize_database()
     
     # Load system instructions
-    with open('system_instructions.txt', 'r', encoding='utf-8') as f:
-        SYSTEM_INSTRUCTIONS = f.read()
+    try:
+        with open('system_instructions.txt', 'r', encoding='utf-8') as f:
+            SYSTEM_INSTRUCTIONS = f.read()
+    except Exception as e:
+        print(f"Warning: Could not load system instructions: {str(e)}")
+        SYSTEM_INSTRUCTIONS = ""
     
-    # Initialize Gemini service
-    gemini_service = GeminiService(port=5002, api_key=GOOGLE_API_KEY)
-    gemini_service.start()
+    # Initialize Anthropic client (if API key is available)
+    if ANTHROPIC_API_KEY:
+        anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
+    else:
+        anthropic = None
+        print("Anthropic client initialization skipped due to missing API key")
+    
+    # Initialize Gemini service (if API key is available)
+    if GOOGLE_API_KEY:
+        gemini_service = GeminiService(port=5002, api_key=GOOGLE_API_KEY)
+        gemini_service.start()
+    else:
+        gemini_service = None
+        print("Gemini service initialization skipped due to missing API key")
     
 except Exception as e:
     print(f"Initialization error: {str(e)}")
     traceback.print_exc()
     gemini_service = None
+    anthropic = None
 
 # Global state
 chat_histories = {}
@@ -588,11 +604,12 @@ def generate_reward():
     if not prompt:
         return jsonify({'error': 'No prompt provided'}), 400
     
+    if not anthropic:
+        return jsonify({'error': 'Anthropic API key not configured. Please provide a valid API key in the environment variables.'}), 503
+    
     try:
         if session_id not in chat_histories:
             chat_histories[session_id] = []
-        
-     
         
         message = anthropic.messages.create(
             model="claude-3-sonnet-20240229",
@@ -607,10 +624,7 @@ def generate_reward():
             ]
         )
         
-       
-        
         response_content = message.content[0].text if isinstance(message.content, list) else message.content
-        
         
         chat_histories[session_id].extend([
             {"role": "user", "content": prompt},

@@ -71,7 +71,9 @@
     <div class="flex gap-8">
         <!-- Always visible LiveFeed section - fixed width -->
         <div class="w-[420px] flex flex-col gap-8 bg-blue-100/50 p-4 rounded-xl">
-            <LiveFeed />
+            <div class="top-5 sticky">
+                <LiveFeed />
+            </div>
             <ParameterPanel class="flex-1 min-w-[400px]" />
             
             {#if isTestingAll}
