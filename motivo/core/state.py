@@ -26,7 +26,7 @@ class AppState:
         self.buffer_data = None
         
         # Support services
-        self.thread_pool = ThreadPoolExecutor(max_workers=1)
+        self.thread_pool = ThreadPoolExecutor(max_workers=2)
         self.ws_manager = WebSocketManager()
         self.webrtc_manager = WebRTCManager(video_quality=config.default_video_quality)
         self.display_manager = DisplayManager(headless=config.in_container)
