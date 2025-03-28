@@ -4,6 +4,7 @@ import time
 import os
 import logging
 import numpy as np
+import torch
 from datetime import datetime
 
 from core.config import config
@@ -32,16 +33,82 @@ async def run_simulation_loop():
             # Get current context from message handler - this is now synchronous
             current_z = app_state.message_handler.get_current_z()
             
-            # Generate action and compute q-value - these are synchronous operations
-            action = app_state.model.act(observation, current_z, mean=True)
+            # Generate action and compute q-value - handle potential coroutines
+            try:
+                # Detailed tracing for debugging the coroutine issue
+                logger.info(f"About to call model.act() - is coroutine function: {asyncio.iscoroutinefunction(app_state.model.act)}")
+                
+                # First check if act returns a coroutine
+                import traceback
+                try:
+                    action = app_state.model.act(observation, current_z, mean=True)
+                    logger.info(f"model.act() returned type: {type(action)}")
+                    
+                    # If action is a coroutine, await it
+                    if asyncio.iscoroutine(action):
+                        logger.info("Model.act returned a coroutine, awaiting it")
+                        action = await action
+                        logger.info(f"After awaiting, action is now type: {type(action)}")
+                except Exception as e:
+                    logger.error(f"Error in model.act(): {str(e)}")
+                    traceback.print_exc()
+                    raise
+            except Exception as e:
+                logger.error(f"Error generating action: {str(e)}")
+                traceback.print_exc()
+                # Create a fallback action of the right shape
+                action_shape = app_state.env.action_space.shape
+                action = torch.zeros(action_shape, device=next(app_state.model.parameters()).device)
             
-            # Fix for coroutine issue - convert tensor to numpy before passing to compute_q_value
-            action_np = action.detach().cpu().numpy() if hasattr(action, 'detach') else action.cpu().numpy()
-            q_value = compute_q_value(app_state.model, observation, current_z, action_np)
+            # Fix for coroutine issue - ensure action is a tensor and properly convert to numpy
+            if isinstance(action, torch.Tensor):
+                # If action is already a tensor, properly detach and convert to numpy
+                action_np = action.detach().cpu().numpy() if hasattr(action, 'detach') else action.cpu().numpy()
+                # Use numpy array for stepping the environment
+                action_for_env = action_np.ravel()
+            else:
+                # If action is not a tensor (might be a coroutine or something else), log and use default
+                logger.warning(f"Action is not a tensor, type: {type(action)}")
+                # Create a zero action of appropriate size as fallback
+                action_shape = app_state.env.action_space.shape
+                action_np = np.zeros(action_shape)
+                action_for_env = action_np
+            
+            # Handle compute_q_value potentially being a coroutine
+            try:
+                logger.info(f"About to call compute_q_value() - is coroutine function: {asyncio.iscoroutinefunction(compute_q_value)}")
+                
+                if asyncio.iscoroutinefunction(compute_q_value):
+                    logger.info("compute_q_value is a coroutine function, awaiting it")
+                    q_value = await compute_q_value(app_state.model, observation, current_z, action_np)
+                    logger.info(f"After awaiting compute_q_value, got result type: {type(q_value)}")
+                else:
+                    logger.info("compute_q_value is a regular function, calling directly")
+                    try:
+                        result = compute_q_value(app_state.model, observation, current_z, action_np)
+                        logger.info(f"compute_q_value() returned type: {type(result)}")
+                        
+                        if asyncio.iscoroutine(result):
+                            logger.info("compute_q_value returned a coroutine, awaiting it")
+                            q_value = await result
+                            logger.info(f"After awaiting compute_q_value result, got type: {type(q_value)}")
+                        else:
+                            q_value = result
+                    except Exception as e:
+                        logger.error(f"Error during compute_q_value call: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+                        raise
+            except Exception as e:
+                logger.error(f"Error computing q_value: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                q_value = 0.5  # Fallback value
+                
             q_percentage = normalize_q_value(q_value)
             
-            # Step the environment with the action
-            observation, _, terminated, truncated, _ = app_state.env.step(action.cpu().numpy().ravel())
+            # Step the environment with the numpy action
+            observation, _, terminated, truncated, _ = app_state.env.step(action_for_env)
             
             # These operations remain async
             await broadcast_pose_update(q_percentage)

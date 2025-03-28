@@ -7,6 +7,8 @@ import traceback
 import asyncio
 import logging
 import websockets
+import inspect
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -817,10 +819,31 @@ class MessageHandler:
 
     def get_current_z(self) -> Optional[torch.Tensor]:
         """Get the current context tensor"""
+        # Add trace for debugging
+        current_frame = inspect.currentframe()
+        caller_frame = inspect.getouterframes(current_frame, 2)
+        
+        logger.info(f"get_current_z called from: {caller_frame[1][3]} in {caller_frame[1][1]}")
+        
         # Ensure we always return a tensor (non-coroutine)
         if self.current_z is None and hasattr(self, 'default_z'):
             logger.warning("Current Z is None, using default Z instead")
             return self.default_z
+            
+        if self.current_z is not None:
+            logger.info(f"Returning current_z of type: {type(self.current_z)}")
+            
+            # If it's a coroutine, log a warning as this function should be synchronous
+            if asyncio.iscoroutine(self.current_z):
+                logger.error("WARNING: current_z is a coroutine, which should not happen!")
+                traceback.print_stack()
+                
+            # If it's a tensor, check that it's valid
+            elif isinstance(self.current_z, torch.Tensor):
+                logger.info(f"current_z tensor shape: {self.current_z.shape}, device: {self.current_z.device}")
+        else:
+            logger.warning("current_z is None and no default_z is available")
+            
         return self.current_z
 
     async def handle_capture_frame(self, websocket, data: Dict[str, Any]) -> None:
