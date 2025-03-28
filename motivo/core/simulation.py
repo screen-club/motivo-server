@@ -33,9 +33,9 @@ async def run_simulation_loop():
             current_z = app_state.message_handler.get_current_z()
             
             # Generate action based on current context and observation
-            # Ensure we're getting Tensor values, not coroutines
-            action = await app_state.model.act(observation, current_z, mean=True)
-            q_value = await compute_q_value(app_state.model, observation, current_z, action)
+            # These are synchronous operations that return Tensors
+            action = app_state.model.act(observation, current_z, mean=True)
+            q_value = compute_q_value(app_state.model, observation, current_z, action)
             q_percentage = normalize_q_value(q_value)
             
             # Step the environment with the action
