@@ -157,12 +157,7 @@ async def render_and_process_frame(frame_count, q_percentage, last_frame_save_ti
             
             webrtc_task.add_done_callback(task_done)
             
-            # Periodically clean up completed tasks (every 100 frames)
-            if frame_count % 100 == 0 and hasattr(app_state, 'pending_webrtc_tasks'):
-                done_tasks = {task for task in app_state.pending_webrtc_tasks if task.done()}
-                for task in done_tasks:
-                    app_state.pending_webrtc_tasks.discard(task)
-                logger.debug(f"Cleaned up {len(done_tasks)} completed WebRTC tasks, {len(app_state.pending_webrtc_tasks)} pending")
+            
         
         except Exception as e:
             logger.error(f"Error setting up WebRTC broadcast: {e}")

@@ -15,7 +15,7 @@
   let cleanupMessageHandler;
   let statusInterval;
 
-  let poseInput = "";
+  let poseInput = "0.13769039,-0.20029453,0.42305034,0.21707786,0.94573617,0.23868944,0.03856998,-1.05566834,-0.12680767,0.11718296,1.89464102,-0.01371153,-0.07981451,-0.70497424,-0.0478,-0.05700732,-0.05363342,-0.0657329,0.08163511,-1.06263979,0.09788937,-0.22008936,1.85898192,0.08773695,0.06200327,-0.3802791,0.07829525,0.06707749,0.14137152,0.08834448,-0.07649805,0.78328658,0.12580912,-0.01076061,-0.35937259,-0.13176489,0.07497022,-0.2331914,-0.11682692,0.04782308,-0.13571422,0.22827948,-0.23456622,-0.12406075,-0.04466465,0.2311667,-0.12232673,-0.25614032,-0.36237662,0.11197906,-0.08259534,-0.634934,-0.30822742,-0.93798716,0.08848668,0.4083417,-0.30910404,0.40950143,0.30815359,0.03266103,1.03959336,-0.19865537,0.25149713,0.3277561,0.16943092,0.69125975,0.21721349,-0.30871948,0.88890484,-0.08884043,0.38474549,0.30884107,-0.40933304,0.30889523,-0.29562966,-0.6271498";
   let poseError = "";
 
   // Add new reactive variables
@@ -135,8 +135,17 @@
   function testCustomPose() {
     try {
       parsedPose = parsePoseInput(poseInput);
-      mixPoseAndReward();
       poseError = ""; // Clear any previous errors
+      
+      // Send the pose to the backend
+      const socket = websocketService.getSocket();
+      if (socket) {
+        socket.send(JSON.stringify({
+          type: "load_pose",
+          pose: parsedPose,
+          inference_type: "goal"
+        }));
+      }
     } catch (error) {
       poseError = error.message;
     }
@@ -145,17 +154,20 @@
   // Add new function for mixing pose and reward
   function mixPoseAndReward() {
     const socket = websocketService.getSocket();
-    if (!socket) return;
-    
+      if (!socket) return;
+      
+      updateReward(1.0, 1.4)
+    console.log("Mixing pose and reward");
+    console.log("currentReward", currentReward);
     try {
       const pose = parsePoseInput(poseInput);
       poseError = ""; // Clear any previous errors
       
       socket.send(JSON.stringify({
-        type: "load_pose",
+        type: "mix_pose_reward",
         pose: pose,
-       //reward: currentReward,
-        //mix_weight: mixWeight
+        reward: currentReward,
+        mix_weight: mixWeight
       }));
     } catch (error) {
       poseError = error.message;
@@ -164,12 +176,34 @@
 
   // Add function to update current reward
   function updateReward(moveSpeed = 0.0, standHeight = 1.4) {
+
+    /*
     currentReward = {
       rewards: [
         { name: "move-ego", move_speed: moveSpeed, stand_height: standHeight }
       ],
       weights: [1.0]
     };
+    */
+    currentReward = {
+      rewards: [
+        {
+        "name": "position",
+        "targets": [
+        
+          {
+            "body": "R_Hand",
+            "z": 0.5,
+            "y": .0,
+            "weight": 1.0
+          }
+        ],
+        "upright_weight": 0.0,
+        "control_weight": 0.99
+      }
+      ],
+      weights: [1.0]
+    }
   }
 
   onMount(() => {
@@ -190,6 +224,14 @@
     
     // Set up regular status check
     statusInterval = setInterval(checkModelStatus, 1000);
+    
+    // Parse the default pose
+    try {
+        parsedPose = parsePoseInput(poseInput);
+        poseError = "";
+    } catch (error) {
+        poseError = error.message;
+    }
   });
 
   onDestroy(() => {
@@ -288,14 +330,15 @@
           <!-- Mix Weight Slider -->
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-2">
-              Mix Weight: {(mixWeight * 100).toFixed(0)}% Reward
+              Mix Weight: {(mixWeight * 100).toFixed(1)}% Reward
             </label>
             <input 
               type="range" 
               bind:value={mixWeight} 
               min="0" 
               max="1" 
-              step="0.1"
+              step="0.001"
+              on:input={mixPoseAndReward}
               class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
             />
             <div class="flex justify-between text-xs text-gray-500 mt-1">

@@ -344,7 +344,7 @@ class RewardContextComputer:
         with torch.no_grad():
             z = inference_fn(**td).reshape(1, -1)
         
-        print(f"Computed z: {z}")
+        #print(f"Computed z: {z}")
         return z
 
 # Create global instance for backward compatibility

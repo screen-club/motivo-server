@@ -40,8 +40,8 @@ async def initialize_default_context():
 
     if default_z is None:
         logging.info("Default context not found in cache, computing...")
-        # Compute the context
-        default_z = await app_state.message_handler.get_reward_context(default_config)
+        # Compute the context - synchronous call, no await
+        default_z = app_state.message_handler.get_reward_context(default_config)
         # Save it to the cache
         app_state.context_cache._save_to_disk(cache_key, default_z)
         # Add to memory cache

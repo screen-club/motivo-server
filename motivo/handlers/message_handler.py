@@ -10,6 +10,7 @@ import websockets
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
+import concurrent.futures
 
 from core.config import config
 from utils.frame_utils import FrameRecorder, save_shared_frame
@@ -62,6 +63,9 @@ class MessageHandler:
             "make_snapshot": self.handle_make_snapshot,
         }
         
+        # Add this at class level
+        self.thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        
         logger.info("Message handler initialized")
 
     def set_buffer_data(self, buffer_data):
@@ -70,21 +74,36 @@ class MessageHandler:
         logger.info("Buffer data set in message handler")
 
     async def get_reward_context(self, reward_config):
-        """Compute reward context"""
+        """Compute reward context using a thread executor"""
         try:
             self.is_computing_reward = True
             logger.info("Computing reward context...")
             
-            # Create a wrapper function that includes all required arguments
-            async def compute_wrapper(config):
-                return await asyncio.to_thread(
-                    compute_reward_context,
-                    config,
-                    self.env,
-                    self.model,
-                    self.buffer_data
-                )
-            z, _ = await self.context_cache.get_cached_context(reward_config, compute_wrapper)
+            # Check cache first
+            cache_key = self.context_cache.get_cache_key(reward_config)
+            cached_z, cache_file = self.context_cache._get_cached_context_impl(cache_key)
+            if cached_z is not None:
+                logger.info("Using cached context")
+                return cached_z
+            
+            # Run the compute function in a thread pool
+            loop = asyncio.get_running_loop()
+            z = await loop.run_in_executor(
+                self.thread_executor,  # Use class-level executor
+                compute_reward_context,  # Direct function reference (no nested function)
+                reward_config,
+                self.env,
+                self.model,
+                self.buffer_data
+            )
+            
+            # Store in cache after computation
+            if len(self.context_cache.computation_cache) < self.context_cache.max_memory_entries:
+                self.context_cache.computation_cache[cache_key] = z
+            
+            # Save to disk
+            self.context_cache._save_to_disk(cache_key, z)
+            
             return z
         finally:
             self.is_computing_reward = False
@@ -189,6 +208,7 @@ class MessageHandler:
 
     async def handle_load_pose(self, websocket, data: Dict[str, Any]) -> None:
         """Load pose configuration from qpos data"""
+   
         try:
             logger.info("Loading pose configuration...")
             goal_qpos = np.array(data.get("pose", []))
@@ -197,8 +217,12 @@ class MessageHandler:
             if len(goal_qpos) != 76:  # Expect 76 values for qpos
                 raise ValueError(f"Invalid pose length: {len(goal_qpos)}, expected 76")
             
-            # Reset environment with new pose
-            logger.info("Setting physics...")
+            # Save current physics state
+            current_qpos = self.env.unwrapped.data.qpos.copy()
+            current_qvel = self.env.unwrapped.data.qvel.copy()
+            
+            # Temporarily set physics to get the goal observation
+            logger.info("Setting physics temporarily...")
             self.env.unwrapped.set_physics(
                 qpos=goal_qpos,  # Use all 76 values for qpos
                 qvel=np.zeros(75)  # Use 75 zeros for qvel
@@ -211,6 +235,13 @@ class MessageHandler:
                 dtype=torch.float32
             )
             logger.info(f"Observation shape: {goal_obs.shape}")
+            
+            # Restore original physics state (without reset)
+            logger.info("Restoring original physics state...")
+            self.env.unwrapped.set_physics(
+                qpos=current_qpos,
+                qvel=current_qvel
+            )
             
             # Use goal inference to get context
             inference_type = data.get("inference_type", "goal")
@@ -329,10 +360,7 @@ class MessageHandler:
                 self.current_reward_config = self.active_rewards  # Update current reward config
                 
                 logger.info("Recomputing context...")
-                z, _ = await self.context_cache.get_cached_context(
-                    self.active_rewards,
-                    self.get_reward_context
-                )
+                z = await self.get_reward_context(self.active_rewards)
                 self.current_z = z
                 
                 response = {
@@ -364,29 +392,47 @@ class MessageHandler:
             goal_qpos = np.array(data.get("pose", []))
             reward_config = data.get("reward", {})
             mix_weight = data.get("mix_weight", 0.5)
-            
+
             if len(goal_qpos) != 76:
                 raise ValueError(f"Invalid pose length: {len(goal_qpos)}, expected 76")
-            
-            # Get pose-based context
+
+            # Save current physics state
+            current_qpos = self.env.unwrapped.data.qpos.copy()
+            current_qvel = self.env.unwrapped.data.qvel.copy()
+
+            # Temporarily set to goal pose to get observation
             self.env.unwrapped.set_physics(
                 qpos=goal_qpos,
                 qvel=np.zeros(75)
             )
-            
+
+            # Get goal observation
             goal_obs = torch.tensor(
                 self.env.unwrapped.get_obs()["proprio"].reshape(1, -1),
                 device=self.model.cfg.device,
                 dtype=torch.float32
             )
-            
-            pose_z = self.model.goal_inference(next_obs=goal_obs)
-            reward_z, _ = await self.context_cache.get_cached_context(reward_config, self.get_reward_context)
-            
-            # Interpolate between contexts
+
+            # Restore original physics state (without reset)
+            self.env.unwrapped.set_physics(
+                qpos=current_qpos,
+                qvel=current_qvel
+            )
+
+            # Get current observation after restoring
+            current_obs = torch.tensor(
+                self.env.unwrapped.get_obs()["proprio"].reshape(1, -1),
+                device=self.model.cfg.device,
+                dtype=torch.float32
+            )
+
+            # Use tracking_inference for smoother transitions
+            pose_z = self.model.tracking_inference(next_obs=goal_obs)
+            reward_z = await self.get_reward_context(reward_config)
+
+            # Interpolate between contexts using mix_weight
             self.current_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
-            logger.info(f"Mixed contexts with weight {mix_weight}")
-            
+
             response = {
                 "type": "mix_updated",
                 "status": "success",
@@ -497,12 +543,7 @@ class MessageHandler:
                     
                     # Compute the context once for all rewards
                     logger.info("Computing context for all rewards at once")
-                    z, _ = await self.context_cache.get_cached_context(
-                        self.active_rewards, 
-                        self.get_reward_context,
-                        # Use standard key first, not batch_key to avoid NoneType errors
-                        use_batch_key=None
-                    )
+                    z = await self.get_reward_context(self.active_rewards)
                     
                     # Now that we have the result, manually store it with the batch key
                     # This caches the result with both the standard key and batch key
@@ -512,17 +553,11 @@ class MessageHandler:
                 except Exception as e:
                     logger.error(f"Error in batch mode processing: {str(e)}")
                     logger.info("Falling back to standard processing")
-                    z, _ = await self.context_cache.get_cached_context(
-                        self.active_rewards, 
-                        self.get_reward_context
-                    )
+                    z = await self.get_reward_context(self.active_rewards)
             else:
                 # Standard computation for single reward
                 logger.info("Computing context for new reward configuration")
-                z, _ = await self.context_cache.get_cached_context(
-                    self.active_rewards, 
-                    self.get_reward_context
-                )
+                z = await self.get_reward_context(self.active_rewards)
                 
             self.current_z = z
             

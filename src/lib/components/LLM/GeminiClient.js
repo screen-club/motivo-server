@@ -271,7 +271,6 @@ export function createGeminiClient(
             clearTimeout(responseTimeout);
             cleanup();
 
-            console.log("FRAME CAPTURED:", data);
             if (data.status === "success" && data.frame_path) {
               const frameUrl = data.frame_path;
 
