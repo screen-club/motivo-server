@@ -476,6 +476,20 @@
     
     // Update the model
     selectedModel = model;
+    
+    // Check Gemini connection when switching to Gemini
+    if (model === 'gemini') {
+      geminiClient.checkConnection();
+      geminiClient.connect(API_URL);
+      
+      // Add a small delay to make sure connection is established
+      setTimeout(() => {
+        if (!isGeminiConnected) {
+          testFlaskConnection();
+        }
+      }, 500);
+    }
+    
     scrollChatToBottom();
   }
 </script>

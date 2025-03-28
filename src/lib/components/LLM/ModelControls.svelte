@@ -8,6 +8,15 @@
   export let onToggleAutoCapture;
   export let onCaptureFrame;
   export let onTestFlaskConnection;
+  
+  import { onMount } from 'svelte';
+  
+  // Try to establish connection when component is mounted
+  onMount(() => {
+    if (selectedModel === 'gemini' && !isGeminiConnected) {
+      onTestFlaskConnection();
+    }
+  });
 </script>
 
 <div class="flex justify-between items-center p-2 border-b">
@@ -23,7 +32,13 @@
       </button>
       <button 
         class="px-3 py-1.5 text-sm {selectedModel === 'gemini' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}" 
-        on:click={() => onSwitchModel('gemini')}
+        on:click={() => {
+          onSwitchModel('gemini');
+          // Try to establish connection when switching to Gemini
+          if (!isGeminiConnected) {
+            setTimeout(onTestFlaskConnection, 100);
+          }
+        }}
       >
         Gemini Vision
       </button>

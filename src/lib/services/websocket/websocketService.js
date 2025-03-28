@@ -463,6 +463,7 @@ class WebSocketService {
         }, 100); // Small delay to ensure reset completes first
       } else {
         // Normal message sending
+        console.log("SENDING MESSAGE:", message);
         this.socket.send(JSON.stringify(message));
       }
 

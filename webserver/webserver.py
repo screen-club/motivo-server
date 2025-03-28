@@ -499,6 +499,8 @@ def handle_check_gemini_connection():
     
     connected = False
     if gemini_service:
+        # Try to ensure connection is active
+        gemini_service.ensure_connection()
         connected = gemini_service.is_connected()
     
     emit('gemini_connection_status', {

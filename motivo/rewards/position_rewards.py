@@ -231,4 +231,75 @@ reward = PositionReward.create({
         print("- x, y, z: target positions (optional)")
         print("- weight: importance (default: 1.0)")
         print("- margin: tolerance (default: 0.2)")
-        print("- sigmoid: reward shape ('linear', 'quadratic', etc.) (default: 'linear')") 
+        print("- sigmoid: reward shape ('linear', 'quadratic', etc.) (default: 'linear')")
+
+    def get_serialized_targets(self) -> Dict[str, Dict[str, float]]:
+        """
+        Get a serialized dictionary of all target positions and their parameters.
+        
+        Returns:
+            Dict with format:
+            {
+                "body_name": {
+                    "x": float or None,
+                    "y": float or None,
+                    "z": float or None,
+                    "weight": float,
+                    "margin": float,
+                    "sigmoid": str
+                },
+                ...
+            }
+        """
+        serialized = {}
+        for body_name, target in self.targets.items():
+            serialized[body_name] = {
+                "x": target.x,
+                "y": target.y,
+                "z": target.z,
+                "weight": target.weight,
+                "margin": target.margin,
+                "sigmoid": target.sigmoid
+            }
+        return serialized
+
+    def get_current_positions(self, model: mujoco.MjModel, data: mujoco.MjData) -> Dict[str, Dict[str, float]]:
+        """
+        Get current positions of all target bodies in both global and local frames.
+        
+        Returns:
+            Dict with format:
+            {
+                "body_name": {
+                    "global": {"x": float, "y": float, "z": float},
+                    "local": {"x": float, "y": float, "z": float}  # Only if use_local_frame is True
+                },
+                ...
+            }
+        """
+        positions = {}
+        
+        # Get reference frame data
+        pelvis_pos = data.xpos[model.body("Pelvis").id].copy()
+        pelvis_rotation = get_rotation_matrix_from_pelvis(model, data) if self.use_local_frame else np.eye(3)
+        
+        for body_name in self.targets.keys():
+            current_pos = data.xpos[model.body(body_name).id].copy()
+            
+            position_data = {
+                "global": {
+                    "x": float(current_pos[0]),
+                    "y": float(current_pos[1]),
+                    "z": float(current_pos[2])
+                }
+            }
+            
+            if self.use_local_frame:
+                local_pos = transform_point_to_local_frame(current_pos, pelvis_pos, pelvis_rotation)
+                position_data["local"] = {
+                    "x": float(local_pos[0]),
+                    "y": float(local_pos[1]),
+                    "z": float(local_pos[2])
+                }
+            
+            positions[body_name] = position_data 

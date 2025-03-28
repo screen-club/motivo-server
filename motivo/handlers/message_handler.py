@@ -70,6 +70,7 @@ class MessageHandler:
             "load_npz_context": self.handle_load_npz_context,
             "capture_frame": self.handle_capture_frame,
             "make_snapshot": self.handle_make_snapshot,
+            "get_target_positions": self.handle_get_target_positions,
         }
         
         # We'll use the default executor for running tasks, so no need for custom thread pools
@@ -204,7 +205,7 @@ class MessageHandler:
             # Get the appropriate handler for this message type
             handler = self.command_handlers.get(message_type)
             if handler:
-                logger.debug(f"Handling message of type: {message_type}")
+                logger.info(f"Handling message of type: {message_type}")
                 try:
                     await handler(websocket, data)
                 except websockets.exceptions.ConnectionClosedError as e:
@@ -593,13 +594,17 @@ class MessageHandler:
 
     async def handle_request_reward(self, websocket, data: Dict[str, Any]) -> None:
         """Process reward combination requests"""
+        logger.info("------------------------------------------------------------------------")
         logger.info("Processing reward combination request")
         
+        # Check for ongoing computation - regardless of batch or single
         if self.is_computing_reward:
-            logger.warning("Reward computation already in progress, request ignored")
+            logger.warning("Reward computation already in progress, request queued")
+            # Return a "queued" status so client knows we received it
             response = {
                 "type": "reward",
                 "status": "computing_in_progress",
+                "message": "Request received - will process when current computation completes",
                 "timestamp": data.get("timestamp", ""),
                 "is_computing": True
             }
@@ -651,42 +656,18 @@ class MessageHandler:
             # Update current reward configuration
             self.current_reward_config = self.active_rewards
             
-            # If batch mode is enabled or multiple rewards are being processed,
-            # use a special batch computation approach
-            if is_batch_mode:
-                logger.info("Using batch mode for computing multiple rewards at once")
-                
-                try:
-                    # Create a unique batch key based on timestamp
-                    batch_key = f"batch_{datetime.now().timestamp()}"
-                    
-                    # Set up the batch computation, but don't pre-populate the cache
-                    self.context_cache.precompute_reward_combination(self.active_rewards, batch_key)
-                    
-                    # First compute a standard cache key as fallback
-                    standard_key = self.context_cache.get_cache_key(self.active_rewards)
-                    
-                    # Compute the context once for all rewards
-                    logger.info("Computing context for all rewards at once")
-                    z = self.get_reward_context(self.active_rewards)
-                    
-                    # Now that we have the result, manually store it with the batch key
-                    # This caches the result with both the standard key and batch key
-                    if z is not None:
-                        self.context_cache.computation_cache[batch_key] = z
-                        logger.info(f"Cached batch result with key: {batch_key}")
-                except Exception as e:
-                    logger.error(f"Error in batch mode processing: {str(e)}")
-                    logger.info("Falling back to standard processing")
-                    z = self.get_reward_context(self.active_rewards)
-                    
-            else:
-                # Standard computation for single reward
-                logger.info("Computing context for new reward configuration")
-                z = self.get_reward_context(self.active_rewards)
-                
-            # Set the current_z with the tensor (get_reward_context guarantees a tensor)
-            self.current_z = z
+            # For all cases (batch or single), use the simple async approach
+            logger.info(f"Computing context for {len(self.active_rewards.get('rewards', []))} rewards")
+            
+            # Create a standard cache key
+            standard_key = self.context_cache.get_cache_key(self.active_rewards)
+            
+            # Start the computation and get the immediate result (current context)
+            # This returns immediately but updates self.current_z when done in background
+            z = self.get_reward_context(self.active_rewards)
+            
+            # Note: we don't need to set self.current_z - it will be updated by
+            # the background task when computation is complete
             
             response = {
                 "type": "reward",
@@ -700,6 +681,7 @@ class MessageHandler:
             
             logger.info(f"Active Rewards: {len(self.active_rewards['rewards'])}")
             logger.info(f"Cached Computations: {len(self.context_cache.computation_cache)}")
+            logger.info("------------------------------------------------------------------------")
 
         except Exception as e:
             logger.error(f"Error processing reward request: {str(e)}")
@@ -1124,6 +1106,75 @@ class MessageHandler:
         self.default_z = z
         self.current_z = z
         logger.info("Default context set")
+
+    async def handle_get_target_positions(self, websocket, data: Dict[str, Any]) -> None:
+        """Handle request to get current positions of all reward targets"""
+        try:
+            logger.info("Getting current target positions...")
+            
+            # Check if we have active rewards
+            if not self.active_rewards or 'rewards' not in self.active_rewards:
+                response = {
+                    "type": "target_positions",
+                    "status": "no_active_rewards",
+                    "timestamp": datetime.now().isoformat()
+                }
+                await websocket.send(json.dumps(response))
+                return
+            
+            positions_data = {}
+            
+            # Go through each reward in active rewards
+            for reward_config in self.active_rewards['rewards']:
+                reward_name = reward_config.get('name', '')
+                
+                # Check if this is a position reward
+                if reward_name.startswith('position-'):
+                    try:
+                        # Create the reward object
+                        from rewards.position_rewards import PositionReward
+                        reward_obj = PositionReward.reward_from_name(reward_name)
+                        
+                        if reward_obj:
+                            # Get target configurations
+                            targets = reward_obj.get_serialized_targets()
+                            
+                            # Get current positions
+                            current_positions = reward_obj.get_current_positions(
+                                self.env.unwrapped.model,
+                                self.env.unwrapped.data
+                            )
+                            
+                            positions_data[reward_name] = {
+                                "targets": targets,
+                                "current_positions": current_positions
+                            }
+                    except Exception as e:
+                        logger.warning(f"Error processing position reward {reward_name}: {str(e)}")
+                        continue
+            
+            response = {
+                "type": "target_positions",
+                "status": "success",
+                "data": positions_data,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            await websocket.send(json.dumps(response))
+            logger.info(f"Sent position data for {len(positions_data)} rewards")
+            
+        except Exception as e:
+            error_msg = f"Error getting target positions: {str(e)}"
+            logger.error(error_msg)
+            traceback.print_exc()
+            
+            response = {
+                "type": "target_positions",
+                "status": "error",
+                "error": error_msg,
+                "timestamp": datetime.now().isoformat()
+            }
+            await websocket.send(json.dumps(response))
 
 # Register cleanup function after the class is defined
 def _cleanup_message_handlers_at_exit():
