@@ -598,14 +598,22 @@ def compute_q_value(model, observation, z, action=None):
         if len(obs_tensor.shape) == 1:
             obs_tensor = obs_tensor.unsqueeze(0)
         
-        # Ensure z is on the correct device
-        z = z.to(device)
+        # Ensure z is on the correct device and is a tensor
+        if isinstance(z, torch.Tensor):
+            z = z.to(device)
+        else:
+            z = torch.tensor(z, device=device, dtype=torch.float32)
             
         # If no action is provided, get the optimal action from the actor
         if action is None:
             action = model.act(obs_tensor, z, mean=True)
         else:
-            action = torch.tensor(action, device=device, dtype=torch.float32)
+            # Handle various action input formats
+            if isinstance(action, torch.Tensor):
+                action = action.to(device)
+            else:
+                action = torch.tensor(action, device=device, dtype=torch.float32)
+                
             if len(action.shape) == 1:
                 action = action.unsqueeze(0)
         

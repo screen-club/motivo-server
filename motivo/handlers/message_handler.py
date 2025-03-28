@@ -80,15 +80,29 @@ class MessageHandler:
             logger.info("Computing reward context...")
             
             # Create a wrapper function that includes all required arguments
+            # This handles conversion from a regular function to a coroutine
             async def compute_wrapper(config):
-                return await asyncio.to_thread(
-                    compute_reward_context,
-                    config,
-                    self.env,
-                    self.model,
-                    self.buffer_data
-                )
+                try:
+                    result = await asyncio.to_thread(
+                        compute_reward_context,
+                        config,
+                        self.env,
+                        self.model,
+                        self.buffer_data
+                    )
+                    return result
+                except Exception as e:
+                    logger.error(f"Error computing context: {str(e)}")
+                    # Return None on error so we can handle it gracefully
+                    return None
+                    
             z, _ = await self.context_cache.get_cached_context(reward_config, compute_wrapper)
+            
+            # Handle case where z is None
+            if z is None and hasattr(self.model, 'get_default_z'):
+                logger.warning("Failed to compute reward context, using default z")
+                z = self.model.get_default_z()
+                
             return z
         finally:
             self.is_computing_reward = False
@@ -803,6 +817,10 @@ class MessageHandler:
 
     def get_current_z(self) -> Optional[torch.Tensor]:
         """Get the current context tensor"""
+        # Ensure we always return a tensor (non-coroutine)
+        if self.current_z is None and hasattr(self, 'default_z'):
+            logger.warning("Current Z is None, using default Z instead")
+            return self.default_z
         return self.current_z
 
     async def handle_capture_frame(self, websocket, data: Dict[str, Any]) -> None:

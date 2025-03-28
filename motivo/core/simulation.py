@@ -34,7 +34,10 @@ async def run_simulation_loop():
             
             # Generate action and compute q-value - these are synchronous operations
             action = app_state.model.act(observation, current_z, mean=True)
-            q_value = compute_q_value(app_state.model, observation, current_z, action)
+            
+            # Fix for coroutine issue - convert tensor to numpy before passing to compute_q_value
+            action_np = action.detach().cpu().numpy() if hasattr(action, 'detach') else action.cpu().numpy()
+            q_value = compute_q_value(app_state.model, observation, current_z, action_np)
             q_percentage = normalize_q_value(q_value)
             
             # Step the environment with the action
