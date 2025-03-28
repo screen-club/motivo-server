@@ -101,21 +101,21 @@ class MessageHandler:
         """
         Start computing reward context in background and return immediately.
         
-        This non-blocking version returns the default context immediately
-        and updates self.current_z when computation is complete.
+        IMPORTANT: This maintains the current context while computing in background.
+        The current_z value will be updated only when computation completes.
         """
         # Set the computing flag to show appropriate UI state
         self.is_computing_reward = True
         
-        # Get placeholder context to return immediately
+        # Get fallback context to use in case of errors (not for immediate return)
         if hasattr(self.model, 'get_default_z'):
-            default_context = self.model.get_default_z()
+            fallback_context = self.model.get_default_z()
         elif hasattr(self, 'default_z'):
-            default_context = self.default_z
+            fallback_context = self.default_z
         else:
-            # Create a placeholder of appropriate shape
+            # Create a fallback tensor of appropriate shape
             latent_dim = 256  # default latent dimension
-            default_context = torch.zeros((1, latent_dim), device=next(self.model.parameters()).device)
+            fallback_context = torch.zeros((1, latent_dim), device=next(self.model.parameters()).device)
         
         # Try to broadcast a computation start message
         try:
@@ -129,13 +129,18 @@ class MessageHandler:
             logger.error(f"Error broadcasting computation start: {str(e)}")
         
         # Start background task to compute actual context
-        asyncio.create_task(self._compute_reward_context_background(reward_config, default_context))
+        asyncio.create_task(self._compute_reward_context_background(reward_config, fallback_context))
         
-        # Return immediately with default context
-        logger.info("Started reward computation in background, returning interim context")
-        return default_context
+        # Return the CURRENT context (or fallback if current is None), so we don't disrupt the experience
+        # while computing the new context in the background
+        if self.current_z is None:
+            logger.info("No current context, returning fallback while computing")
+            return fallback_context
+        else:
+            logger.info("Started reward computation in background, maintaining current context")
+            return self.current_z
     
-    async def _compute_reward_context_background(self, reward_config, default_context):
+    async def _compute_reward_context_background(self, reward_config, fallback_context):
         """Background task to compute reward context and update state when done"""
         try:
             # Run the actual computation in a thread to avoid blocking asyncio loop
@@ -149,10 +154,10 @@ class MessageHandler:
                 self.buffer_data
             )
             
-            # If computation failed, use the default
+            # If computation failed, use the fallback
             if z is None:
-                logger.warning("Computation returned None, using default context")
-                z = default_context
+                logger.warning("Computation returned None, using fallback context")
+                z = fallback_context
                 
             # Update the current_z with real computed value
             self.current_z = z
@@ -170,8 +175,11 @@ class MessageHandler:
             
         except Exception as e:
             logger.error(f"Error in background computation: {str(e)}")
-            # Keep using the default context on error
-            self.current_z = default_context
+            # On error, we DON'T change the current context - keep whatever was there
+            # But if current_z is None for some reason, use the fallback
+            if self.current_z is None:
+                logger.warning("Current context is None after error, using fallback")
+                self.current_z = fallback_context
             
             # Broadcast error status
             try:
@@ -800,12 +808,8 @@ class MessageHandler:
                     result = self.model.tracking_inference(next_obs=goal_obs)
                 else:
                     raise ValueError(f"Unsupported inference type: {inference_type}")
-                
-                # Await if it's a coroutine
-                if asyncio.iscoroutine(result):
-                    z = await result
-                else:
-                    z = result
+              
+                z = result
                 
                 # Update current context 
                 self.current_z = z
@@ -961,13 +965,7 @@ class MessageHandler:
         if self.current_z is None and hasattr(self, 'default_z'):
             return self.default_z
             
-        # Coroutines should never be stored in self.current_z
-        # This is just a safeguard
-        if asyncio.iscoroutine(self.current_z):
-            # Critical error - should never happen
-            logger.error("CRITICAL ERROR: current_z is a coroutine in get_current_z!")
-            # Return default or None
-            return self.default_z if hasattr(self, 'default_z') else None
+      
             
         # Return the tensor
         return self.current_z
