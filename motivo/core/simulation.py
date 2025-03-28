@@ -30,13 +30,20 @@ async def run_simulation_loop():
     
     while app_state.is_running:
         try:
-            # Get current context from message handler - handle possible coroutine
+            # Get current context from message handler - should always be a tensor, not a coroutine
             current_z = app_state.message_handler.get_current_z()
             
-            # If current_z is a coroutine, await it
-            if asyncio.iscoroutine(current_z):
-                logger.info("current_z is a coroutine, awaiting it")
-                current_z = await current_z
+            # Add some simple validation in case we get None
+            if current_z is None:
+                logger.error("Received None from get_current_z, using default z")
+                if hasattr(app_state.model, 'get_default_z'):
+                    current_z = app_state.model.get_default_z()
+                    logger.info("Using default Z from model as fallback")
+                else:
+                    # Create a zero tensor of appropriate shape as fallback
+                    default_shape = (1, 256)  # Common latent dimension, adjust if needed
+                    current_z = torch.zeros(default_shape, device=next(app_state.model.parameters()).device)
+                    logger.warning(f"Created zero tensor of shape {default_shape} as fallback")
             
             # Generate action and compute q-value - handle potential coroutines
             try:
