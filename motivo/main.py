@@ -1,6 +1,7 @@
 import asyncio
 import websockets
 import logging
+import torch
 from asyncio.exceptions import CancelledError
 import traceback
 
@@ -36,24 +37,51 @@ async def initialize_default_context():
     
     # Try to get from cache first
     cache_key = app_state.context_cache.get_cache_key(default_config)
-    default_z, _ = app_state.context_cache._get_cached_context_impl(cache_key)
+    cached_z, _ = app_state.context_cache._get_cached_context_impl(cache_key)
 
-    if default_z is None:
-        logging.info("Default context not found in cache, computing...")
-        # Compute the context - synchronous call, no await
-        default_z = app_state.message_handler.get_reward_context(default_config)
-        # Save it to the cache
+    if cached_z is not None:
+        logging.info("Using cached default context")
+        app_state.message_handler.set_default_z(cached_z)
+        return
+            
+    logging.info("Default context not found in cache, computing synchronously...")
+    
+    # Compute default context directly and synchronously to ensure we have it at startup
+    try:
+        # Use direct computation for default context instead of get_reward_context
+        # because we need this to complete before continuing
+        from rewards.reward_context import compute_reward_context
+        default_z = compute_reward_context(
+            default_config,
+            app_state.env,
+            app_state.model,
+            app_state.buffer_data
+        )
+        
+        if default_z is None:
+            logging.error("Failed to compute default context, will use zeros")
+            # Create a default tensor 
+            latent_dim = 256  # Common latent dimension for these models
+            default_z = torch.zeros((1, latent_dim), device=app_state.model.cfg.device)
+            
+        # Save the context to cache
+        logging.info("Saving default context to cache")
         app_state.context_cache._save_to_disk(cache_key, default_z)
+        
         # Add to memory cache
         if len(app_state.context_cache.computation_cache) < app_state.context_cache.max_memory_entries:
             app_state.context_cache.computation_cache[cache_key] = default_z
-    else:
-        logging.info("Using cached default context")
+            
+        # Set as default
+        app_state.message_handler.set_default_z(default_z)
         
-    if default_z is None:
-        raise RuntimeError("Failed to compute initial context")
-        
-    app_state.message_handler.set_default_z(default_z)
+    except Exception as e:
+        logging.error(f"Error computing default context: {str(e)}")
+        # Create an emergency fallback tensor 
+        latent_dim = 256  # Common latent dimension for these models
+        default_z = torch.zeros((1, latent_dim), device=app_state.model.cfg.device)
+        app_state.message_handler.set_default_z(default_z)
+        logging.warning("Using zeros tensor as default context due to computation error")
 
 async def main():
     """Main application entry point"""

@@ -117,6 +117,17 @@ class MessageHandler:
             latent_dim = 256  # default latent dimension
             default_context = torch.zeros((1, latent_dim), device=next(self.model.parameters()).device)
         
+        # Try to broadcast a computation start message
+        try:
+            # Create task to broadcast status (don't await)
+            asyncio.create_task(self.ws_manager.broadcast({
+                "type": "reward_computation_status",
+                "status": "started",
+                "timestamp": datetime.now().isoformat()
+            }))
+        except Exception as e:
+            logger.error(f"Error broadcasting computation start: {str(e)}")
+        
         # Start background task to compute actual context
         asyncio.create_task(self._compute_reward_context_background(reward_config, default_context))
         
@@ -147,10 +158,31 @@ class MessageHandler:
             self.current_z = z
             logger.info("Background reward computation complete - context updated")
             
+            # Broadcast a status update to all clients
+            try:
+                await self.ws_manager.broadcast({
+                    "type": "reward_computation_status",
+                    "status": "completed",
+                    "timestamp": datetime.now().isoformat()
+                })
+            except Exception as broadcast_error:
+                logger.error(f"Error broadcasting computation completion: {str(broadcast_error)}")
+            
         except Exception as e:
             logger.error(f"Error in background computation: {str(e)}")
             # Keep using the default context on error
             self.current_z = default_context
+            
+            # Broadcast error status
+            try:
+                await self.ws_manager.broadcast({
+                    "type": "reward_computation_status",
+                    "status": "error",
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat()
+                })
+            except Exception as broadcast_error:
+                logger.error(f"Error broadcasting computation error: {str(broadcast_error)}")
         finally:
             # Always reset computing flag when done
             self.is_computing_reward = False
