@@ -74,40 +74,24 @@ class MessageHandler:
         logger.info("Buffer data set in message handler")
 
     async def get_reward_context(self, reward_config):
-        """Compute reward context using a thread executor"""
+        """Compute reward context"""
         try:
             self.is_computing_reward = True
             logger.info("Computing reward context...")
             
-            # Check cache first
-            cache_key = self.context_cache.get_cache_key(reward_config)
-            cached_z, cache_file = self.context_cache._get_cached_context_impl(cache_key)
-            if cached_z is not None:
-                logger.info("Using cached context")
-                return cached_z
-            
-            # Run the compute function in a thread pool
-            loop = asyncio.get_running_loop()
-            z = await loop.run_in_executor(
-                self.thread_executor,  # Use class-level executor
-                compute_reward_context,  # Direct function reference (no nested function)
-                reward_config,
-                self.env,
-                self.model,
-                self.buffer_data
-            )
-            
-            # Store in cache after computation
-            if len(self.context_cache.computation_cache) < self.context_cache.max_memory_entries:
-                self.context_cache.computation_cache[cache_key] = z
-            
-            # Save to disk
-            self.context_cache._save_to_disk(cache_key, z)
-            
+            # Create a wrapper function that includes all required arguments
+            async def compute_wrapper(config):
+                return await asyncio.to_thread(
+                    compute_reward_context,
+                    config,
+                    self.env,
+                    self.model,
+                    self.buffer_data
+                )
+            z, _ = await self.context_cache.get_cached_context(reward_config, compute_wrapper)
             return z
         finally:
             self.is_computing_reward = False
-            logger.info("Reward context computation complete")
 
     async def handle_message(self, websocket, message: str) -> None:
         """Main message handler that routes to specific command handlers"""

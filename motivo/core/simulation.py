@@ -29,11 +29,10 @@ async def run_simulation_loop():
     
     while app_state.is_running:
         try:
-            # Get current context from message handler
+            # Get current context from message handler - this is now synchronous
             current_z = app_state.message_handler.get_current_z()
             
-            # Generate action based on current context and observation
-            # These are synchronous operations that return Tensors
+            # Generate action and compute q-value - these are synchronous operations
             action = app_state.model.act(observation, current_z, mean=True)
             q_value = compute_q_value(app_state.model, observation, current_z, action)
             q_percentage = normalize_q_value(q_value)
@@ -41,18 +40,14 @@ async def run_simulation_loop():
             # Step the environment with the action
             observation, _, terminated, truncated, _ = app_state.env.step(action.cpu().numpy().ravel())
             
-            # Handle pose updates and broadcasting
+            # These operations remain async
             await broadcast_pose_update(q_percentage)
-            
-            # Handle frame rendering and display
             await render_and_process_frame(frame_count, q_percentage, last_frame_save_time)
             frame_count += 1
             
-            # Check for termination
             if terminated:
                 observation, _ = app_state.env.reset()
             
-            # Maintain frame rate
             await asyncio.sleep(1/config.fps)
         except Exception as e:
             logger.error(f"Error in simulation loop: {str(e)}")
