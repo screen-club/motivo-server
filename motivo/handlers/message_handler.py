@@ -247,14 +247,31 @@ class MessageHandler:
             inference_type = data.get("inference_type", "goal")
             logger.info(f"Using inference type: {inference_type}")
             
-            if inference_type == "goal":
-                z = self.model.goal_inference(next_obs=goal_obs)
-            elif inference_type == "tracking":
-                z = self.model.tracking_inference(next_obs=goal_obs)
-            else:
-                # If unsupported type, default to goal inference
-                logger.warning(f"Unsupported inference type '{inference_type}', defaulting to goal inference")
-                z = self.model.goal_inference(next_obs=goal_obs)
+            # Check for potential coroutines
+            try:
+                if inference_type == "goal":
+                    z = self.model.goal_inference(next_obs=goal_obs)
+                elif inference_type == "tracking":
+                    z = self.model.tracking_inference(next_obs=goal_obs)
+                else:
+                    # If unsupported type, default to goal inference
+                    logger.warning(f"Unsupported inference type '{inference_type}', defaulting to goal inference")
+                    z = self.model.goal_inference(next_obs=goal_obs)
+                
+                # Check if the result is a coroutine that needs to be awaited
+                if asyncio.iscoroutine(z):
+                    logger.info(f"{inference_type}_inference returned a coroutine, awaiting it")
+                    z = await z
+                    
+                logger.info(f"Inference result type: {type(z)}")
+            except Exception as e:
+                logger.error(f"Error in inference: {str(e)}")
+                traceback.print_exc()
+                # Use default z if available
+                if hasattr(self, 'default_z'):
+                    z = self.default_z
+                else:
+                    raise
             
             # Update current context
             self.current_z = z
@@ -427,11 +444,31 @@ class MessageHandler:
             )
 
             # Use tracking_inference for smoother transitions
-            pose_z = self.model.tracking_inference(next_obs=goal_obs)
-            reward_z = await self.get_reward_context(reward_config)
-
-            # Interpolate between contexts using mix_weight
-            self.current_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
+            try:
+                pose_z = self.model.tracking_inference(next_obs=goal_obs)
+                
+                # Check if pose_z is a coroutine that needs to be awaited
+                if asyncio.iscoroutine(pose_z):
+                    logger.info("tracking_inference returned a coroutine, awaiting it")
+                    pose_z = await pose_z
+                    
+                logger.info(f"Pose inference result type: {type(pose_z)}")
+                
+                # Now get the reward context
+                reward_z = await self.get_reward_context(reward_config)
+                
+                # Interpolate between contexts using mix_weight
+                self.current_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
+                
+                logger.info(f"Mixed context created with weight {mix_weight}, type: {type(self.current_z)}")
+            except Exception as e:
+                logger.error(f"Error in pose/reward mixing: {str(e)}")
+                traceback.print_exc()
+                # Use default z as fallback
+                if hasattr(self, 'default_z'):
+                    self.current_z = self.default_z
+                else:
+                    raise
 
             response = {
                 "type": "mix_updated",
@@ -671,12 +708,30 @@ class MessageHandler:
             
             # Get context using specified inference type
             inference_type = data.get("inference_type", "goal")
-            if inference_type == "goal":
-                z = self.model.goal_inference(next_obs=goal_obs)
-            elif inference_type == "tracking":
-                z = self.model.tracking_inference(next_obs=goal_obs)
-            else:
-                raise ValueError(f"Unsupported inference type: {inference_type}")
+            
+            # Check for potential coroutines
+            try:
+                if inference_type == "goal":
+                    z = self.model.goal_inference(next_obs=goal_obs)
+                elif inference_type == "tracking":
+                    z = self.model.tracking_inference(next_obs=goal_obs)
+                else:
+                    raise ValueError(f"Unsupported inference type: {inference_type}")
+                
+                # Check if the result is a coroutine that needs to be awaited
+                if asyncio.iscoroutine(z):
+                    logger.info(f"{inference_type}_inference returned a coroutine, awaiting it")
+                    z = await z
+                    
+                logger.info(f"SMPL inference result type: {type(z)}")
+            except Exception as e:
+                logger.error(f"Error in SMPL inference: {str(e)}")
+                traceback.print_exc()
+                # Use default z if available
+                if hasattr(self, 'default_z'):
+                    z = self.default_z
+                else:
+                    raise
             
             self.current_z = z
             
@@ -825,7 +880,7 @@ class MessageHandler:
         
         logger.info(f"get_current_z called from: {caller_frame[1][3]} in {caller_frame[1][1]}")
         
-        # Ensure we always return a tensor (non-coroutine)
+        # Ensure we always return a tensor or coroutine that will resolve to a tensor
         if self.current_z is None and hasattr(self, 'default_z'):
             logger.warning("Current Z is None, using default Z instead")
             return self.default_z
@@ -833,10 +888,11 @@ class MessageHandler:
         if self.current_z is not None:
             logger.info(f"Returning current_z of type: {type(self.current_z)}")
             
-            # If it's a coroutine, log a warning as this function should be synchronous
+            # If it's a coroutine, log info that it will need to be awaited
             if asyncio.iscoroutine(self.current_z):
-                logger.error("WARNING: current_z is a coroutine, which should not happen!")
-                traceback.print_stack()
+                logger.info("current_z is a coroutine that will need to be awaited by the caller")
+                # We don't await it here since this is a synchronous method
+                # The caller (simulation.py) will handle awaiting it
                 
             # If it's a tensor, check that it's valid
             elif isinstance(self.current_z, torch.Tensor):

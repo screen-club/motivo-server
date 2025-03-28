@@ -30,8 +30,13 @@ async def run_simulation_loop():
     
     while app_state.is_running:
         try:
-            # Get current context from message handler - this is now synchronous
+            # Get current context from message handler - handle possible coroutine
             current_z = app_state.message_handler.get_current_z()
+            
+            # If current_z is a coroutine, await it
+            if asyncio.iscoroutine(current_z):
+                logger.info("current_z is a coroutine, awaiting it")
+                current_z = await current_z
             
             # Generate action and compute q-value - handle potential coroutines
             try:
