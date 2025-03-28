@@ -30,44 +30,31 @@ async def run_simulation_loop():
     
     while app_state.is_running:
         try:
-            # Get current context from message handler - should always be a tensor, not a coroutine
+            # Get current context - should be a tensor, not a coroutine
             current_z = app_state.message_handler.get_current_z()
             
-            # Add some simple validation in case we get None
+            # Handle None case
             if current_z is None:
-                logger.error("Received None from get_current_z, using default z")
+                # Use default z as fallback
                 if hasattr(app_state.model, 'get_default_z'):
                     current_z = app_state.model.get_default_z()
-                    logger.info("Using default Z from model as fallback")
                 else:
-                    # Create a zero tensor of appropriate shape as fallback
+                    # Create a zero tensor as fallback
                     default_shape = (1, 256)  # Common latent dimension, adjust if needed
                     current_z = torch.zeros(default_shape, device=next(app_state.model.parameters()).device)
-                    logger.warning(f"Created zero tensor of shape {default_shape} as fallback")
             
-            # Generate action and compute q-value - handle potential coroutines
+            # Generate action
             try:
-                # Detailed tracing for debugging the coroutine issue
-                logger.info(f"About to call model.act() - is coroutine function: {asyncio.iscoroutinefunction(app_state.model.act)}")
+                # Call model.act and handle potential coroutine
+                action_result = app_state.model.act(observation, current_z, mean=True)
                 
-                # First check if act returns a coroutine
-                import traceback
-                try:
-                    action = app_state.model.act(observation, current_z, mean=True)
-                    logger.info(f"model.act() returned type: {type(action)}")
-                    
-                    # If action is a coroutine, await it
-                    if asyncio.iscoroutine(action):
-                        logger.info("Model.act returned a coroutine, awaiting it")
-                        action = await action
-                        logger.info(f"After awaiting, action is now type: {type(action)}")
-                except Exception as e:
-                    logger.error(f"Error in model.act(): {str(e)}")
-                    traceback.print_exc()
-                    raise
+                # Always await if it's a coroutine
+                if asyncio.iscoroutine(action_result):
+                    action = await action_result
+                else:
+                    action = action_result
             except Exception as e:
                 logger.error(f"Error generating action: {str(e)}")
-                traceback.print_exc()
                 # Create a fallback action of the right shape
                 action_shape = app_state.env.action_space.shape
                 action = torch.zeros(action_shape, device=next(app_state.model.parameters()).device)
@@ -86,35 +73,12 @@ async def run_simulation_loop():
                 action_np = np.zeros(action_shape)
                 action_for_env = action_np
             
-            # Handle compute_q_value potentially being a coroutine
+            # Handle compute_q_value
             try:
-                logger.info(f"About to call compute_q_value() - is coroutine function: {asyncio.iscoroutinefunction(compute_q_value)}")
-                
-                if asyncio.iscoroutinefunction(compute_q_value):
-                    logger.info("compute_q_value is a coroutine function, awaiting it")
-                    q_value = await compute_q_value(app_state.model, observation, current_z, action_np)
-                    logger.info(f"After awaiting compute_q_value, got result type: {type(q_value)}")
-                else:
-                    logger.info("compute_q_value is a regular function, calling directly")
-                    try:
-                        result = compute_q_value(app_state.model, observation, current_z, action_np)
-                        logger.info(f"compute_q_value() returned type: {type(result)}")
-                        
-                        if asyncio.iscoroutine(result):
-                            logger.info("compute_q_value returned a coroutine, awaiting it")
-                            q_value = await result
-                            logger.info(f"After awaiting compute_q_value result, got type: {type(q_value)}")
-                        else:
-                            q_value = result
-                    except Exception as e:
-                        logger.error(f"Error during compute_q_value call: {str(e)}")
-                        import traceback
-                        traceback.print_exc()
-                        raise
+                # Call compute_q_value directly - it's not a coroutine function
+                q_value = compute_q_value(app_state.model, observation, current_z, action_np)
             except Exception as e:
                 logger.error(f"Error computing q_value: {str(e)}")
-                import traceback
-                traceback.print_exc()
                 q_value = 0.5  # Fallback value
                 
             q_percentage = normalize_q_value(q_value)

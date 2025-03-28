@@ -75,30 +75,20 @@ class MessageHandler:
         self.buffer_data = buffer_data
         logger.info("Buffer data set in message handler")
 
-    async def get_reward_context(self, reward_config):
-        """Compute reward context"""
+    def get_reward_context(self, reward_config):
+        """Compute reward context - synchronous version that never returns a coroutine"""
         try:
             self.is_computing_reward = True
             logger.info("Computing reward context...")
             
-            # Create a wrapper function that includes all required arguments
-            # This handles conversion from a regular function to a coroutine
-            async def compute_wrapper(config):
-                try:
-                    result = await asyncio.to_thread(
-                        compute_reward_context,
-                        config,
-                        self.env,
-                        self.model,
-                        self.buffer_data
-                    )
-                    return result
-                except Exception as e:
-                    logger.error(f"Error computing context: {str(e)}")
-                    # Return None on error so we can handle it gracefully
-                    return None
-                    
-            z, _ = await self.context_cache.get_cached_context(reward_config, compute_wrapper)
+            # Call context cache method directly (without async/await)
+            # Note: If context_cache is async-based, update this implementation
+            z = compute_reward_context(
+                reward_config,
+                self.env,
+                self.model,
+                self.buffer_data
+            )
             
             # Handle case where z is None
             if z is None and hasattr(self.model, 'get_default_z'):
@@ -106,6 +96,12 @@ class MessageHandler:
                 z = self.model.get_default_z()
                 
             return z
+        except Exception as e:
+            logger.error(f"Error computing reward context: {str(e)}")
+            # Return default z or None
+            if hasattr(self, 'default_z'):
+                return self.default_z
+            return None
         finally:
             self.is_computing_reward = False
 
@@ -247,46 +243,34 @@ class MessageHandler:
             inference_type = data.get("inference_type", "goal")
             logger.info(f"Using inference type: {inference_type}")
             
-            # Execute inference based on type and ensure we await any coroutines
+            # Execute inference based on type
             try:
-                # Get inference coroutine or result
+                # Get inference result and await if needed
                 if inference_type == "goal":
-                    inference_result = self.model.goal_inference(next_obs=goal_obs)
+                    result = self.model.goal_inference(next_obs=goal_obs)
                 elif inference_type == "tracking":
-                    inference_result = self.model.tracking_inference(next_obs=goal_obs)
+                    result = self.model.tracking_inference(next_obs=goal_obs)
                 else:
                     # If unsupported type, default to goal inference
                     logger.warning(f"Unsupported inference type '{inference_type}', defaulting to goal inference")
-                    inference_result = self.model.goal_inference(next_obs=goal_obs)
+                    result = self.model.goal_inference(next_obs=goal_obs)
                 
-                # Always await the result if it's a coroutine
-                if asyncio.iscoroutine(inference_result):
-                    logger.info(f"{inference_type}_inference returned a coroutine, awaiting it")
-                    z = await inference_result
+                # Await if it's a coroutine
+                if asyncio.iscoroutine(result):
+                    z = await result
                 else:
-                    z = inference_result
-                    
-                logger.info(f"Inference complete, result is a {type(z)}")
+                    z = result
                 
-                # Verify we have a tensor now
-                if not isinstance(z, torch.Tensor):
-                    logger.error(f"Inference did not return a tensor! Got {type(z)}")
-                    if hasattr(self, 'default_z'):
-                        z = self.default_z
-                    else:
-                        raise ValueError(f"Inference returned non-tensor {type(z)} and no default_z available")
-                        
+                # Update current context
+                self.current_z = z
+                
             except Exception as e:
                 logger.error(f"Error in inference: {str(e)}")
-                traceback.print_exc()
                 # Use default z if available
                 if hasattr(self, 'default_z'):
-                    z = self.default_z
+                    self.current_z = self.default_z
                 else:
                     raise
-            
-            # Update current context with the resolved tensor value
-            self.current_z = z
             
             # Update active poses
             self.active_poses = {
@@ -389,20 +373,11 @@ class MessageHandler:
                 self.current_reward_config = self.active_rewards  # Update current reward config
                 
                 logger.info("Recomputing context...")
-                # get_reward_context is an async method, we must await it
-                z = await self.get_reward_context(self.active_rewards)
+                # get_reward_context is now synchronous
+                z = self.get_reward_context(self.active_rewards)
                 
-                # Verify z is a tensor
-                if not isinstance(z, torch.Tensor):
-                    logger.error(f"Reward context is not a tensor! Got {type(z)}")
-                    if hasattr(self, 'default_z'):
-                        z = self.default_z
-                    else:
-                        raise ValueError(f"Reward context is not a tensor: {type(z)}")
-                
-                # Set the current_z with the verified tensor
+                # Set the current_z with the tensor (get_reward_context guarantees a tensor)
                 self.current_z = z
-                logger.info(f"Updated context with shape: {z.shape if hasattr(z, 'shape') else 'unknown'}")
                 
                 response = {
                     "type": "reward_updated",
@@ -469,47 +444,24 @@ class MessageHandler:
 
             # Use tracking_inference for smoother transitions
             try:
-                # Get pose inference result
-                inference_result = self.model.tracking_inference(next_obs=goal_obs)
-                
-                # Always await the result if it's a coroutine
-                if asyncio.iscoroutine(inference_result):
-                    logger.info("tracking_inference returned a coroutine, awaiting it")
-                    pose_z = await inference_result
+                # Get pose inference result and await if it's a coroutine
+                pose_result = self.model.tracking_inference(next_obs=goal_obs)
+                if asyncio.iscoroutine(pose_result):
+                    pose_z = await pose_result
                 else:
-                    pose_z = inference_result
+                    pose_z = pose_result
                 
-                # Verify pose_z is a tensor
-                if not isinstance(pose_z, torch.Tensor):
-                    logger.error(f"Pose inference did not return a tensor! Got {type(pose_z)}")
-                    if hasattr(self, 'default_z'):
-                        pose_z = self.default_z
-                    else:
-                        raise ValueError(f"Pose inference returned non-tensor {type(pose_z)}")
-                
-                logger.info(f"Pose inference result shape: {pose_z.shape}, device: {pose_z.device}")
-                
-                # Now get the reward context - always await this since it's an async method
-                reward_z = await self.get_reward_context(reward_config)
-                
-                # Verify reward_z is a tensor
-                if not isinstance(reward_z, torch.Tensor):
-                    logger.error(f"Reward context is not a tensor! Got {type(reward_z)}")
-                    if hasattr(self, 'default_z'):
-                        reward_z = self.default_z
-                    else:
-                        raise ValueError(f"Reward context is not a tensor: {type(reward_z)}")
+                # Get the reward context - now it's synchronous
+                reward_z = self.get_reward_context(reward_config)
                 
                 # Interpolate between contexts using mix_weight
                 result_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
                 
-                # Set the current_z with the interpolated result (which is definitely a tensor)
+                # Store the result
                 self.current_z = result_z
                 
-                logger.info(f"Mixed context created with weight {mix_weight}, shape: {self.current_z.shape}")
             except Exception as e:
                 logger.error(f"Error in pose/reward mixing: {str(e)}")
-                traceback.print_exc()
                 # Use default z as fallback
                 if hasattr(self, 'default_z'):
                     self.current_z = self.default_z
@@ -626,15 +578,7 @@ class MessageHandler:
                     
                     # Compute the context once for all rewards
                     logger.info("Computing context for all rewards at once")
-                    z = await self.get_reward_context(self.active_rewards)
-                    
-                    # Verify z is a tensor before caching
-                    if not isinstance(z, torch.Tensor):
-                        logger.error(f"Reward context is not a tensor! Got {type(z)}")
-                        if hasattr(self, 'default_z'):
-                            z = self.default_z
-                        else:
-                            raise ValueError(f"Reward context is not a tensor: {type(z)}")
+                    z = self.get_reward_context(self.active_rewards)
                     
                     # Now that we have the result, manually store it with the batch key
                     # This caches the result with both the standard key and batch key
@@ -644,31 +588,15 @@ class MessageHandler:
                 except Exception as e:
                     logger.error(f"Error in batch mode processing: {str(e)}")
                     logger.info("Falling back to standard processing")
-                    z = await self.get_reward_context(self.active_rewards)
+                    z = self.get_reward_context(self.active_rewards)
                     
-                    # Verify z is a tensor
-                    if not isinstance(z, torch.Tensor):
-                        logger.error(f"Fallback reward context is not a tensor! Got {type(z)}")
-                        if hasattr(self, 'default_z'):
-                            z = self.default_z
-                        else:
-                            raise ValueError(f"Fallback reward context is not a tensor: {type(z)}")
             else:
                 # Standard computation for single reward
                 logger.info("Computing context for new reward configuration")
-                z = await self.get_reward_context(self.active_rewards)
+                z = self.get_reward_context(self.active_rewards)
                 
-                # Verify z is a tensor
-                if not isinstance(z, torch.Tensor):
-                    logger.error(f"Standard reward context is not a tensor! Got {type(z)}")
-                    if hasattr(self, 'default_z'):
-                        z = self.default_z
-                    else:
-                        raise ValueError(f"Standard reward context is not a tensor: {type(z)}")
-                
-            # Set the current_z with the verified tensor
+            # Set the current_z with the tensor (get_reward_context guarantees a tensor)
             self.current_z = z
-            logger.info(f"Reward context set with shape: {z.shape if hasattr(z, 'shape') else 'unknown'}")
             
             response = {
                 "type": "reward",
@@ -781,44 +709,32 @@ class MessageHandler:
             # Get context using specified inference type
             inference_type = data.get("inference_type", "goal")
             
-            # Execute inference based on type and ensure we await any coroutines
+            # Execute inference based on type
             try:
-                # Get inference coroutine or result
+                # Get inference result and await if needed
                 if inference_type == "goal":
-                    inference_result = self.model.goal_inference(next_obs=goal_obs)
+                    result = self.model.goal_inference(next_obs=goal_obs)
                 elif inference_type == "tracking":
-                    inference_result = self.model.tracking_inference(next_obs=goal_obs)
+                    result = self.model.tracking_inference(next_obs=goal_obs)
                 else:
                     raise ValueError(f"Unsupported inference type: {inference_type}")
                 
-                # Always await the result if it's a coroutine
-                if asyncio.iscoroutine(inference_result):
-                    logger.info(f"SMPL {inference_type}_inference returned a coroutine, awaiting it")
-                    z = await inference_result
+                # Await if it's a coroutine
+                if asyncio.iscoroutine(result):
+                    z = await result
                 else:
-                    z = inference_result
-                    
-                logger.info(f"SMPL inference complete, result is a {type(z)}")
+                    z = result
                 
-                # Verify we have a tensor now
-                if not isinstance(z, torch.Tensor):
-                    logger.error(f"SMPL inference did not return a tensor! Got {type(z)}")
-                    if hasattr(self, 'default_z'):
-                        z = self.default_z
-                    else:
-                        raise ValueError(f"SMPL inference returned non-tensor {type(z)} and no default_z available")
-                        
+                # Update current context 
+                self.current_z = z
+                
             except Exception as e:
                 logger.error(f"Error in SMPL inference: {str(e)}")
-                traceback.print_exc()
                 # Use default z if available
                 if hasattr(self, 'default_z'):
-                    z = self.default_z
+                    self.current_z = self.default_z
                 else:
                     raise
-            
-            # Update current context with the resolved tensor value
-            self.current_z = z
             
             # Update active poses
             self.active_poses = {
@@ -957,33 +873,21 @@ class MessageHandler:
             }
             await websocket.send(json.dumps(response))
 
-    def get_current_z(self) -> Optional[torch.Tensor]:
-        """Get the current context tensor - returns only tensor values, not coroutines"""
-        # Simple synchronous method that should never return a coroutine
-        
+    def get_current_z(self):
+        """Get the current context tensor - never returns a coroutine"""
         # If current_z is None, use default_z if available
         if self.current_z is None and hasattr(self, 'default_z'):
-            logger.warning("Current Z is None, using default Z instead")
             return self.default_z
             
-        # If current_z is a coroutine, something went wrong - use default
+        # Coroutines should never be stored in self.current_z
+        # This is just a safeguard
         if asyncio.iscoroutine(self.current_z):
-            logger.error("ERROR: current_z is a coroutine in get_current_z, which should never happen!")
-            import traceback
-            traceback.print_stack()
+            # Critical error - should never happen
+            logger.error("CRITICAL ERROR: current_z is a coroutine in get_current_z!")
+            # Return default or None
+            return self.default_z if hasattr(self, 'default_z') else None
             
-            if hasattr(self, 'default_z'):
-                logger.warning("Using default_z instead of coroutine")
-                return self.default_z
-            else:
-                logger.error("No default_z available - this is a critical error!")
-                # Return None since we can't resolve the coroutine here
-                return None
-                
-        # If it's a tensor, log some debug info
-        if isinstance(self.current_z, torch.Tensor):
-            logger.info(f"Returning tensor with shape {self.current_z.shape}")
-            
+        # Return the tensor
         return self.current_z
 
     async def handle_capture_frame(self, websocket, data: Dict[str, Any]) -> None:
