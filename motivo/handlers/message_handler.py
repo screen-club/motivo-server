@@ -9,6 +9,7 @@ import logging
 import websockets
 import inspect
 import traceback
+import atexit
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -20,8 +21,14 @@ from rewards.reward_context import compute_reward_context
 
 logger = logging.getLogger('message_handler')
 
+# This will be set up after the MessageHandler class is defined
+_cleanup_function = None
+
 class MessageHandler:
     """Handles incoming WebSocket messages and routes them to appropriate handlers"""
+    
+    # Class variable to track instances for cleanup
+    _instances = []
     
     def __init__(self, model, env, ws_manager, context_cache):
         # Core components
@@ -65,10 +72,25 @@ class MessageHandler:
             "make_snapshot": self.handle_make_snapshot,
         }
         
-        # Add this at class level
-        self.thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        # We'll use the default executor for running tasks, so no need for custom thread pools
+        
+        # Add this instance to the class tracking list for cleanup
+        MessageHandler._instances.append(self)
         
         logger.info("Message handler initialized")
+        
+    def __del__(self):
+        """Clean up resources when this instance is garbage collected"""
+        # Remove from instances list
+        if self in MessageHandler._instances:
+            MessageHandler._instances.remove(self)
+            
+    @classmethod
+    def cleanup_all(cls):
+        """Class method to clean up all instances' resources"""
+        logger.info(f"Cleaning up {len(cls._instances)} MessageHandler instances")
+        # Clear instances list
+        cls._instances.clear()
 
     def set_buffer_data(self, buffer_data):
         """Set the buffer data needed for reward computation"""
@@ -76,33 +98,61 @@ class MessageHandler:
         logger.info("Buffer data set in message handler")
 
     def get_reward_context(self, reward_config):
-        """Compute reward context - synchronous version that never returns a coroutine"""
+        """
+        Start computing reward context in background and return immediately.
+        
+        This non-blocking version returns the default context immediately
+        and updates self.current_z when computation is complete.
+        """
+        # Set the computing flag to show appropriate UI state
+        self.is_computing_reward = True
+        
+        # Get placeholder context to return immediately
+        if hasattr(self.model, 'get_default_z'):
+            default_context = self.model.get_default_z()
+        elif hasattr(self, 'default_z'):
+            default_context = self.default_z
+        else:
+            # Create a placeholder of appropriate shape
+            latent_dim = 256  # default latent dimension
+            default_context = torch.zeros((1, latent_dim), device=next(self.model.parameters()).device)
+        
+        # Start background task to compute actual context
+        asyncio.create_task(self._compute_reward_context_background(reward_config, default_context))
+        
+        # Return immediately with default context
+        logger.info("Started reward computation in background, returning interim context")
+        return default_context
+    
+    async def _compute_reward_context_background(self, reward_config, default_context):
+        """Background task to compute reward context and update state when done"""
         try:
-            self.is_computing_reward = True
-            logger.info("Computing reward context...")
-            
-            # Call context cache method directly (without async/await)
-            # Note: If context_cache is async-based, update this implementation
-            z = compute_reward_context(
+            # Run the actual computation in a thread to avoid blocking asyncio loop
+            loop = asyncio.get_running_loop()
+            z = await loop.run_in_executor(
+                None,  # Use default executor
+                compute_reward_context,
                 reward_config,
                 self.env,
                 self.model,
                 self.buffer_data
             )
             
-            # Handle case where z is None
-            if z is None and hasattr(self.model, 'get_default_z'):
-                logger.warning("Failed to compute reward context, using default z")
-                z = self.model.get_default_z()
+            # If computation failed, use the default
+            if z is None:
+                logger.warning("Computation returned None, using default context")
+                z = default_context
                 
-            return z
+            # Update the current_z with real computed value
+            self.current_z = z
+            logger.info("Background reward computation complete - context updated")
+            
         except Exception as e:
-            logger.error(f"Error computing reward context: {str(e)}")
-            # Return default z or None
-            if hasattr(self, 'default_z'):
-                return self.default_z
-            return None
+            logger.error(f"Error in background computation: {str(e)}")
+            # Keep using the default context on error
+            self.current_z = default_context
         finally:
+            # Always reset computing flag when done
             self.is_computing_reward = False
 
     async def handle_message(self, websocket, message: str) -> None:
@@ -1044,6 +1094,12 @@ class MessageHandler:
         self.default_z = z
         self.current_z = z
         logger.info("Default context set")
-        
-    # Removed _resolve_z_coroutine method since we're ensuring
-    # self.current_z is never a coroutine in the handler methods
+
+# Register cleanup function after the class is defined
+def _cleanup_message_handlers_at_exit():
+    if hasattr(MessageHandler, 'cleanup_all'):
+        logger.info("Running MessageHandler cleanup at exit")
+        MessageHandler.cleanup_all()
+    
+# Register the cleanup function
+atexit.register(_cleanup_message_handlers_at_exit)
