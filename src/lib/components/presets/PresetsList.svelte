@@ -24,9 +24,19 @@
   let regeneratingPresetId = null;
   let currentAnimationInterval = null;
   
+  // Tag search autocomplete
+  let tagSearchInput = '';
+  let showTagSuggestions = false;
+  
   // Toggle state for collapsible sections
   let showTimelines = true;
   let showPoses = true;
+  
+  // Filter tag suggestions based on input
+  $: filteredTagSuggestions = tagSearchInput.trim()
+    ? uniqueTags.filter(tag => 
+        tag.toLowerCase().includes(tagSearchInput.toLowerCase()))
+    : uniqueTags;
   
   // Computed properties for unique tags and users
   $: uniqueTags = Array.from(new Set(presets.flatMap(p => p.tags || []).filter(Boolean)));
@@ -467,15 +477,61 @@
         <option value="timeline">Timeline</option>
       </select>
 
-      <select
-        multiple
-        bind:value={selectedTags}
-        class="border rounded-md px-2 py-1 text-sm min-w-[150px]"
-      >
-        {#each uniqueTags as tag}
-          <option value={tag}>{tag}</option>
-        {/each}
-      </select>
+      <div class="relative min-w-[200px]">
+        <!-- Selected Tags -->
+        {#if selectedTags.length > 0}
+          <div class="flex flex-wrap gap-1 mb-1">
+            {#each selectedTags as tag}
+              <span class="bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full text-xs flex items-center gap-1">
+                {tag}
+                <button
+                  class="hover:text-purple-600"
+                  on:click={() => selectedTags = selectedTags.filter(t => t !== tag)}
+                >
+                  ×
+                </button>
+              </span>
+            {/each}
+            <button
+              class="text-xs text-gray-500 hover:text-gray-700"
+              on:click={() => selectedTags = []}
+            >
+              Clear
+            </button>
+          </div>
+        {/if}
+        
+        <!-- Tag Search Input -->
+        <input
+          type="text"
+          placeholder="Search tags..."
+          class="border rounded-md px-2 py-1 text-sm w-full"
+          on:focus={() => showTagSuggestions = true}
+          on:input={(e) => {
+            tagSearchInput = e.target.value;
+            showTagSuggestions = true;
+          }}
+          on:blur={() => setTimeout(() => (showTagSuggestions = false), 200)}
+          bind:value={tagSearchInput}
+        />
+        
+        <!-- Tag Suggestions Dropdown -->
+        {#if showTagSuggestions && filteredTagSuggestions.length > 0}
+          <div class="absolute z-50 w-full bg-white border rounded-md shadow-lg mt-1 max-h-40 overflow-y-auto">
+            {#each filteredTagSuggestions.filter(tag => !selectedTags.includes(tag)) as tag}
+              <button
+                class="w-full text-left px-3 py-1 hover:bg-gray-100 text-sm"
+                on:mousedown={() => {
+                  selectedTags = [...selectedTags, tag];
+                  tagSearchInput = '';
+                }}
+              >
+                {tag}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
 
       <button 
         class="bg-purple-500 text-white px-3 py-1 text-sm font-medium rounded-md hover:bg-purple-600 transition-colors disabled:bg-gray-400"
@@ -494,27 +550,6 @@
     </div>
   </div>
 
-  {#if selectedTags.length > 0}
-    <div class="flex gap-2 mt-2 flex-wrap">
-      {#each selectedTags as tag}
-        <span class="bg-purple-100 text-purple-800 px-2 py-1 rounded-full text-sm flex items-center gap-1">
-          {tag}
-          <button
-            class="hover:text-purple-600"
-            on:click={() => selectedTags = selectedTags.filter(t => t !== tag)}
-          >
-            ×
-          </button>
-        </span>
-      {/each}
-      <button
-        class="text-sm text-gray-500 hover:text-gray-700"
-        on:click={() => selectedTags = []}
-      >
-        Clear all
-      </button>
-    </div>
-  {/if}
 
   {#if saveError}
     <div class="text-red-500 mb-4 text-sm">{saveError}</div>
