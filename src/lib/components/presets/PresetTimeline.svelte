@@ -672,15 +672,6 @@
       ⏮️ Previous
     </button>
 
-    <button 
-      class="bg-gray-400 text-white px-3 py-2 rounded-md hover:bg-gray-500 relative group"
-      on:click={() => jumpByTime(-5/30)}
-    >
-      ◀️ -5 frames
-      <span class="absolute hidden group-hover:inline-block text-xs -bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-2 py-1 rounded whitespace-nowrap">
-        Press ← Left Arrow
-      </span>
-    </button>
 
     <button 
       class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 relative group"
@@ -692,15 +683,7 @@
       </span>
     </button>
 
-    <button 
-      class="bg-gray-400 text-white px-3 py-2 rounded-md hover:bg-gray-500 relative group"
-      on:click={() => jumpByTime(5/30)}
-    >
-      +5 frames ▶️
-      <span class="absolute hidden group-hover:inline-block text-xs -bottom-6 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-2 py-1 rounded whitespace-nowrap">
-        Press → Right Arrow
-      </span>
-    </button>
+
 
     <button 
       class="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600 relative group"
