@@ -201,11 +201,22 @@
     saveTimelineChanges();
   }
 
+  // Saving status indicator
+  let isSaving = false;
+  let saveComplete = false;
+  let saveTimer;
+
   // Function to save timeline changes to the database
   async function saveTimelineChanges() {
     if (!timelineId) return;
     
     try {
+      isSaving = true;
+      saveComplete = false;
+      
+      // Clear any previous save complete timer
+      if (saveTimer) clearTimeout(saveTimer);
+      
       const timelineData = {
         duration,
         placedPresets,
@@ -217,8 +228,17 @@
       });
       
       console.log('Timeline updated successfully');
+      
+      isSaving = false;
+      saveComplete = true;
+      
+      // Reset saved status after 3 seconds
+      saveTimer = setTimeout(() => {
+        saveComplete = false;
+      }, 3000);
     } catch (error) {
       console.error('Failed to save timeline changes:', error);
+      isSaving = false;
     }
   }
 
@@ -581,7 +601,21 @@
 
 <div class="w-full bg-white rounded-lg shadow-lg p-4 mb-8">
   <div class="flex items-center justify-between mb-2">
-    <h2 class="text-lg font-bold text-gray-800">Timeline: {timelineName}</h2>
+    <div class="flex items-center">
+      <h2 class="text-lg font-bold text-gray-800">Timeline: {timelineName}</h2>
+      
+      <!-- Saving indicator - always visible, changes color based on state -->
+      <div class="relative ml-3 group">
+        <div class="{isSaving ? 'bg-orange-500' : 'bg-blue-500'} h-3 w-3 rounded-full {isSaving ? 'animate-pulse' : ''}"></div>
+        <div class="absolute z-10 hidden group-hover:block top-full left-1/2 transform -translate-x-1/2 bg-gray-800 text-white text-xs px-2 py-1 rounded whitespace-nowrap">
+          {#if isSaving}
+            Saving timeline...
+          {:else}
+            Timeline ready
+          {/if}
+        </div>
+      </div>
+    </div>
   </div>
   
   <div class="flex items-center gap-4 mb-4">
