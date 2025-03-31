@@ -69,10 +69,66 @@
     event.dataTransfer.dropEffect = 'copy';
   }
 
-  // Handle preset dragging
-  function handlePresetDragStart(event, preset) {
+  // Variables for direct dragging
+  let dragStartX = 0;
+  let dragStartPosition = 0;
+  let isDragging = false;
+
+  // Handle preset dragging - direct manipulation instead of drag/drop API
+  function handlePresetMouseDown(event, preset) {
+    // Only handle left mouse button
+    if (event.button !== 0) return;
+    
+    event.stopPropagation(); // Prevent timeline click
+    
     isDraggingPreset = preset;
-    event.dataTransfer.setData('preset_move', 'true');
+    isDragging = true;
+    dragStartX = event.clientX;
+    dragStartPosition = preset.position;
+    
+    // Add temporary event listeners to window
+    window.addEventListener('mousemove', handlePresetMouseMove);
+    window.addEventListener('mouseup', handlePresetMouseUp);
+  }
+  
+  function handlePresetMouseMove(event) {
+    if (!isDragging || !isDraggingPreset) return;
+    
+    const timelineRect = timelineRef.getBoundingClientRect();
+    const deltaX = event.clientX - dragStartX;
+    const timeDelta = (deltaX / timelineRect.width) * viewportDuration;
+    
+    // Calculate new position
+    let newPosition = Math.max(0, dragStartPosition + timeDelta);
+    
+    // Make sure preset doesn't go past the timeline duration
+    const maxDuration = getMaxAnimationDuration(isDraggingPreset);
+    newPosition = Math.min(newPosition, duration - maxDuration);
+    
+    // Update the preset position in real-time
+    isDraggingPreset.position = newPosition;
+    
+    // Force a UI update
+    placedPresets = [...placedPresets];
+  }
+  
+  function handlePresetMouseUp() {
+    if (isDragging && isDraggingPreset) {
+      // Sort presets by position
+      placedPresets = placedPresets.sort((a, b) => a.position - b.position);
+      
+      // Save timeline changes after moving a preset
+      if (timelineId) {
+        saveTimelineChanges();
+      }
+    }
+    
+    isDragging = false;
+    isDraggingPreset = null;
+    
+    // Remove temporary event listeners
+    window.removeEventListener('mousemove', handlePresetMouseMove);
+    window.removeEventListener('mouseup', handlePresetMouseUp);
   }
 
   // Calculate preset width based on duration at fixed 30fps
@@ -143,55 +199,45 @@
     isPanning = false;
   }
   
-  // Handle drop for both new presets and moving existing ones
+  // Handle drop for adding new presets
   function handleDrop(event) {
     event.preventDefault();
-    const timelineRect = timelineRef.getBoundingClientRect();
-    const dropX = event.clientX - timelineRect.left;
-    let dropPosition = Math.min(
-      Math.max(viewportStart, 
-      ((dropX / timelineRect.width) * viewportDuration) + viewportStart),
-      viewportStart + viewportDuration
-    );
-
-    if (isDraggingPreset) {
-      placedPresets = placedPresets
-        .map(p => p === isDraggingPreset ? { ...p, position: dropPosition } : p)
-        .sort((a, b) => a.position - b.position);
-      isDraggingPreset = null;
+    
+    try {
+      // Only handle dropping new presets
+      const preset = JSON.parse(event.dataTransfer.getData('preset'));
       
-      // Save timeline changes after moving a preset
+      const timelineRect = timelineRef.getBoundingClientRect();
+      const dropX = event.clientX - timelineRect.left;
+      let dropPosition = Math.min(
+        Math.max(viewportStart, 
+        ((dropX / timelineRect.width) * viewportDuration) + viewportStart),
+        viewportStart + viewportDuration
+      );
+      
+      let presetDuration = 2;
+      if (preset.data?.pose || preset.data?.qpos) {
+        const frames = Array.isArray(preset.data.pose) ? preset.data.pose.length :
+                      Array.isArray(preset.data.qpos) ? preset.data.qpos.length : 1;
+        // Use fixed 30fps
+        const fps = 30;
+        presetDuration = frames / fps;
+      }
+
+      dropPosition = Math.min(dropPosition, duration - presetDuration);
+
+      placedPresets = [...placedPresets, {
+        ...preset,
+        position: dropPosition,
+        duration: presetDuration
+      }].sort((a, b) => a.position - b.position);
+      
+      // Save timeline changes after adding a new preset
       if (timelineId) {
         saveTimelineChanges();
       }
-    } else {
-      try {
-        const preset = JSON.parse(event.dataTransfer.getData('preset'));
-        
-        let presetDuration = 2;
-        if (preset.data?.pose || preset.data?.qpos) {
-          const frames = Array.isArray(preset.data.pose) ? preset.data.pose.length :
-                        Array.isArray(preset.data.qpos) ? preset.data.qpos.length : 1;
-          // Use fixed 30fps
-          const fps = 30;
-          presetDuration = frames / fps;
-        }
-
-        dropPosition = Math.min(dropPosition, duration - presetDuration);
-
-        placedPresets = [...placedPresets, {
-          ...preset,
-          position: dropPosition,
-          duration: presetDuration
-        }].sort((a, b) => a.position - b.position);
-        
-        // Save timeline changes after adding a new preset
-        if (timelineId) {
-          saveTimelineChanges();
-        }
-      } catch (error) {
-        console.error('Failed to parse dropped preset:', error);
-      }
+    } catch (error) {
+      console.error('Failed to parse dropped preset:', error);
     }
   }
 
@@ -692,7 +738,7 @@
 
   <div 
     bind:this={timelineRef}
-    class="relative w-full h-32 bg-gray-100 rounded-md cursor-pointer"
+    class="relative w-full h-48 bg-gray-100 rounded-md cursor-pointer"
     on:dragover={handleDragOver}
     on:drop={handleDrop}
     on:click={handleTimelineClick}
@@ -726,23 +772,31 @@
     {#each placedPresets as preset}
       {#if preset.position >= viewportStart - (preset.duration || 2) && preset.position <= viewportStart + viewportDuration}
         <div 
-          class="absolute top-10 cursor-move {selectedPreset === preset ? 'ring-2 ring-blue-500' : ''}"
+          class="absolute top-10 cursor-move {selectedPreset === preset ? 'ring-2 ring-blue-500' : ''} 
+                 {isDraggingPreset === preset ? 'z-10 opacity-90' : 'z-1'} transition-opacity"
           style="
             left: {((preset.position - viewportStart) / viewportDuration) * 100}%;
             width: {getPresetWidth(preset)};
           "
-          draggable={true}
-          on:dragstart={(e) => handlePresetDragStart(e, preset)}
+          on:mousedown={(e) => handlePresetMouseDown(e, preset)}
           on:click={(e) => handlePresetClick(e, preset)}
         >
+          <div class="px-1 py-0.5 bg-white/80 text-xs font-medium rounded-t border border-gray-300 text-center">
+            {preset.title || 'Untitled'}
+          </div>
           {#if preset.thumbnail}
             <video 
               src={`data:video/webm;base64,${preset.thumbnail}`}
-              class="w-full h-12 rounded border-2 {selectedPreset === preset ? 'border-blue-500' : 'border-gray-300'}"
+              class="w-full h-16 rounded-b border-2 {selectedPreset === preset ? 'border-blue-500' : 'border-gray-300'}"
               autoplay
               loop
               muted
             ></video>
+          {:else}
+            <div class="w-full h-16 rounded-b border-2 bg-gray-200 flex items-center justify-center 
+                        {selectedPreset === preset ? 'border-blue-500' : 'border-gray-300'}">
+              {preset.type || 'Preset'}
+            </div>
           {/if}
         </div>
       {/if}
