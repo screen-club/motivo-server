@@ -768,6 +768,7 @@ def clear_chat():
 
 # Database routes - keep both API routes for backward compatibility
 # Original routes
+@app.route('/conf', methods=['GET'])
 @app.route('/api/conf', methods=['GET'])
 def get_configs():
     try:
@@ -793,6 +794,7 @@ def create_config():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/conf/<int:config_id>', methods=['PUT'])
 @app.route('/api/conf/<int:config_id>', methods=['PUT'])
 def update_config(config_id):
     try:
@@ -803,7 +805,8 @@ def update_config(config_id):
     except Exception as e:
         logging.error(f"Error updating configuration: {str(e)}")
         return jsonify({'error': str(e)}), 500
-    
+
+@app.route('/conf/<int:config_id>', methods=['DELETE'])
 @app.route('/api/conf/<int:config_id>', methods=['DELETE'])
 def delete_config(config_id):
     try:
