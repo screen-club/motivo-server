@@ -90,18 +90,12 @@
       }));
     }
     
-    // WebSocket handler for the main WebRTC server
-    cleanupHandler = websocketService.addMessageHandler((data) => {
-      if (data.type === 'llm_response') {
-        isProcessing = false;
-      } else if (data.type === 'debug_model_info') {
-        isComputingRewards = data.is_computing;
-      }
-    });
-    
-    // WebSocket handler specifically for Gemini messages
-    cleanupGeminiHandler = geminiSocketService.addMessageHandler((data) => {
-      if (data.type === 'gemini_response' || data.type === 'text') {
+    // Listen for gemini-message custom events from GeminiClient
+    const geminiMessageHandler = (event) => {
+      const data = event.detail;
+      console.log("LLM.svelte: Received gemini-message event", data.type);
+      
+      if (data.type === 'gemini_response') {
         const result = geminiClient.handleResponse(data, geminiConversation);
         geminiConversation = result.conversation;
         
@@ -126,6 +120,18 @@
         }
         
         scrollChatToBottom();
+      }
+    };
+    
+    // Register the gemini-message event listener
+    window.addEventListener('gemini-message', geminiMessageHandler);
+    
+    // Single WebSocket handler for all message types (except gemini_response which is now handled by the custom event)
+    cleanupHandler = websocketService.addMessageHandler((data) => {
+      if (data.type === 'llm_response') {
+        isProcessing = false;
+      } else if (data.type === 'debug_model_info') {
+        isComputingRewards = data.is_computing;
       } else if (data.type === 'gemini_connection_status') {
         isGeminiConnected = data.connected;
       } else if (data.type === 'frame_captured' && !data.success) {
@@ -133,26 +139,56 @@
       }
     });
     
-    // Set up Gemini client
+    // Always explicitly connect to ensure a fresh connection
+    console.log("LLM.svelte: Connecting to Gemini service...");
     geminiClient.connect(API_URL);
     
-    // Set up more robust Gemini connection monitoring
+    // Check connection status after a brief delay
+    setTimeout(() => {
+      isGeminiConnected = geminiSocketService.isConnected();
+      console.log("Gemini connected status:", isGeminiConnected);
+      
+      if (!isGeminiConnected) {
+        console.log("Retrying Gemini connection as it's not connected yet");
+        geminiClient.connect(API_URL);
+      }
+    }, 1000);
+    
+    // Connection monitoring with reduced frequency
     const checkConnectionInterval = setInterval(() => {
-      if (!geminiClient.checkConnection()) {
+      if (!geminiClient.getIsConnected() && !geminiSocketService.isReconnecting()) {
         console.log("Gemini connection appears to be down, attempting reconnection...");
         geminiSocketService.reconnect();
       }
-    }, 5000);
+    }, 15000); // Longer interval (15 seconds instead of 5)
     
     // Clean up on destroy
     onDestroy(() => {
+      // Clear all intervals first
       clearInterval(checkConnectionInterval);
+      
+      // Clean up all WebSocket handlers
       if (cleanupHandler) cleanupHandler();
-      geminiClient.disconnect();
+      
+      // Remove the gemini-message event listener
+      window.removeEventListener('gemini-message', geminiMessageHandler);
+      
+      // Always stop auto capture
       stopAutoCapture();
+      
+      // Clean up Gemini connection - wait a moment before disconnecting
+      // to allow any pending operations to complete
+      setTimeout(() => {
+        if (geminiSocketService.getConnectionCount() <= 1) {
+          console.log("LLM component is the last user, disconnecting Gemini client");
+          geminiClient.disconnect();
+        } else {
+          console.log("Other components still using Gemini client, not disconnecting");
+        }
+      }, 500);
     });
 
-    // Initial state
+    // Initial state - just check once
     isGeminiConnected = geminiSocketService.isConnected();
   });
 
@@ -216,10 +252,18 @@
       // Only continue if we're not already processing a response
       if (!isProcessing) {
         try {
-          await checkHumanoidReady();
+          // Check if humanoid is ready first
+          const humanoidReady = await checkHumanoidReady();
+          
+          // Only proceed with auto-correction if the humanoid is ready
+          if (humanoidReady) {
+            performAutoCorrection();
+          } else {
+            addSystemMessage("Humanoid not ready, waiting for next cycle...");
+          }
         } catch (error) {
           console.error("Error in auto-correction cycle:", error);
-          addSystemMessage("Error in auto-correction cycle");
+          addSystemMessage("Error in auto-correction cycle: " + error.message);
         }
       } else if (isComputingRewards) {
         addSystemMessage("Waiting for current reward computation to complete...");
@@ -343,28 +387,22 @@
       // Wait for debug info response before continuing
       const debugInfoHandler = websocketService.addMessageHandler((data) => {
         if (data.type === 'debug_model_info') {
-          debugInfoHandler();
+          // Clear handler first to prevent multiple calls
+          const handler = debugInfoHandler;
+          setTimeout(() => handler(), 0); // Allow this function to complete first
           clearTimeout(timeoutId);
+          
+          console.log("Received debug_model_info:", data.is_computing);
           
           // Check if rewards are computing
           isComputingRewards = data.is_computing === true;
           
           if (isComputingRewards) {
+            console.log("Humanoid is computing rewards - not ready");
             resolve(false); // Not ready yet
           } else {
-            // Now that we know humanoid is ready, capture frame
-            captureFrame().then(success => {
-              if (success) {
-                // Successfully captured frame, perform auto-correction
-                performAutoCorrection();
-                resolve(true);
-              } else {
-                resolve(false);
-              }
-            }).catch(err => {
-              console.error("Error capturing frame:", err);
-              resolve(false);
-            });
+            console.log("Humanoid is ready - returning true");
+            resolve(true); // Just resolve, don't capture frame or auto-correct here
           }
         }
       });

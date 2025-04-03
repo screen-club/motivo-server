@@ -12,12 +12,10 @@
   
   export let url = "";
 
+  // Connect websocketService when app mounts
   onMount(() => {
+    // Explicitly connect once at the app level
     websocketService.connect();
-  });
-
-  onDestroy(() => {
-    websocketService.disconnect();
   });
 </script>
 

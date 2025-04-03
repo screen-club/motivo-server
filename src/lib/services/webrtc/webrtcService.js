@@ -96,7 +96,7 @@ class WebRTCService {
       // Initialize WebRTC with a short delay
       setTimeout(() => {
         // Double-check WebSocket is still connected before initializing
-        if (websocketService.getSocket()?.readyState === WebSocket.OPEN) {
+        if (websocketService.isConnected()) {
           this.initWebRTC();
         } else {
           this.logger.warn("WebSocket disconnected before WebRTC initialization");
@@ -424,13 +424,13 @@ class WebRTCService {
       // Schedule reconnection
       this.reconnectTimeout = setTimeout(() => {
         // Only reconnect if WebSocket is open
-        if (websocketService.getSocket()?.readyState === WebSocket.OPEN) {
+        if (websocketService.isConnected()) {
           this.initWebRTC();
         } else {
           this.logger.warn("WebSocket closed, waiting for connection...");
           // Set a shorter timeout to check again soon
           setTimeout(() => {
-            if (websocketService.getSocket()?.readyState === WebSocket.OPEN) {
+            if (websocketService.isConnected()) {
               this.initWebRTC();
             } else {
               this.logger.warn("WebSocket still closed, will retry again later");

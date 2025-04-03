@@ -169,6 +169,12 @@ export function processRewards(
     return;
   }
 
+  console.log(
+    "utils.processRewards: Processing",
+    structuredResponse.rewards.length,
+    "rewards"
+  );
+
   // Collect all rewards and send them in a single batch
   const rewards = structuredResponse.rewards.map((r) => ({
     ...r,
@@ -190,13 +196,20 @@ export function processRewards(
     timestamp: new Date().toISOString(),
   };
 
+  console.log(
+    "utils.processRewards: Sending combined request, add_to_existing:",
+    addToExisting
+  );
+
   // Send a single combined request instead of multiple individual requests
   websocketService.send(combinedRewardRequest);
 
   // Update the local reward store
   rewardStore.setRewards(rewards);
 
-  console.log(`Sent ${rewards.length} rewards in a single batch request`);
+  console.log(
+    `utils.processRewards: Sent ${rewards.length} rewards in a single batch request`
+  );
 }
 
 /**

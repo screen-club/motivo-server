@@ -740,9 +740,7 @@ class LeftFootHeightReward(humenv_rewards.RewardFunction):
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
         foot_height = get_xpos(model, data, name="L_Toe")[-1]
-        # Add logging to track foot height and target
-        print(f"Left foot height: {foot_height:.3f}, Target: {self.target_height:.3f}")
-        
+        # Add logging to track foot height and target        
         return rewards.tolerance(
             foot_height,
             bounds=(self.target_height - 0.1, self.target_height + 0.1),

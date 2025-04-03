@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 import concurrent.futures
+import time
 
 from core.config import config
 from utils.frame_utils import FrameRecorder, save_shared_frame
@@ -46,6 +47,8 @@ class MessageHandler:
         self.is_computing_reward = False
         self.default_z = None
         self.frame_recorder = None
+        self.computation_status = None
+        self.last_computation_id = None
         
         # Environment variables from config
         self.backend_domain = config.backend_domain
@@ -118,16 +121,25 @@ class MessageHandler:
             latent_dim = 256  # default latent dimension
             fallback_context = torch.zeros((1, latent_dim), device=next(self.model.parameters()).device)
         
-        # Try to broadcast a computation start message
+        # Store computation start info but don't broadcast to prevent feedback loops
         try:
-            # Create task to broadcast status (don't await)
-            asyncio.create_task(self.ws_manager.broadcast({
-                "type": "reward_computation_status",
-                "status": "started",
-                "timestamp": datetime.now().isoformat()
-            }))
+            # Create a unique message_id for tracking
+            message_id = f"compute_start_{int(time.time() * 1000)}"
+            
+            # Store the message ID to correlate start/complete messages
+            self.last_computation_id = message_id
+            
+            # Create task to send status update only to originating client (if available)
+            if hasattr(self, 'last_websocket') and self.last_websocket:
+                self.computation_status = {
+                    "type": "reward_computation_status",
+                    "status": "started",
+                    "message_id": message_id,
+                    "timestamp": datetime.now().isoformat()
+                }
+            logger.debug(f"Created computation status with message_id: {message_id}")
         except Exception as e:
-            logger.error(f"Error broadcasting computation start: {str(e)}")
+            logger.error(f"Error creating computation start status: {str(e)}")
         
         # Start background task to compute actual context
         asyncio.create_task(self._compute_reward_context_background(reward_config, fallback_context))
@@ -135,10 +147,8 @@ class MessageHandler:
         # Return the CURRENT context (or fallback if current is None), so we don't disrupt the experience
         # while computing the new context in the background
         if self.current_z is None:
-            logger.info("No current context, returning fallback while computing")
             return fallback_context
         else:
-            logger.info("Started reward computation in background, maintaining current context")
             return self.current_z
     
     async def _compute_reward_context_background(self, reward_config, fallback_context):
@@ -162,17 +172,30 @@ class MessageHandler:
                 
             # Update the current_z with real computed value
             self.current_z = z
-            logger.info("Background reward computation complete - context updated")
             
-            # Broadcast a status update to all clients
+            # Instead of broadcasting to all clients, use the same message ID prefix from start
+            # This avoids creating a feedback loop
             try:
-                await self.ws_manager.broadcast({
-                    "type": "reward_computation_status",
+                # Create a completion message ID correlated with the start message
+                message_id = getattr(self, 'last_computation_id', None)
+                if not message_id:
+                    message_id = f"compute_complete_{int(time.time() * 1000)}"
+                else:
+                    message_id = message_id.replace('start', 'complete')
+                
+                # Send status only to clients that explicitly request status updates
+                # This is done via the handle_debug_model_info requests
+                logger.debug(f"Computation completed with message_id: {message_id}")
+                
+                # We no longer broadcast completion status to all clients
+                # Instead, clients can request status via debug_model_info
+                self.computation_status = {
                     "status": "completed",
+                    "message_id": message_id,
                     "timestamp": datetime.now().isoformat()
-                })
-            except Exception as broadcast_error:
-                logger.error(f"Error broadcasting computation completion: {str(broadcast_error)}")
+                }
+            except Exception as status_error:
+                logger.error(f"Error updating computation completion status: {str(status_error)}")
             
         except Exception as e:
             logger.error(f"Error in background computation: {str(e)}")
@@ -184,10 +207,12 @@ class MessageHandler:
             
             # Broadcast error status
             try:
+                message_id = f"compute_error_{int(time.time() * 1000)}"
                 await self.ws_manager.broadcast({
                     "type": "reward_computation_status",
                     "status": "error",
                     "error": str(e),
+                    "message_id": message_id,
                     "timestamp": datetime.now().isoformat()
                 })
             except Exception as broadcast_error:
@@ -202,10 +227,13 @@ class MessageHandler:
             data = json.loads(message)
             message_type = data.get("type", "")
             
+            # Log message type unless it's debug_model_info
+            #if message_type != "debug_model_info":
+                #logger.info(f"Handling message of type: {message_type}")
+            
             # Get the appropriate handler for this message type
             handler = self.command_handlers.get(message_type)
             if handler:
-                logger.info(f"Handling message of type: {message_type}")
                 try:
                     await handler(websocket, data)
                 except websockets.exceptions.ConnectionClosedError as e:
@@ -238,7 +266,6 @@ class MessageHandler:
 
     async def handle_start_recording(self, websocket, data: Dict[str, Any]) -> None:
         """Start recording frames"""
-        logger.info("Starting recording...")
         self.frame_recorder = FrameRecorder()
         self.frame_recorder.recording = True
         response = {
@@ -246,15 +273,12 @@ class MessageHandler:
             "status": "started",
             "timestamp": datetime.now().isoformat()
         }
-        logger.info(f"Recording started, recorder state: {self.frame_recorder.recording}")
         await websocket.send(json.dumps(response))
 
     async def handle_stop_recording(self, websocket, data: Dict[str, Any]) -> None:
         """Stop recording and save frames"""
-        logger.info("Stopping recording...")
         if self.frame_recorder and self.frame_recorder.recording:
             try:
-                logger.info(f"Frames recorded: {len(self.frame_recorder.frames)}")
                 
                 # Create a unique filename for the zip
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -264,7 +288,6 @@ class MessageHandler:
                 from core.config import config
                 zip_path = os.path.join(config.downloads_dir, zip_filename)
                 
-                logger.info(f"Saving recording to: {zip_path}")
                 
                 # Save the recording and get the zip path
                 self.frame_recorder.end_record(zip_path)
@@ -297,9 +320,7 @@ class MessageHandler:
         """Load pose configuration from qpos data"""
    
         try:
-            logger.info("Loading pose configuration...")
             goal_qpos = np.array(data.get("pose", []))
-            logger.info(f"Received pose array length: {len(goal_qpos)}")
             
             if len(goal_qpos) != 76:  # Expect 76 values for qpos
                 raise ValueError(f"Invalid pose length: {len(goal_qpos)}, expected 76")
@@ -422,10 +443,14 @@ class MessageHandler:
             
         logger.info("Active rewards cleared ✅")
         
+        # Extract or generate a message ID
+        message_id = data.get("message_id", f"clear_rewards_{int(time.time() * 1000)}")
+        
         response = {
             "type": "rewards_cleared",
             "status": "success",
             "preserve_z": preserve_z,
+            "message_id": message_id,
             "timestamp": datetime.now().isoformat()
         }
         await websocket.send(json.dumps(response))
@@ -589,13 +614,28 @@ class MessageHandler:
             "active_poses": self.active_poses,
             **stats
         }
-        await self.ws_manager.broadcast(response)
-        logger.debug("Sent debug model info")
+        
+        # Include computation status if available and client requested it
+        if hasattr(self, 'computation_status') and self.computation_status:
+            # Include the status but don't repeat it in future requests
+            computation_status = self.computation_status
+            self.computation_status = None  # Clear after sending once
+            response['computation_status'] = computation_status
+        
+        # Only send to the requesting client instead of broadcasting to all
+        await websocket.send(json.dumps(response))
+        logger.debug("Sent debug model info to requesting client")
 
     async def handle_request_reward(self, websocket, data: Dict[str, Any]) -> None:
         """Process reward combination requests"""
         logger.info("------------------------------------------------------------------------")
         logger.info("Processing reward combination request")
+        
+        # Store the originating websocket for sending computation status later
+        self.last_websocket = websocket
+        
+        # Extract message_id from request or generate a new one
+        message_id = data.get("message_id", f"reward_req_{int(time.time() * 1000)}")
         
         # Check for ongoing computation - regardless of batch or single
         if self.is_computing_reward:
@@ -605,6 +645,7 @@ class MessageHandler:
                 "type": "reward",
                 "status": "computing_in_progress",
                 "message": "Request received - will process when current computation completes",
+                "message_id": f"{message_id}_queued",
                 "timestamp": data.get("timestamp", ""),
                 "is_computing": True
             }
@@ -672,6 +713,7 @@ class MessageHandler:
             response = {
                 "type": "reward",
                 "value": 1.0,
+                "message_id": f"{message_id}_processed",
                 "timestamp": data.get("timestamp", ""),
                 "is_computing": self.is_computing_reward,
                 "active_rewards": self.active_rewards,
@@ -689,6 +731,7 @@ class MessageHandler:
                 "type": "reward",
                 "status": "error",
                 "error": str(e),
+                "message_id": f"{message_id}_error",
                 "timestamp": data.get("timestamp", ""),
                 "is_computing": False
             }
@@ -705,17 +748,20 @@ class MessageHandler:
         observation, _ = self.env.reset()
         logger.info("Environment reset completed")
         
+        # Send debug info only to the requesting client
         debug_info = {
             "type": "debug_model_info",
             "is_computing": self.is_computing_reward,
             "active_rewards": self.active_rewards,
+            "message_id": f"clean_debug_{int(time.time() * 1000)}",
             **self.ws_manager.get_stats()
         }
-        await self.ws_manager.broadcast(debug_info)
+        await websocket.send(json.dumps(debug_info))
         
         response = {
             "type": "clean_rewards",
             "status": "success",
+            "message_id": f"clean_success_{int(time.time() * 1000)}",
             "timestamp": data.get("timestamp", "")
         }
         await websocket.send(json.dumps(response))
@@ -1108,60 +1154,106 @@ class MessageHandler:
         logger.info("Default context set")
 
     async def handle_get_target_positions(self, websocket, data: Dict[str, Any]) -> None:
-        """Handle request to get current positions of all reward targets"""
+        """Handle request to get current positions of all reward targets and body parts"""
         try:
-            logger.info("Getting current target positions...")
+            logger.info("Getting current target positions and all body part positions...")
             
-            # Check if we have active rewards
-            if not self.active_rewards or 'rewards' not in self.active_rewards:
-                response = {
-                    "type": "target_positions",
-                    "status": "no_active_rewards",
-                    "timestamp": datetime.now().isoformat()
-                }
-                await websocket.send(json.dumps(response))
-                return
+            # Import here to avoid circular imports
+            from rewards.position_rewards import PositionReward, transform_point_to_local_frame, get_rotation_matrix_from_pelvis
             
             positions_data = {}
+            all_body_positions = {}
             
-            # Go through each reward in active rewards
-            for reward_config in self.active_rewards['rewards']:
-                reward_name = reward_config.get('name', '')
+            # Get reference frame data for local coordinate calculations
+            pelvis_pos = self.env.unwrapped.data.xpos[self.env.unwrapped.model.body("Pelvis").id].copy()
+            pelvis_rotation = get_rotation_matrix_from_pelvis(
+                self.env.unwrapped.model, 
+                self.env.unwrapped.data
+            )
+            
+            # Get positions for all body parts
+            standard_body_parts = [
+                "Head", "Pelvis", "L_Hand", "R_Hand", "L_Toe", "R_Toe", "Torso", "Chest"
+            ]
+            
+            # First collect all bodies in the model
+            all_bodies = {}
+            for i in range(self.env.unwrapped.model.nbody):
+                body_name = self.env.unwrapped.model.body(i).name
+                all_bodies[body_name] = i
+            
+            # Get positions for all bodies
+            for body_name, body_id in all_bodies.items():
+                current_pos = self.env.unwrapped.data.xpos[body_id].copy()
                 
-                # Check if this is a position reward
-                if reward_name.startswith('position-'):
-                    try:
-                        # Create the reward object
-                        from rewards.position_rewards import PositionReward
-                        reward_obj = PositionReward.reward_from_name(reward_name)
-                        
-                        if reward_obj:
-                            # Get target configurations
-                            targets = reward_obj.get_serialized_targets()
+                
+                position_data = {
+                    "global": {
+                        "x": float(current_pos[0]),
+                        "y": float(current_pos[1]),
+                        "z": float(current_pos[2])
+                    }
+                }
+              
+
+                #position_data = {}
+                
+                # Calculate local position relative to pelvis
+                '''
+                local_pos = transform_point_to_local_frame(current_pos, pelvis_pos, pelvis_rotation)
+                position_data["local"] = {
+                    "x": float(local_pos[0]),
+                    "y": float(local_pos[1]),
+                    "z": float(local_pos[2])
+                }
+                '''
+                
+                all_body_positions[body_name] = position_data
+            
+            # Also process position rewards if any are active
+            if self.active_rewards and 'rewards' in self.active_rewards:
+                for reward_config in self.active_rewards['rewards']:
+                    reward_name = reward_config.get('name', '')
+                    
+                    # Check if this is a position reward
+                    if reward_name.startswith('position-'):
+                        try:
+                            reward_obj = PositionReward.reward_from_name(reward_name)
                             
-                            # Get current positions
-                            current_positions = reward_obj.get_current_positions(
-                                self.env.unwrapped.model,
-                                self.env.unwrapped.data
-                            )
-                            
-                            positions_data[reward_name] = {
-                                "targets": targets,
-                                "current_positions": current_positions
-                            }
-                    except Exception as e:
-                        logger.warning(f"Error processing position reward {reward_name}: {str(e)}")
-                        continue
+                            if reward_obj:
+                                # Get target configurations
+                                targets = reward_obj.get_serialized_targets()
+                                
+                                # Get current positions
+                                current_positions = reward_obj.get_current_positions(
+                                    self.env.unwrapped.model,
+                                    self.env.unwrapped.data
+                                )
+                                
+                                positions_data[reward_name] = {
+                                    "targets": targets,
+                                    "current_positions": current_positions
+                                }
+                        except Exception as e:
+                            logger.warning(f"Error processing position reward {reward_name}: {str(e)}")
+                            continue
             
             response = {
                 "type": "target_positions",
                 "status": "success",
-                "data": positions_data,
+                "data": {
+                    "reward_positions": positions_data,
+                    "all_body_positions": all_body_positions
+                },
                 "timestamp": datetime.now().isoformat()
             }
             
+            # Include requestId if provided in the original request
+            if "requestId" in data:
+                response["requestId"] = data["requestId"]
+                
             await websocket.send(json.dumps(response))
-            logger.info(f"Sent position data for {len(positions_data)} rewards")
+            logger.info(f"Sent position data for {len(all_body_positions)} body parts and {len(positions_data)} rewards")
             
         except Exception as e:
             error_msg = f"Error getting target positions: {str(e)}"
@@ -1174,6 +1266,11 @@ class MessageHandler:
                 "error": error_msg,
                 "timestamp": datetime.now().isoformat()
             }
+            
+            # Include requestId if provided in the original request
+            if "requestId" in data:
+                response["requestId"] = data["requestId"]
+                
             await websocket.send(json.dumps(response))
 
 # Register cleanup function after the class is defined

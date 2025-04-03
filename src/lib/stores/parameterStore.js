@@ -18,18 +18,10 @@ function createParameterStore() {
   const { subscribe, set: internalSet, update } = writable(DEFAULT_PARAMETERS);
 
   function sendParameters(params) {
-    const socket = websocketService.getSocket();
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(
-        JSON.stringify({
-          type: "update_parameters",
-          parameters: params,
-          timestamp: new Date().toISOString(),
-        })
-      );
-    } else {
-      console.warn("WebSocket not ready, parameters not sent:", params);
-    }
+    websocketService.send({
+      type: "update_parameters",
+      parameters: params
+    });
   }
 
   return {

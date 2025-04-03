@@ -11,7 +11,18 @@
   onMount(() => {
     cleanupHandler = websocketService.addMessageHandler((data) => {
       if (data.type === 'debug_model_info') {
-        activeRewards = data.active_rewards;
+        console.log('ActiveRewardsPanel: Received debug_model_info', 
+          data.is_computing, 
+          data.active_rewards?.rewards?.length || 0);
+          
+        // Only update if rewards have changed to avoid unnecessary rerenders
+        const oldLength = activeRewards?.rewards?.length || 0;
+        const newLength = data.active_rewards?.rewards?.length || 0;
+        
+        if (oldLength !== newLength || JSON.stringify(activeRewards) !== JSON.stringify(data.active_rewards)) {
+          console.log('ActiveRewardsPanel: Updating activeRewards state');
+          activeRewards = data.active_rewards;
+        }
       }
     });
 
@@ -33,6 +44,7 @@
     newWeights[rewardIndex] = newWeight;
     
     // Send immediate weight update
+    console.log('ActiveRewardsPanel: Sending weight update');
     websocketService.getSocket()?.send(JSON.stringify({
       type: 'request_reward',
       reward: {

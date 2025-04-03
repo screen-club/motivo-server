@@ -30,7 +30,7 @@ async def handle_webrtc_offer(websocket, data):
     
     try:
         # Log information about the offer
-        logger.info(f"Received WebRTC offer from client {client_id}")
+        logger.debug(f"Received WebRTC offer from client {client_id}")
         
         # Create offer object in the expected format
         offer = {

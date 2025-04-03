@@ -181,7 +181,7 @@ Instead of raw coordinates, you should create motions by combining specialized r
 # POSITION CONTROL
 
 For cases where the above rewards don't provide enough control, you can use the `position` reward to directly specify 3D targets:
-
+Use no more than 3/4 parameters
 ```
 {
   "name": "position",

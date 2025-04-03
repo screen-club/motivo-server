@@ -14,7 +14,7 @@ async def handle_websocket(websocket):
     """Handle a new WebSocket connection"""
     # Get client information for logging
     client_info = f"{websocket.remote_address[0]}:{websocket.remote_address[1]}" if hasattr(websocket, 'remote_address') else "Unknown"
-    logger.info(f"New WebSocket connection from {client_info}")
+    logger.debug(f"New WebSocket connection from {client_info}")
     
     # Generate a unique client ID
     client_id = f"{client_info}_{int(time.time() * 1000)}"
@@ -26,9 +26,9 @@ async def handle_websocket(websocket):
     if not hasattr(websocket, 'closed'):
         websocket.closed = False
     
-    # Add to connected clients
-    app_state.ws_manager.connected_clients.add(websocket)
-    logger.info(f"Total connections: {len(app_state.ws_manager.connected_clients)}")
+    # Add to connected clients with new method
+    client_ip = app_state.ws_manager.add_client(websocket)
+    logger.debug(f"Total connections: {len(app_state.ws_manager.connected_clients)}, unique clients: {len(app_state.ws_manager.client_connections)}")
     
     # Configure WebSocket connection with longer ping timeout
     if hasattr(websocket, 'protocol'):
@@ -43,7 +43,7 @@ async def handle_websocket(websocket):
             await process_message(websocket, message, client_info)
                 
     except websockets.exceptions.ConnectionClosed as e:
-        logger.info(f"Client {client_info} disconnected: {str(e)}")
+        logger.debug(f"Client {client_info} disconnected: {str(e)}")
         # Mark connection as closed
         websocket.closed = True
     except Exception as e:
@@ -141,6 +141,6 @@ async def handle_client_disconnect(websocket, client_info):
     except Exception as e:
         logger.error(f"Error during WebRTC cleanup: {str(e)}")
         
-    # Remove from connected clients
-    app_state.ws_manager.connected_clients.discard(websocket)
-    logger.info(f"Client disconnected. Total connections: {len(app_state.ws_manager.connected_clients)}")
+    # Remove from connected clients using the new method
+    app_state.ws_manager.remove_client(websocket)
+    logger.debug(f"Client disconnected. Total connections: {len(app_state.ws_manager.connected_clients)}, unique clients: {len(app_state.ws_manager.client_connections)}")

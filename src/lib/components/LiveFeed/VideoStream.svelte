@@ -79,7 +79,7 @@
     const cleanupListener = websocketService.onReadyStateChange(handleReadyState);
     
     // Check initial connection state
-    isConnected = websocketService.getSocket()?.readyState === WebSocket.OPEN;
+    isConnected = websocketService.isConnected();
     if (isConnected) {
       webrtcService.initWebRTC();
     }

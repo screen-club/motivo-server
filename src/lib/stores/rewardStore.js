@@ -255,20 +255,16 @@ function createRewardStore() {
           weights: [...store.weights, 1.0],
         };
 
-        const ws = websocketService.getSocket();
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(
-            JSON.stringify({
-              type: "request_reward",
-              id: params.id,
-              reward: {
-                rewards: newStore.activeRewards,
-                weights: newStore.weights,
-                combinationType: newStore.combinationType,
-              },
-            })
-          );
-        }
+        // Use the simplified websocketService API
+        websocketService.send({
+          type: "request_reward",
+          id: params.id,
+          reward: {
+            rewards: newStore.activeRewards,
+            weights: newStore.weights,
+            combinationType: newStore.combinationType,
+          },
+        });
 
         return newStore;
       });
@@ -293,19 +289,14 @@ function createRewardStore() {
         };
 
         // Send updated configuration to WebSocket
-        const ws = websocketService.getSocket();
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(
-            JSON.stringify({
-              type: "request_reward",
-              reward: {
-                rewards: newStore.activeRewards,
-                weights: newStore.weights,
-                combinationType: newStore.combinationType,
-              },
-            })
-          );
-        }
+        websocketService.send({
+          type: "request_reward",
+          reward: {
+            rewards: newStore.activeRewards,
+            weights: newStore.weights,
+            combinationType: newStore.combinationType,
+          },
+        });
 
         return newStore;
       });
@@ -320,19 +311,14 @@ function createRewardStore() {
           weights: newWeights,
         };
 
-        const ws = websocketService.getSocket();
-        if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(
-            JSON.stringify({
-              type: "request_reward",
-              reward: {
-                rewards: store.activeRewards,
-                weights: newWeights,
-                combinationType: store.combinationType,
-              },
-            })
-          );
-        }
+        websocketService.send({
+          type: "request_reward",
+          reward: {
+            rewards: store.activeRewards,
+            weights: newWeights,
+            combinationType: store.combinationType,
+          },
+        });
 
         return newStore;
       });
@@ -344,6 +330,16 @@ function createRewardStore() {
         combinationType: "geometric",
       });
     },
+    setRewards: (rewards) => {
+      // Create weights array (all 1.0 for equal weighting)
+      const weights = rewards.map(() => 1.0);
+
+      set({
+        activeRewards: rewards,
+        weights: weights,
+        combinationType: "geometric",
+      });
+    },
     cleanRewards: () => {
       set({
         activeRewards: [],
@@ -351,14 +347,9 @@ function createRewardStore() {
         combinationType: "geometric",
       });
 
-      const ws = websocketService.getSocket();
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(
-          JSON.stringify({
-            type: "clean_rewards",
-          })
-        );
-      }
+      websocketService.send({
+        type: "clean_rewards"
+      });
     },
     startTestingAllOptions: (statusCallback) => {
       if (testingInterval) return; // Already testing
@@ -419,8 +410,7 @@ function createRewardStore() {
       };
 
       const testNext = () => {
-        const ws = websocketService.getSocket();
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
+        if (!websocketService.isConnected()) {
           console.log("❌ WebSocket not connected, stopping tests");
           if (statusCallback) {
             statusCallback(
@@ -512,7 +502,7 @@ function createRewardStore() {
         };
 
         // Add handler and start test
-        ws.addEventListener("message", currentHandler);
+        websocketService.addMessageHandler(currentHandler);
 
         console.log("🧹 Cleaning previous rewards...");
         if (statusCallback) {
@@ -545,9 +535,8 @@ function createRewardStore() {
     stopTesting: () => {
       console.log("🛑 Stopping all tests");
       if (testingInterval) {
-        const ws = websocketService.getSocket();
-        if (ws?.readyState === WebSocket.OPEN && currentHandler) {
-          ws.removeEventListener("message", currentHandler);
+        if (currentHandler) {
+          websocketService.addMessageHandler(currentHandler);
         }
         clearInterval(testingInterval);
         testingInterval = null;

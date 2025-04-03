@@ -32,7 +32,7 @@ class FrameVideoStreamTrack(VideoStreamTrack):
         self.frames_sent = 0
         self.last_frame_time = time.time()
         self.frame_delivery_times = []  # Track frame timing for adaptive rate control
-        logger.info(f"Created video track with resolution {width}x{height} @ {fps}fps")
+        logger.debug(f"Created video track with resolution {width}x{height} @ {fps}fps")
         
     def update_frame(self, frame):
         """Update the latest frame to be sent to connected peers"""
@@ -269,12 +269,12 @@ class WebRTCManager:
             "recovered_connections": 0
         }
         
-        logger.info(f"WebRTC manager initialized with {video_quality} quality")
+        logger.debug(f"WebRTC manager initialized with {video_quality} quality")
     
     def set_environment(self, env):
         """Set the environment reference"""
         self.env = env
-        logger.info("Environment set in WebRTC manager")
+        logger.debug("Environment set in WebRTC manager")
         
         # Start connection health monitor
         self._start_connection_health_monitor()
@@ -287,14 +287,14 @@ class WebRTCManager:
                     await asyncio.sleep(15)  # Check every 15 seconds
                     await self._check_connection_health()
             except asyncio.CancelledError:
-                logger.info("Connection health monitor stopped")
+                logger.debug("Connection health monitor stopped")
             except Exception as e:
                 logger.error(f"Error in connection health monitor: {e}")
                 traceback.print_exc()
         
         # Create the task
         asyncio.create_task(health_monitor())
-        logger.info("Started WebRTC connection health monitor")
+        logger.debug("Started WebRTC connection health monitor")
     
     async def _check_connection_health(self):
         """Check health of all active connections"""
@@ -348,18 +348,21 @@ class WebRTCManager:
         
         # Log connection health summary
         if healthy_connections or recovering_connections or stale_connections:
-            logger.info(f"Connection health: {len(healthy_connections)} healthy, " + 
-                       f"{len(recovering_connections)} recovering, " +
-                       f"{len(stale_connections)} stale")
+            logger.debug(f"Connection health: {len(healthy_connections)} healthy, " + 
+                        f"{len(recovering_connections)} recovering, " +
+                        f"{len(stale_connections)} stale")
         
     def set_video_quality(self, quality_name):
         """Set the video quality for new connections"""
         if quality_name in VIDEO_CONFIGS:
             self.video_config = VIDEO_CONFIGS[quality_name]
-            logger.info(f"Video quality set to {quality_name}: {self.video_config}")
+            logger.debug(f"Video quality set to {quality_name}: {self.video_config}")
         else:
             logger.warning(f"Unknown quality '{quality_name}', using medium")
             self.video_config = VIDEO_CONFIGS["medium"]
+        
+        # Track connection creation
+        logger.debug(f"Created video track with resolution {self.video_config['width']}x{self.video_config['height']} @ {self.video_config['fps']}fps")
     
     async def create_peer_connection(self, client_id, offer):
         """Create a new peer connection for a client"""
@@ -385,16 +388,16 @@ class WebRTCManager:
             async def on_iceconnectionstatechange():
                 pc._last_active_time = time.time()
                 ice_state = str(pc.iceConnectionState)
-                logger.info(f"ICE Connection state for {client_id}: {ice_state}")
+                logger.debug(f"ICE Connection state for {client_id}: {ice_state}")
                 
                 # Handle specific connection states
                 if ice_state == "checking":
                     # Connection is being established, might need more time
-                    logger.info(f"ICE negotiation in progress for {client_id}")
+                    logger.debug(f"ICE negotiation in progress for {client_id}")
                     
                 elif ice_state in ["connected", "completed"]:
                     # Connection established successfully
-                    logger.info(f"ICE connection established for {client_id}")
+                    logger.debug(f"ICE connection established for {client_id}")
                     # Cancel any pending recovery tasks
                     if client_id in self.connection_monitoring_tasks:
                         task = self.connection_monitoring_tasks.pop(client_id)
@@ -419,14 +422,14 @@ class WebRTCManager:
                 
                 elif ice_state == "closed":
                     # Connection explicitly closed
-                    logger.info(f"ICE connection closed for {client_id}")
+                    logger.debug(f"ICE connection closed for {client_id}")
                     await self.close_connection(client_id)
             
             @pc.on("connectionstatechange")
             async def on_connectionstatechange():
                 pc._last_active_time = time.time()
                 conn_state = str(pc.connectionState)
-                logger.info(f"Connection state for {client_id}: {conn_state}")
+                logger.debug(f"Connection state for {client_id}: {conn_state}")
                 
                 if conn_state == "failed":
                     # Only close after monitoring has had a chance to recover
@@ -464,7 +467,7 @@ class WebRTCManager:
             self.peer_connections[client_id] = pc
             self.tracks[client_id] = track
             
-            logger.info(f"Created peer connection for client {client_id}")
+            logger.debug(f"Created peer connection for client {client_id}")
             
             # Return the answer
             return {
