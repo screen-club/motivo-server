@@ -13,7 +13,6 @@
   import ChatContainer from './LLM/ChatContainer.svelte';
   import ChatInput from './LLM/ChatInput.svelte';
   import { createGeminiClient } from './LLM/GeminiClient.js';
-  import { createClaudeClient } from './LLM/ClaudeClient.js';
   
   // Import styles
   import './LLM/styles.css';
@@ -25,14 +24,12 @@
   let isProcessing = $state(false);
   let chatContainer;
   let cleanupHandler;
-  let cleanupGeminiHandler;
   
-  let selectedModel = $state('claude');
+  let selectedModel = $state('gemini');
   let isGeminiConnected = $state(false);
   let autoCapture = $state(false);
   let captureInterval = $state(null);
   let lastCaptureTime = $state(0);
-  let claudeConversation = $state([]);
   let geminiConversation = $state([]);
   let structuredResponse = $state(null);
   let addToExisting = $state(false);
@@ -54,30 +51,17 @@
 
   // Create clients
   const geminiClient = createGeminiClient(rewardStore, websocketService, addSystemMessage, uuidv4);
-  const claudeClient = createClaudeClient(chatStore, rewardStore, websocketService, uuidv4);
   
-  // When chatStore updates or model changes, update the appropriate conversation
+  // When chatStore updates, update gemini conversation
   $effect(() => {
-    if (selectedModel === 'claude' && $chatStore.conversation?.length > 0) {
-      claudeConversation = [...$chatStore.conversation];
-    } else if ($chatStore.conversation?.length > 0) {
+    if ($chatStore.conversation?.length > 0) {
       geminiConversation = [...$chatStore.conversation];
     }
   });
 
-  // Update the appropriate conversation
+  // Update conversation
   function updateConversation(newConversation) {
-    if (selectedModel === 'claude') {
-      claudeConversation = newConversation;
-      
-      // Update the chatStore only if Claude is selected (for API calls)
-      chatStore.update(store => ({
-        ...store,
-        conversation: newConversation
-      }));
-    } else {
-      geminiConversation = newConversation;
-    }
+    geminiConversation = newConversation;
   }
 
   onMount(() => {
@@ -230,16 +214,14 @@
     autoCorrectQuality = 0;
     
     // Send the initial prompt with current frame
-    if (selectedModel === 'gemini') {
-      geminiClient.sendMessage(initialPrompt, { 
-        add_to_existing: false,
-        include_image: true,
-        auto_correct: true
-      }).catch(error => {
-        console.error("Error starting auto-correction:", error);
-        addSystemMessage("Error starting auto-correction");
-      });
-    }
+    geminiClient.sendMessage(initialPrompt, { 
+      add_to_existing: false,
+      include_image: true,
+      auto_correct: true
+    }).catch(error => {
+      console.error("Error starting auto-correction:", error);
+      addSystemMessage("Error starting auto-correction");
+    });
     
     // Set up interval for auto-correction (every 10 seconds)
     autoCorrectInterval = setInterval(async () => {
@@ -331,21 +313,19 @@
       // Send a follow-up correction request
       const correctionPrompt = `Based on the current frame, improve your previous suggestion to better achieve: "${autoCorrectPrompt}". Rate the current implementation quality from 0.0 to 1.0 and explain how it can be improved. *mandatory* Add a "quality_score" field to your response.`;
       
-      if (selectedModel === 'gemini') {
-        isProcessing = true;
-        
-        console.log("correctionPrompt", correctionPrompt);
-        geminiClient.sendMessage(correctionPrompt, { 
-          add_to_existing: true, 
-          include_image: true,
-          auto_correct: true
-        }).catch(error => {
-          console.error("Error sending auto-correction message:", error);
-          addSystemMessage("Error in auto-correction process");
-        }).finally(() => {
-          isProcessing = false;
-        });
-      }
+      isProcessing = true;
+      
+      console.log("correctionPrompt", correctionPrompt);
+      geminiClient.sendMessage(correctionPrompt, { 
+        add_to_existing: true, 
+        include_image: true,
+        auto_correct: true
+      }).catch(error => {
+        console.error("Error sending auto-correction message:", error);
+        addSystemMessage("Error in auto-correction process");
+      }).finally(() => {
+        isProcessing = false;
+      });
     }
   }
 
@@ -429,14 +409,13 @@
   }
 
   function addSystemMessage(message) {
-    // Get the current conversation based on selected model
-    const currentConversation = selectedModel === 'claude' ? claudeConversation : geminiConversation;
-    const newConversation = [...currentConversation, {
+    // Add system message to conversation
+    const newConversation = [...geminiConversation, {
       role: 'system',
       content: message
     }];
     
-    // Update the appropriate conversation
+    // Update conversation
     updateConversation(newConversation);
     scrollChatToBottom();
   }
@@ -448,53 +427,51 @@
     const currentPrompt = prompt.trim();
     prompt = '';
     
-    // Get the current conversation
-    const currentConversation = selectedModel === 'claude' ? claudeConversation : geminiConversation;
-    const newConversation = [...currentConversation, {
+    // Add user message to conversation
+    const newConversation = [...geminiConversation, {
       role: 'user',
       content: currentPrompt
     }];
     
-    // Update the appropriate conversation
+    // Update conversation
     updateConversation(newConversation);
     scrollChatToBottom();
     
-    if (selectedModel === 'gemini') {
-      geminiClient.sendMessage(currentPrompt, { add_to_existing: addToExisting })
-        .then(result => {
-          if (!result) {
-            isProcessing = false;
-          }
-        })
-        .catch(error => {
-          console.error("Error sending message to Gemini:", error);
-          addSystemMessage("Error sending message to Gemini");
+    // Send message to Gemini
+    geminiClient.sendMessage(currentPrompt, { add_to_existing: addToExisting })
+      .then(result => {
+        if (!result) {
           isProcessing = false;
-        });
-    } else {
-      // Claude
-      const result = await claudeClient.sendMessage(API_URL, currentPrompt, $chatStore.sessionId, addToExisting);
-      if (result.success) {
-        claudeConversation = result.conversation;
-        scrollChatToBottom();
-      }
-      
-      isProcessing = false;
-    }
+        }
+      })
+      .catch(error => {
+        console.error("Error sending message to Gemini:", error);
+        addSystemMessage("Error sending message to Gemini");
+        isProcessing = false;
+      });
   }
 
   async function clearChat() {
     try {
-      if (selectedModel === 'gemini') {
-        geminiClient.clearConversation(webrtcService.clientId);
-        geminiConversation = [];
-      } else {
-        // For Claude
-        await claudeClient.clearConversation(API_URL, $chatStore.sessionId);
-        claudeConversation = [];
-      }
+      // Clear client-side conversation first
+      geminiConversation = [];
+      
+      // Clear server-side conversation
+      geminiClient.clearConversation(webrtcService.clientId);
+      
+      // Reconnect to fully reset the session
+      setTimeout(() => {
+        geminiClient.disconnect();
+        setTimeout(() => {
+          geminiClient.connect(API_URL);
+          testFlaskConnection();
+        }, 500);
+      }, 500);
+      
+      addSystemMessage("Chat and session fully cleared");
     } catch (error) {
       console.error('Error clearing chat', error);
+      addSystemMessage("Error clearing chat: " + error.message);
     }
     
     stopAutoCapture();
@@ -503,39 +480,12 @@
   function testFlaskConnection() {
     geminiClient.checkConnection();
   }
-
-  function switchModel(model) {
-    if (model === selectedModel) return;
-    
-    // Stop auto-capture if switching from Gemini to Claude
-    if (selectedModel === 'gemini' && model === 'claude') {
-      stopAutoCapture();
-    }
-    
-    // Update the model
-    selectedModel = model;
-    
-    // Check Gemini connection when switching to Gemini
-    if (model === 'gemini') {
-      geminiClient.checkConnection();
-      geminiClient.connect(API_URL);
-      
-      // Add a small delay to make sure connection is established
-      setTimeout(() => {
-        if (!isGeminiConnected) {
-          testFlaskConnection();
-        }
-      }, 500);
-    }
-    
-    scrollChatToBottom();
-  }
 </script>
 
 <div class="flex flex-col h-[600px]">
   <ModelControls 
     {selectedModel}
-    onSwitchModel={switchModel}
+    onSwitchModel={() => {}}
     onClearChat={clearChat}
     {isGeminiConnected}
     {autoCapture}
@@ -545,7 +495,7 @@
   />
 
   <ChatContainer 
-    conversation={selectedModel === 'claude' ? claudeConversation : geminiConversation}
+    conversation={geminiConversation}
     {selectedModel}
     {structuredResponse}
     bind:chatContainer={chatContainer}

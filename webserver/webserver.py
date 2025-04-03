@@ -512,6 +512,13 @@ def handle_check_gemini_connection():
 def handle_gemini_clear_conversation(data):
     """Handle clear conversation requests"""
     client_id = data.get('client_id')
+    
+    # Clear client session in Gemini service if available
+    if gemini_service and client_id:
+        if hasattr(gemini_service, 'client_sessions') and client_id in gemini_service.client_sessions:
+            gemini_service.client_sessions[client_id] = {}
+            logger.info(f"Cleared Gemini conversation for client {client_id}")
+    
     emit('gemini_response', {
         'type': 'status',
         'content': 'Conversation cleared',
