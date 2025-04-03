@@ -126,6 +126,15 @@ async def broadcast_pose_update(q_percentage):
             "cache_file": str(cache_file) if cache_file else None
         }
         
+        # Check if websocket manager is properly initialized
+        if not hasattr(app_state, 'ws_manager') or app_state.ws_manager is None:
+            logger.warning("WebSocket manager not initialized, skipping broadcast")
+            return
+            
+        # Check if there are any clients to broadcast to
+        if not app_state.ws_manager.connected_clients:
+            return
+        
         # Broadcast with timeout protection
         try:
             await asyncio.wait_for(
@@ -136,6 +145,10 @@ async def broadcast_pose_update(q_percentage):
             logger.warning("Broadcast operation timed out after 0.5 seconds")
             # Handle stale connections
             await cleanup_stale_connections()
+        except Exception as broadcast_error:
+            logger.error(f"Error during broadcast: {broadcast_error}")
+            # Try to cleanup connections on any broadcast error
+            await cleanup_stale_connections()
     except Exception as e:
         logger.error(f"Error broadcasting pose data: {str(e)}")
 
@@ -145,9 +158,27 @@ async def cleanup_stale_connections():
     
     stale_connections = set()
     for ws in app_state.ws_manager.connected_clients:
-        if ws.closed:
+        try:
+            if hasattr(ws, 'closed') and ws.closed:
+                stale_connections.add(ws)
+                logger.warning("Found closed connection that wasn't properly removed")
+            # Check for connection state in case 'closed' attribute isn't available
+            elif not hasattr(ws, 'closed'):
+                # Try to ping the connection to check if it's still alive
+                try:
+                    pong_waiter = await ws.ping()
+                    await asyncio.wait_for(pong_waiter, timeout=0.5)
+                except (asyncio.TimeoutError, websockets.exceptions.ConnectionClosed, Exception):
+                    # Connection is not responding, mark as stale
+                    stale_connections.add(ws)
+                    logger.warning("Found stale connection without 'closed' attribute")
+        except AttributeError:
+            logger.warning("Connection missing expected attributes, marking as stale")
             stale_connections.add(ws)
-            logger.warning("Found closed connection that wasn't properly removed")
+        except Exception as e:
+            logger.error(f"Error checking connection state: {e}")
+            # If we can't determine connection state, safer to mark as stale
+            stale_connections.add(ws)
     
     # Remove stale connections
     for ws in stale_connections:

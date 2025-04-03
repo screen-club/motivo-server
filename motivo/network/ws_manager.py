@@ -36,16 +36,28 @@ class WebSocketManager:
         # Use a list to avoid "set changed size during iteration" errors
         success_count = 0
         failed_count = 0
+        stale_connections = set()
         
         for websocket in list(self.connected_clients):
             try:
+                # Check if connection is closed before attempting to send
+                if hasattr(websocket, 'closed') and websocket.closed:
+                    logger.debug("Skipping closed connection")
+                    stale_connections.add(websocket)
+                    failed_count += 1
+                    continue
+                    
                 await websocket.send(message)
                 success_count += 1
             except Exception as e:
                 logger.warning(f"Error sending message to client: {str(e)}")
                 # Remove the client if there was an error
-                self.connected_clients.discard(websocket)
+                stale_connections.add(websocket)
                 failed_count += 1
+        
+        # Remove stale connections outside the loop
+        for ws in stale_connections:
+            self.connected_clients.discard(ws)
                 
         if failed_count > 0:
             logger.info(f"Broadcast complete - {success_count} succeeded, {failed_count} failed")

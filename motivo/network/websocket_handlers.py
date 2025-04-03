@@ -18,7 +18,13 @@ async def handle_websocket(websocket):
     
     # Generate a unique client ID
     client_id = f"{client_info}_{int(time.time() * 1000)}"
+    
+    # Add custom attributes for better tracking
     websocket.client_id = client_id
+    websocket.connection_time = time.time()
+    # Ensure 'closed' attribute exists (this is what's missing in ServerConnection)
+    if not hasattr(websocket, 'closed'):
+        websocket.closed = False
     
     # Add to connected clients
     app_state.ws_manager.connected_clients.add(websocket)
@@ -38,9 +44,15 @@ async def handle_websocket(websocket):
                 
     except websockets.exceptions.ConnectionClosed as e:
         logger.info(f"Client {client_info} disconnected: {str(e)}")
+        # Mark connection as closed
+        websocket.closed = True
     except Exception as e:
         logger.error(f"Error in websocket handler for {client_info}: {str(e)}")
+        # Mark connection as closed on error
+        websocket.closed = True
     finally:
+        # Ensure closed attribute is set
+        websocket.closed = True
         await handle_client_disconnect(websocket, client_info)
 
 async def send_welcome_message(websocket, client_id):
@@ -115,6 +127,10 @@ async def handle_video_quality(websocket, data):
 
 async def handle_client_disconnect(websocket, client_info):
     """Clean up after client disconnection"""
+    # Ensure the closed attribute is set
+    if hasattr(websocket, 'closed'):
+        websocket.closed = True
+    
     # Clean up WebRTC connections
     try:
         client_ip = websocket.remote_address[0] if hasattr(websocket, 'remote_address') else None
