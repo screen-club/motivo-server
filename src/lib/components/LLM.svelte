@@ -42,6 +42,11 @@
   let autoCorrectInterval = $state(null);
   let autoCorrectAttempts = $state(0);
 
+  // Connection management
+  let lastActivityTime = $state(Date.now());
+  let inactivityTimeout = $state(null);
+  const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
   // Initialize markdown parser
   const md = new MarkdownIt({
     html: false,
@@ -62,6 +67,39 @@
   // Update conversation
   function updateConversation(newConversation) {
     geminiConversation = newConversation;
+  }
+
+  function updateActivityTime() {
+    lastActivityTime = Date.now();
+    resetInactivityTimeout();
+  }
+
+  function resetInactivityTimeout() {
+    if (inactivityTimeout) {
+      clearTimeout(inactivityTimeout);
+    }
+    
+    inactivityTimeout = setTimeout(() => {
+      if (isGeminiConnected && !isProcessing && !autoCapture) {
+        console.log("Disconnecting Gemini due to inactivity");
+        geminiClient.disconnect();
+        isGeminiConnected = false;
+      }
+    }, INACTIVITY_TIMEOUT_MS);
+  }
+
+  function ensureGeminiConnection() {
+    updateActivityTime();
+    
+    if (!isGeminiConnected) {
+      console.log("Reconnecting to Gemini for active use");
+      geminiClient.connect(API_URL);
+      
+      // Check connection status after a brief delay
+      setTimeout(() => {
+        isGeminiConnected = geminiSocketService.isConnected();
+      }, 1000);
+    }
   }
 
   onMount(() => {
@@ -117,45 +155,56 @@
       } else if (data.type === 'debug_model_info') {
         isComputingRewards = data.is_computing;
       } else if (data.type === 'gemini_connection_status') {
+        // Simple connection status update
         isGeminiConnected = data.connected;
+        console.log("LLM.svelte: Gemini connection status updated:", data.connected, data.state);
+        
+        // Show any error message directly if present
+        if (data.error_message) {
+          addSystemMessage(`⚠️ ${data.error_message}`);
+        }
+        
+        // Log connection state change
+        if (data.state && data.state !== "connected" && data.state !== "disconnected") {
+          addSystemMessage(`Gemini connection state: ${data.state}`);
+        }
       } else if (data.type === 'frame_captured' && !data.success) {
         addSystemMessage(`Error capturing frame: ${data.error || 'Unknown error'}`);
       }
     });
     
-    // Always explicitly connect to ensure a fresh connection
-    console.log("LLM.svelte: Connecting to Gemini service...");
-    geminiClient.connect(API_URL);
-    
-    // Check connection status after a brief delay
-    setTimeout(() => {
+    // Only connect if there's ongoing interaction or auto-correct
+    // Don't connect on component mount to reduce unnecessary connections
+    if (autoCapture || geminiConversation.length > 0) {
+      ensureGeminiConnection();
+    } else {
+      // Just check status without forcing a connection
       isGeminiConnected = geminiSocketService.isConnected();
-      console.log("Gemini connected status:", isGeminiConnected);
-      
-      if (!isGeminiConnected) {
-        console.log("Retrying Gemini connection as it's not connected yet");
-        geminiClient.connect(API_URL);
-      }
-    }, 1000);
+    }
     
-    // Connection monitoring with reduced frequency
-    const checkConnectionInterval = setInterval(() => {
-      if (!geminiClient.getIsConnected() && !geminiSocketService.isReconnecting()) {
-        console.log("Gemini connection appears to be down, attempting reconnection...");
-        geminiSocketService.reconnect();
-      }
-    }, 15000); // Longer interval (15 seconds instead of 5)
+    // Initialize inactivity timeout
+    resetInactivityTimeout();
+    
+    // User interaction listeners for activity tracking
+    document.addEventListener('click', updateActivityTime);
+    document.addEventListener('keydown', updateActivityTime);
     
     // Clean up on destroy
     onDestroy(() => {
-      // Clear all intervals first
-      clearInterval(checkConnectionInterval);
+      // Clear all intervals and timeouts first
+      if (inactivityTimeout) {
+        clearTimeout(inactivityTimeout);
+      }
       
       // Clean up all WebSocket handlers
       if (cleanupHandler) cleanupHandler();
       
       // Remove the gemini-message event listener
       window.removeEventListener('gemini-message', geminiMessageHandler);
+      
+      // Remove activity listeners
+      document.removeEventListener('click', updateActivityTime);
+      document.removeEventListener('keydown', updateActivityTime);
       
       // Always stop auto capture
       stopAutoCapture();
@@ -171,9 +220,6 @@
         }
       }, 500);
     });
-
-    // Initial state - just check once
-    isGeminiConnected = geminiSocketService.isConnected();
   });
 
   function scrollChatToBottom() {
@@ -186,15 +232,30 @@
   }
 
   function toggleAutoCapture() {
+    updateActivityTime();
+    
     if (autoCapture) {
       stopAutoCapture();
     } else {
+      ensureGeminiConnection();
       showAutoCorrectPrompt();
     }
   }
   
   function showAutoCorrectPrompt() {
-    if (!isGeminiConnected) return;
+    updateActivityTime();
+    
+    if (!isGeminiConnected) {
+      ensureGeminiConnection();
+      setTimeout(() => {
+        if (isGeminiConnected) {
+          showAutoCorrectPrompt();
+        } else {
+          addSystemMessage("Could not connect to Gemini. Please try again.");
+        }
+      }, 1500);
+      return;
+    }
     
     // Ask for the prompt that should be auto-corrected
     const initialPrompt = prompt.trim() || window.prompt("Enter the goal to auto-correct (what motion do you want to create?)", "");
@@ -206,6 +267,8 @@
   }
 
   function startAutoCorrect(initialPrompt) {
+    updateActivityTime();
+    
     if (!isGeminiConnected || !initialPrompt) return;
     
     autoCapture = true;
@@ -225,6 +288,8 @@
     
     // Set up interval for auto-correction (every 10 seconds)
     autoCorrectInterval = setInterval(async () => {
+      updateActivityTime();
+      
       // Wait for rewards computation to finish before attempting capture
       if (isComputingRewards) {
         console.log("Rewards are being computed, delaying auto-correction until computation completes");
@@ -256,6 +321,8 @@
   }
   
   function performAutoCorrection() {
+    updateActivityTime();
+    
     // Increment attempts
     autoCorrectAttempts++;
     
@@ -346,10 +413,14 @@
     if (lastCaptureTime > 0) {
       addSystemMessage('Auto-correction stopped');
     }
+    
+    updateActivityTime();
   }
 
   // Check if the humanoid is ready before attempting capture
   async function checkHumanoidReady() {
+    updateActivityTime();
+    
     return new Promise((resolve, reject) => {
       // Request debug info to check computing status
       websocketService.send({
@@ -390,6 +461,36 @@
   }
   
   async function captureFrame() {
+    updateActivityTime();
+    
+    // Ensure Gemini is connected before capturing
+    if (!isGeminiConnected) {
+      ensureGeminiConnection();
+      
+      // Wait for connection before capturing
+      if (!isGeminiConnected) {
+        const connected = await new Promise(resolve => {
+          const checkInterval = setInterval(() => {
+            if (isGeminiConnected) {
+              clearInterval(checkInterval);
+              resolve(true);
+            }
+          }, 200);
+          
+          // Timeout after 3 seconds
+          setTimeout(() => {
+            clearInterval(checkInterval);
+            resolve(false);
+          }, 3000);
+        });
+        
+        if (!connected) {
+          addSystemMessage('Error: Could not connect to Gemini for frame capture');
+          return false;
+        }
+      }
+    }
+    
     try {
       // Wait for the captureFrame Promise to resolve
       const result = await geminiClient.captureFrame();
@@ -423,6 +524,9 @@
   async function handleSubmit() {
     if (!prompt.trim()) return;
     
+    // Ensure connection before sending message
+    ensureGeminiConnection();
+    
     isProcessing = true;
     const currentPrompt = prompt.trim();
     prompt = '';
@@ -452,6 +556,8 @@
   }
 
   async function clearChat() {
+    updateActivityTime();
+    
     try {
       // Clear client-side conversation first
       geminiConversation = [];
@@ -478,6 +584,8 @@
   }
 
   function testFlaskConnection() {
+    updateActivityTime();
+    ensureGeminiConnection();
     geminiClient.checkConnection();
   }
 </script>

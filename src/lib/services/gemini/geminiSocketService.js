@@ -20,22 +20,27 @@ class GeminiSocketService {
   connect() {
     // Keep track of connections but don't create multiple sockets
     this.connectionCount++;
-    
+
     // If we already have a socket that's connected, just return
     if (this.socket && this.socket.connected) {
-      console.log("GeminiSocketService: Already connected, connection count: " + this.connectionCount);
+      console.log(
+        "GeminiSocketService: Already connected, connection count: " +
+          this.connectionCount
+      );
       return;
     }
-    
+
     // If we have a socket that's reconnecting, don't try to create a new one
     if (this.socket && this.isReconnectingFlag) {
       console.log("GeminiSocketService: Socket is already reconnecting");
       return;
     }
-    
+
     // Clean up any existing socket
     if (this.socket) {
-      console.log("GeminiSocketService: Cleaning up existing socket connection");
+      console.log(
+        "GeminiSocketService: Cleaning up existing socket connection"
+      );
       try {
         this.socket.disconnect();
       } catch (err) {
@@ -44,7 +49,10 @@ class GeminiSocketService {
       this.socket = null;
     }
 
-    console.log("GeminiSocketService: Creating new socket connection to", this.flaskUrl);
+    console.log(
+      "GeminiSocketService: Creating new socket connection to",
+      this.flaskUrl
+    );
     try {
       // Create a new socket with better configuration
       this.socket = io(this.flaskUrl, {
@@ -55,7 +63,7 @@ class GeminiSocketService {
         timeout: 10000,
         autoConnect: true,
         forceNew: true, // Force new connection to avoid conflicts
-        path: '/socket.io', // Explicit path
+        path: "/socket.io", // Explicit path
       });
 
       this.socket.on("connect", () => {
@@ -81,15 +89,30 @@ class GeminiSocketService {
       });
 
       this.socket.on("gemini_connection_status", (data) => {
+        // Simple logging and state update
+        console.log(
+          "GeminiSocketService: Connection status:",
+          data.connected,
+          data.state
+        );
+
+        // Update connected state
+        this.connected = data.connected;
         geminiConnected.set(data.connected);
 
-        // Notify all handlers
+        // Directly pass through all data without special handling
         this.messageHandlers.forEach((handler) =>
           handler({ type: "gemini_connection_status", ...data })
         );
       });
 
       this.socket.on("gemini_response", (data) => {
+        console.log(
+          "GeminiSocketService: Received response",
+          data.complete ? "(complete)" : "(streaming)",
+          data.content ? data.content.substring(0, 30) + "..." : "no content"
+        );
+
         // Add to responses store if it has content
         if (data.content) {
           // Include image information in the response if available
@@ -102,6 +125,16 @@ class GeminiSocketService {
 
           geminiResponses.update((responses) => [...responses, response]);
         }
+
+        // Create a custom event to broadcast to all components
+        window.dispatchEvent(
+          new CustomEvent("gemini-message", {
+            detail: {
+              type: "gemini_response",
+              ...data,
+            },
+          })
+        );
 
         // Notify all handlers
         this.messageHandlers.forEach((handler) => {
@@ -166,20 +199,24 @@ class GeminiSocketService {
     if (this.connectionCount > 0) {
       this.connectionCount--;
     }
-    
-    console.log(`GeminiSocketService: Disconnect called, connection count now ${this.connectionCount}`);
-    
+
+    console.log(
+      `GeminiSocketService: Disconnect called, connection count now ${this.connectionCount}`
+    );
+
     // Only fully disconnect if no more connections are using this service
     if (this.connectionCount === 0 && this.socket) {
-      console.log("GeminiSocketService: No more active connections, disconnecting socket");
-      
+      console.log(
+        "GeminiSocketService: No more active connections, disconnecting socket"
+      );
+
       try {
         // Clean up all event listeners first
         this.socket.removeAllListeners();
-        
+
         // Then close any connections
         this.socket.disconnect();
-        
+
         // Force close the engine too
         if (this.socket.io && this.socket.io.engine) {
           this.socket.io.engine.close();
@@ -187,13 +224,15 @@ class GeminiSocketService {
       } catch (err) {
         console.error("Error during socket disconnect:", err);
       }
-      
+
       // Clear references
       this.socket = null;
       this.connected = false;
       geminiConnected.set(false);
     } else {
-      console.log(`GeminiSocketService: ${this.connectionCount} connections still active, not disconnecting socket`);
+      console.log(
+        `GeminiSocketService: ${this.connectionCount} connections still active, not disconnecting socket`
+      );
     }
   }
 
@@ -203,22 +242,22 @@ class GeminiSocketService {
       console.log("GeminiSocketService: Reconnection already in progress");
       return;
     }
-    
+
     this.isReconnectingFlag = true;
-    
+
     // Always clean up the existing socket to prevent issues
     if (this.socket) {
       console.log("GeminiSocketService: Cleaning up socket for reconnection");
-      
+
       try {
         // Remove all listeners first
         this.socket.removeAllListeners();
-        
+
         // Then close any open connections
         if (this.socket.connected) {
           this.socket.disconnect();
         }
-        
+
         // Clear IO managers and engine
         if (this.socket.io) {
           try {
@@ -230,7 +269,7 @@ class GeminiSocketService {
       } catch (err) {
         console.error("Error during socket cleanup:", err);
       }
-      
+
       // Null out the socket reference
       this.socket = null;
     }
@@ -255,11 +294,11 @@ class GeminiSocketService {
   isConnected() {
     return this.connected && this.socket?.connected;
   }
-  
+
   isReconnecting() {
     return this.isReconnectingFlag;
   }
-  
+
   getConnectionCount() {
     return this.connectionCount;
   }

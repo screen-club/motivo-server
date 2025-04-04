@@ -73,9 +73,17 @@ class GeminiService:
         self.last_connection_attempt = 0
         self.connection_attempts = 0
         
+        # Activity tracking
+        self.last_activity_time = time.time()
+        self.inactivity_timer = None
+        self.INACTIVITY_TIMEOUT = 10 * 60  # 10 minutes inactivity timeout
+        
         # System instructions
         self.system_instructions = None
         self.system_instructions_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'system_instructions.txt')
+        
+        # Connection tracking
+        self.connection_count = 0
         
         logger.info(f"Gemini service initialized with port {port}")
     
@@ -93,9 +101,67 @@ class GeminiService:
             logger.error(f"Error loading system instructions: {str(e)}")
             self.system_instructions = None
             
-    def _broadcast_connection_status(self, is_connected):
+    def _broadcast_connection_status(self, is_connected, error_reason=None):
         """Helper method to broadcast connection status"""
-        pass
+        # Simple status message with any error information
+        status_data = {
+            "type": "gemini_connection_status",
+            "connected": is_connected,
+            "state": self.connection_state,
+            "timestamp": time.time()
+        }
+        
+        # Add error information directly if available
+        if error_reason:
+            status_data["error_reason"] = error_reason
+            
+            # For quota exceeded, include the error message
+            if error_reason == "quota_exceeded":
+                status_data["error_message"] = "You exceeded your current quota. Please check your Google Cloud billing details."
+            elif error_reason == "invalid_status":
+                status_data["error_message"] = "Invalid status code from Gemini API."
+            elif error_reason == "connection_failed":
+                status_data["error_message"] = "Failed to establish connection to Gemini API."
+        
+        # Add to incoming queue for clients to process
+        self.incoming_queue.put(status_data)
+    
+    def update_activity(self):
+        """Update the last activity timestamp"""
+        self.last_activity_time = time.time()
+        
+        # Reset inactivity timer if it exists
+        if self.inactivity_timer:
+            self.inactivity_timer.cancel()
+            
+        # Create a new timer for inactivity check
+        self.inactivity_timer = threading.Timer(self.INACTIVITY_TIMEOUT, self._check_inactivity)
+        self.inactivity_timer.daemon = True
+        self.inactivity_timer.start()
+    
+    def _check_inactivity(self):
+        """Check if service has been inactive and disconnect if needed"""
+        if time.time() - self.last_activity_time > self.INACTIVITY_TIMEOUT:
+            if self.running and self.is_connected():
+                logger.info("Disconnecting Gemini due to inactivity")
+                self._disconnect_due_to_inactivity()
+    
+    def _disconnect_due_to_inactivity(self):
+        """Disconnect from Gemini API due to inactivity"""
+        # Set a flag to indicate we're voluntarily disconnecting
+        self.connection_state = "inactive"
+        
+        # Use the event loop to properly close the connection
+        if self.loop and self.ws:
+            asyncio.run_coroutine_threadsafe(self._close_connection(), self.loop)
+    
+    async def _close_connection(self):
+        """Helper to close connection from external thread"""
+        with self.ws_lock:
+            if self.ws:
+                await self.ws.close()
+                self.ws = None
+                logger.info("Closed WebSocket connection due to inactivity")
     
     def start(self):
         """Start the Gemini service"""
@@ -110,10 +176,14 @@ class GeminiService:
             self.thread.start()
             logger.info("Gemini service started in background thread")
             
+            # Start inactivity timer
+            self.update_activity()
 
     def queue_message(self, message, message_id=None, client_id=None, include_image=True, capture_info=None, add_to_existing=False, auto_capture=False):
-
         """Queue a message to be sent to Gemini"""
+        # Update activity timestamp
+        self.update_activity()
+        
         # Check if API key is available first
         if not self.api_key:
             logger.error("Cannot send message to Gemini: API key is not set")
@@ -165,6 +235,9 @@ class GeminiService:
         
     def send_text(self, text, message_id, client_id=None, include_image=True, capture_info=None, add_to_existing=False, auto_capture=False):
         """Send text message to Gemini API, optionally with the provided image"""
+        # Update activity timestamp
+        self.update_activity()
+        
         # Check if API key is available first
         if not self.api_key:
             logger.error("Cannot send text to Gemini: API key is not set")
@@ -352,15 +425,35 @@ class GeminiService:
                     logger.error(f"Invalid status code from Gemini API: {status_err}")
                     if hasattr(status_err, 'status_code'):
                         logger.error(f"Status code: {status_err.status_code}")
-                    self.connection_state = "failed"
-                    self._broadcast_connection_status(False)
+                    
+                    # Check for quota exceeded error in the response message
+                    error_message = str(status_err)
+                    if "quota" in error_message.lower() or "exceeded" in error_message.lower():
+                        error_reason = "quota_exceeded"
+                        self.connection_state = error_reason
+                        logger.error("API quota exceeded error detected. Please check your billing details.")
+                    else:
+                        error_reason = "invalid_status"
+                        self.connection_state = "failed"
+                    
+                    self._broadcast_connection_status(False, error_reason)
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, max_retry_delay)
                     continue
                 except Exception as conn_err:
                     logger.error(f"Failed to establish WebSocket connection: {str(conn_err)}")
-                    self.connection_state = "failed"
-                    self._broadcast_connection_status(False)
+                    
+                    # Check for quota exceeded error in exception message
+                    error_message = str(conn_err)
+                    if "quota" in error_message.lower() or "exceeded" in error_message.lower():
+                        error_reason = "quota_exceeded"
+                        self.connection_state = error_reason
+                        logger.error("API quota exceeded error detected. Please check your billing details.")
+                    else:
+                        error_reason = "connection_failed" 
+                        self.connection_state = "failed"
+                    
+                    self._broadcast_connection_status(False, error_reason)
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, max_retry_delay)
                     continue
@@ -370,6 +463,10 @@ class GeminiService:
                 
                 # Reset retry delay on successful connection
                 retry_delay = 1
+                
+                # Increment successful connection count
+                self.connection_count += 1
+                logger.info(f"Gemini connection established (#{self.connection_count})")
                 
                 # Send setup message
                 try:
@@ -404,6 +501,21 @@ class GeminiService:
                         raw_response = await asyncio.wait_for(self.ws.recv(), timeout=10)
                         setup_response = json.loads(raw_response)
                     
+                        # Check for potential quota errors in setup response
+                        if "error" in setup_response:
+                            error_info = setup_response.get("error", {})
+                            error_message = error_info.get("message", "")
+                            
+                            if "quota" in error_message.lower() or "exceeded" in error_message.lower():
+                                logger.error(f"Quota exceeded error in setup response: {error_message}")
+                                self.connection_state = "quota_exceeded"
+                                self._broadcast_connection_status(False, "quota_exceeded")
+                                await self.ws.close()
+                                self.ws = None
+                                await asyncio.sleep(retry_delay)
+                                retry_delay = min(retry_delay * 2, max_retry_delay)
+                                continue
+                    
                         # Broadcast successful connection
                         self.connection_state = "connected"
                         self.connection_attempts = 0
@@ -411,12 +523,19 @@ class GeminiService:
                     except Exception as e:
                         logger.error(f"Error during Gemini setup")
                         print(e)
+                        
+                        # Check for quota exceeded in the error message
+                        error_message = str(e)
+                        if "quota" in error_message.lower() or "exceeded" in error_message.lower():
+                            logger.error(f"Quota exceeded error detected during setup: {error_message}")
+                            self.connection_state = "quota_exceeded"
+                            self._broadcast_connection_status(False, "quota_exceeded")
+                        else:
+                            self.connection_state = "setup_failed"
+                            self._broadcast_connection_status(False)
                        
                         await self.ws.close()
                         self.ws = None
-                        self.connection_state = "setup_failed"
-                        self._broadcast_connection_status(False)
-                        #await asyncio.sleep(retry_delay)
                 except asyncio.TimeoutError:
                     logger.error("Timeout waiting for setup response from Gemini")
                     await self.ws.close()
@@ -620,7 +739,57 @@ class GeminiService:
                 
                 # Check for error messages
                 if "error" in response:
-                    logger.error(f"Gemini API error: {response.get('error')}")
+                    error_obj = response.get("error", {})
+                    error_message = error_obj.get("message", "Unknown error")
+                    error_code = error_obj.get("code", 0)
+                    
+                    logger.error(f"Gemini API error: {error_message} (code: {error_code})")
+                    
+                    # Check for quota exceeded errors
+                    if "quota" in error_message.lower() or "exceeded" in error_message.lower():
+                        logger.error("API quota exceeded during conversation")
+                        self.connection_state = "quota_exceeded"
+                        
+                        # Append error to current response instead of sending separate message
+                        if current_response:
+                            current_response += "\n\n⚠️ API quota exceeded. Response may be incomplete."
+                        else:
+                            current_response = "⚠️ API quota exceeded error"
+                        
+                        # Send the response with the error appended
+                        response_data = {
+                            "type": "gemini_response",
+                            "content": current_response,
+                            "timestamp": time.time(),
+                            "complete": True,
+                            "message_id": current_message_id
+                        }
+                        
+                        # Add client info if available
+                        if client_ids and len(client_ids) == 1:
+                            response_data["client_id"] = client_ids[0]
+                            
+                        # Add image data if available
+                        if client_ids:
+                            client_id = client_ids[0]
+                            if client_id in self.client_sessions:
+                                session = self.client_sessions[client_id]
+                                if "message_image" in session:
+                                    img_info = session["message_image"]
+                                    response_data["image_path"] = img_info["path"]
+                                    response_data["image_timestamp"] = img_info["timestamp"]
+                                    response_data["timestamp_str"] = img_info["timestamp_str"]
+                        
+                        # Send the response with error appended
+                        self.incoming_queue.put(response_data)
+                        
+                        # Update connection status (no message, just state)
+                        self._broadcast_connection_status(False, "quota_exceeded")
+                        
+                        # Clear buffer and break loop
+                        current_response = ""
+                        turn_in_progress = False
+                        break
             
             except websockets.exceptions.ConnectionClosed as ws_err:
                 logger.warning(f"Gemini WebSocket connection closed: {ws_err}")
@@ -642,21 +811,30 @@ class GeminiService:
         """Get detailed connection status for API endpoints"""
         status = {
             "connected": self.is_connected(),
-            "state": self.connection_state
+            "state": self.connection_state,
+            "connection_count": self.connection_count,
+            "last_activity": self.last_activity_time,
+            "inactive_for": time.time() - self.last_activity_time
         }
         
-        # Always attempt reconnection when status is checked
-        if not status["connected"] and self.running:
+        # Always attempt reconnection when status is checked and not in intentional inactive state
+        if not status["connected"] and self.running and self.connection_state != "inactive":
             # Force immediate reconnection attempt
             self.connection_state = "reconnecting"
             self.last_connection_attempt = 0
             
             status["reconnection_triggered"] = True
         
+        # Update activity time when status is checked
+        self.update_activity()
+        
         return status
     
     def ensure_connection(self):
         """Ensure that the service is connected, triggering connection if needed"""
+        # Update activity timestamp
+        self.update_activity()
+        
         # Check if API key is available first
         if not self.api_key:
             logger.error("Cannot ensure connection to Gemini: API key is not set")
@@ -678,9 +856,20 @@ class GeminiService:
                     
             return False
         return True
+    
+    def get_connection_count(self):
+        """Get the total number of connections made"""
+        return self.connection_count
+    
+    def is_reconnecting(self):
+        """Check if we're in the process of reconnecting"""
+        return self.connection_state in ["connecting", "reconnecting"]
         
     def process_incoming_messages(self, callback):
         """Process any incoming messages and call the provided callback"""
+        # Update activity timestamp
+        self.update_activity()
+        
         # Create a module-level reference to the logger to ensure it's always available
         _logger = logging.getLogger("gemini_service")
         

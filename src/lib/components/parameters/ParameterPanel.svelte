@@ -61,7 +61,7 @@
             name={`wind_${axis}`}
             label={axis.toUpperCase()}
             type="range"
-            min={-10}
+            min={-100}
             max={100}
             step={0.1}
             value={parameters[`wind_${axis}`]}
