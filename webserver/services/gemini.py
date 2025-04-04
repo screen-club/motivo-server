@@ -103,49 +103,22 @@ class GeminiService:
             
     def _broadcast_connection_status(self, is_connected, error_reason=None):
         """Helper method to broadcast connection status"""
-        # CRITICAL: Always ensure a valid state value
-        state = self.connection_state or "unknown"
-        
-        # Simple status message with any error information
+        # This would typically send a message to all clients
+        # with the current connection status
         status_data = {
             "type": "gemini_connection_status",
             "connected": is_connected,
-            "state": state,
+            "state": self.connection_state,
             "timestamp": time.time()
         }
         
-        # Add error information directly if available
+        # Add error information if available
         if error_reason:
             status_data["error_reason"] = error_reason
             
-            # For quota exceeded, include the error message
+            # Add specific error message for quota exceeded
             if error_reason == "quota_exceeded":
                 status_data["error_message"] = "You exceeded your current quota. Please check your Google Cloud billing details."
-                # Explicitly set the state to make sure it's consistent
-                status_data["state"] = "quota_exceeded"
-            elif error_reason == "invalid_status":
-                status_data["error_message"] = "Invalid status code from Gemini API."
-            elif error_reason == "connection_failed":
-                status_data["error_message"] = "Failed to establish connection to Gemini API."
-        
-        # Add error message for all disconnected states if not already set
-        if not is_connected and not status_data.get("error_message"):
-            state = status_data["state"]
-            if state == "disconnected":
-                status_data["error_message"] = "Disconnected from Gemini API."
-            elif state == "failed":
-                status_data["error_message"] = "Connection to Gemini API failed."
-            elif state == "api_key_missing":
-                status_data["error_message"] = "Gemini API key is missing or invalid."
-            elif state == "connecting":
-                status_data["error_message"] = "Connecting to Gemini API..."
-            elif state == "inactive":
-                status_data["error_message"] = "Connection inactive due to timeout."
-            else:
-                status_data["error_message"] = f"Connection issue: {state}"
-        
-        # Log the message we're sending with the exact state value
-        logger.info(f"Broadcasting connection status: connected={is_connected}, state={status_data['state']}")
         
         # Add to incoming queue for clients to process
         self.incoming_queue.put(status_data)
@@ -398,7 +371,6 @@ class GeminiService:
         """Connect to Gemini API and maintain the connection"""
         retry_delay = 1
         max_retry_delay = 30
-        last_error_reason = None  # Track last error reason to preserve it
         
         while self.running:
             try:
@@ -456,17 +428,12 @@ class GeminiService:
                     if "quota" in error_message.lower() or "exceeded" in error_message.lower():
                         error_reason = "quota_exceeded"
                         self.connection_state = error_reason
-                        last_error_reason = error_reason  # Save last error reason
                         logger.error("API quota exceeded error detected. Please check your billing details.")
-                        
-                        # Send quota exceeded error immediately
-                        self._broadcast_connection_status(False, error_reason)
                     else:
                         error_reason = "invalid_status"
                         self.connection_state = "failed"
-                        last_error_reason = error_reason  # Save last error reason
-                        self._broadcast_connection_status(False, error_reason)
                     
+                    self._broadcast_connection_status(False, error_reason)
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, max_retry_delay)
                     continue
@@ -478,17 +445,12 @@ class GeminiService:
                     if "quota" in error_message.lower() or "exceeded" in error_message.lower():
                         error_reason = "quota_exceeded"
                         self.connection_state = error_reason
-                        last_error_reason = error_reason  # Save last error reason
                         logger.error("API quota exceeded error detected. Please check your billing details.")
-                        
-                        # Send quota exceeded error immediately
-                        self._broadcast_connection_status(False, error_reason)
                     else:
                         error_reason = "connection_failed" 
                         self.connection_state = "failed"
-                        last_error_reason = error_reason  # Save last error reason
-                        self._broadcast_connection_status(False, error_reason)
                     
+                    self._broadcast_connection_status(False, error_reason)
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, max_retry_delay)
                     continue
@@ -621,15 +583,9 @@ class GeminiService:
                             logger.warning("Error when closing WebSocket connection")
                         self.ws = None
                 
-                # Preserve quota exceeded status to prioritize this error for display
-                if self.connection_state == "quota_exceeded":
-                    # Just broadcast the error again to ensure it gets priority
-                    self._broadcast_connection_status(False, "quota_exceeded")
-                    logger.warning("Preserving quota_exceeded error as primary status message")
-                else:
-                    # Regular disconnection
-                    self.connection_state = "disconnected"
-                    self._broadcast_connection_status(False, last_error_reason)
+                # Notify of disconnection
+                self.connection_state = "disconnected"
+                self._broadcast_connection_status(False)
                 
                 # Wait before reconnecting
                 await asyncio.sleep(retry_delay)

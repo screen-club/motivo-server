@@ -119,21 +119,16 @@
             <div class="flex gap-4">
                 <button 
                     class="px-4 py-2 rounded-lg font-medium transition-colors {activePanel === 'rewards' ? 'bg-amber-500 text-white' : 'bg-gray-200 text-gray-700'}"
-                    onclick={() => {
-                        activePanel = /** @type {'rewards'} */ ('rewards');
-                    }}
+                    onclick={() => activePanel = /** @type {'rewards'} */ ('rewards')}
                 >
                     Rewards
                 </button>
                 <button 
-                    class="px-4 py-2 rounded-lg font-medium transition-colors {activePanel === 'llm' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}"
-                    onclick={() => {
-                        activePanel = /** @type {'llm'} */ ('llm');
-                        console.log("Switched to LLM panel - verifying connections are active");
-                    }}
-                >
-                    LLM Control
-                </button>
+                class="px-4 py-2 rounded-lg font-medium transition-colors {activePanel === 'llm' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}"
+                onclick={() => activePanel = /** @type {'llm'} */ ('llm')}
+            >
+                LLM Control
+            </button>
             </div>
 
             <!-- Conditional panel display -->

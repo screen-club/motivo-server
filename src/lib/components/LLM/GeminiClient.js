@@ -37,48 +37,11 @@ export function createGeminiClient(
       cleanupSocket();
 
       console.log("GeminiClient: Creating new connection to", apiUrl);
-
-      // Handle connection before creating socket
-      if (!url) {
-        console.error("GeminiClient: Invalid API URL");
-        addSystemMessage("Error: Cannot connect to Gemini - invalid API URL");
-        return false;
-      }
-
-      // Create the socket with better error handling
       flaskSocket = io(apiUrl, socketConfig);
-
-      // Set up event listeners immediately
       setupSocketListeners();
-
-      // Add direct error handlers for Socket.IO connection events
-      flaskSocket.on("connect_error", (error) => {
-        console.error("GeminiClient: Connection error", error.message);
-        // Check for quota errors in the error message
-        const errorMsg = error.message || "";
-        if (
-          errorMsg.toLowerCase().includes("quota") ||
-          errorMsg.toLowerCase().includes("exceeded")
-        ) {
-          addSystemMessage(
-            "⚠️ API QUOTA EXCEEDED: Check Google Cloud billing details"
-          );
-        } else {
-          addSystemMessage(`Connection error: ${error.message}`);
-        }
-        isConnected = false;
-      });
-
-      flaskSocket.on("error", (error) => {
-        console.error("GeminiClient: Socket error", error);
-        addSystemMessage(`Socket error: ${error}`);
-        isConnected = false;
-      });
-
       return true;
     } catch (error) {
       console.error("Flask socket setup error", error);
-      addSystemMessage(`Connection error: ${error.message}`);
       return false;
     }
   };
@@ -105,51 +68,7 @@ export function createGeminiClient(
     });
 
     flaskSocket.on("gemini_connection_status", (data) => {
-      // CRITICAL - make sure data object has a state even if server didn't send one
-      if (!data.state) {
-        data.state = isConnected ? "connected" : "disconnected";
-      }
-
       isConnected = data.connected;
-
-      console.log(
-        `GeminiClient: Connection status update - connected: ${data.connected}, state: ${data.state}`
-      );
-
-      // ALWAYS prioritize showing quota exceeded errors
-      if (
-        data.state === "quota_exceeded" ||
-        data.error_reason === "quota_exceeded"
-      ) {
-        const errorMsg =
-          data.error_message ||
-          "API quota exceeded. Check your Google Cloud billing details.";
-        console.error(`GeminiClient: QUOTA EXCEEDED ERROR - ${errorMsg}`);
-        addSystemMessage(`⚠️ API QUOTA EXCEEDED - ${errorMsg}`);
-
-        // Don't show any other message after quota error
-        return;
-      }
-
-      // Then handle other error messages
-      if (data.error_message) {
-        console.error(`GeminiClient: Error message: ${data.error_message}`);
-        addSystemMessage(`Connection error: ${data.error_message}`);
-      } else if (!data.connected) {
-        // Only show disconnection message if it's not a quota error
-        addSystemMessage(`API connection lost. Status: ${data.state}`);
-      }
-
-      // Dispatch a custom event for connection status with normalized data
-      window.dispatchEvent(
-        new CustomEvent("gemini-message", {
-          detail: {
-            type: "gemini_connection_status",
-            ...data,
-            state: data.state, // Ensure state is never undefined
-          },
-        })
-      );
     });
 
     // Relay Gemini responses via custom events
@@ -167,6 +86,11 @@ export function createGeminiClient(
           },
         })
       );
+    });
+
+    flaskSocket.on("connect_error", (error) => {
+      console.error("GeminiClient: Connection error", error.message);
+      isConnected = false;
     });
 
     flaskSocket.on("disconnect", () => {

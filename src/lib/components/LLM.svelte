@@ -103,6 +103,8 @@
   }
 
   onMount(() => {
+    console.log('LLM component mounted');
+    
     if (!$chatStore.sessionId) {
       chatStore.update(store => ({
         ...store,
@@ -113,6 +115,7 @@
     // Listen for gemini-message custom events from GeminiClient
     const geminiMessageHandler = (event) => {
       const data = event.detail;
+      console.log("LLM.svelte: Received gemini-message event", data.type);
       
       if (data.type === 'gemini_response') {
         const result = geminiClient.handleResponse(data, geminiConversation);
@@ -136,63 +139,14 @@
         
         if (result.isComplete) {
           isProcessing = false;
-          console.log("LLM.svelte: Gemini response complete");
-          // console.log("LLM.svelte: structuredResponse", structuredResponse);
         }
         
         scrollChatToBottom();
-      } else if (data.type === 'gemini_connection_status') {
-        // Handle connection status in messages too
-        isGeminiConnected = data.connected;
-        
-        // CRITICAL: Always ensure state is defined 
-        if (!data.state) {
-          data.state = "unknown";
-        }
-        
-        console.error(`LLM.svelte: Connection status via gemini-message - ${data.connected}, state: ${data.state}`);
-        
-        // PRIORITIZE quota exceeded errors
-        if (data.state === "quota_exceeded" || data.error_reason === "quota_exceeded") {
-          const errorMsg = data.error_message || "API quota exceeded";
-          console.error("LLM.svelte: QUOTA EXCEEDED ERROR IN MESSAGE");
-          addSystemMessage(`⚠️ QUOTA EXCEEDED - ${errorMsg}`);
-          return;
-        }
-        
-        // Then handle other errors
-        if (data.error_message) {
-          addSystemMessage(`Connection: ${data.error_message}`);
-          console.error(`LLM ERROR via message: ${data.error_message}`);
-        }
       }
     };
     
-    // Also listen for connection status events directly
-    const connectionStatusHandler = (event) => {
-      const data = event.detail;
-      // CRITICAL: Always ensure state is defined
-      if (!data.state) {
-        data.state = "unknown";
-      }
-      
-      console.error(`LLM.svelte: Connection status via event - ${data.connected}, state: ${data.state}`);
-      
-      // Update connected state
-      isGeminiConnected = data.connected;
-   
-      
-      // Then handle other errors
-      if (data.error_message) {
-        // Ensure error always shows in the UI
-        addSystemMessage(`⚠️ ${data.error_message}`);
-        console.error(`LLM.svelte: ERROR - ${data.error_message}`);
-      }
-    };
-    
-    // Register the event listeners
+    // Register the gemini-message event listener
     window.addEventListener('gemini-message', geminiMessageHandler);
-    window.addEventListener('gemini-connection-status', connectionStatusHandler);
     
     // Single WebSocket handler for all message types (except gemini_response which is now handled by the custom event)
     cleanupHandler = websocketService.addMessageHandler((data) => {
@@ -200,6 +154,8 @@
         isProcessing = false;
       } else if (data.type === 'debug_model_info') {
         isComputingRewards = data.is_computing;
+      } else if (data.type === 'gemini_connection_status') {
+        isGeminiConnected = data.connected;
       } else if (data.type === 'frame_captured' && !data.success) {
         addSystemMessage(`Error capturing frame: ${data.error || 'Unknown error'}`);
       }
@@ -231,9 +187,8 @@
       // Clean up all WebSocket handlers
       if (cleanupHandler) cleanupHandler();
       
-      // Remove the event listeners
+      // Remove the gemini-message event listener
       window.removeEventListener('gemini-message', geminiMessageHandler);
-      window.removeEventListener('gemini-connection-status', connectionStatusHandler);
       
       // Remove activity listeners
       document.removeEventListener('click', updateActivityTime);
@@ -415,8 +370,9 @@
       
       isProcessing = true;
       
+      console.log("correctionPrompt", correctionPrompt);
       geminiClient.sendMessage(correctionPrompt, { 
-        add_to_existing: false, 
+        add_to_existing: true, 
         include_image: true,
         auto_correct: true
       }).catch(error => {
@@ -475,13 +431,16 @@
           setTimeout(() => handler(), 0); // Allow this function to complete first
           clearTimeout(timeoutId);
           
+          console.log("Received debug_model_info:", data.is_computing);
           
           // Check if rewards are computing
           isComputingRewards = data.is_computing === true;
           
           if (isComputingRewards) {
+            console.log("Humanoid is computing rewards - not ready");
             resolve(false); // Not ready yet
           } else {
+            console.log("Humanoid is ready - returning true");
             resolve(true); // Just resolve, don't capture frame or auto-correct here
           }
         }
