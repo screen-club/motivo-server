@@ -273,7 +273,14 @@ Your response should be a valid JSON object with this structure:
       }
     ],
     "weights": [1.0, 0.7],
-    "combinationType": "geometric"
+    "combinationType": "geometric",
+    "environnement": {
+      "gravity": 1.0,
+      "density": 1.0,
+      "wind_x": 1.0,
+      "wind_y": 1.0,;
+      "wind_z": 1.0,
+  }
   }
 }
 ```
@@ -351,26 +358,11 @@ Your response should be a valid JSON object with this structure:
 
 # ENVIRONNEMENT Parameters
 
-You can also change the environnement. ( optional )
+You can also change the environnement. ( mandatory )
 Gravity : -30 to 0 
 Density : 0.0 to 2.0
 Wind Controls, x, y, z from -100 to 100
 
-add a key to the json if necessary 
-
-{
-  "rewards": [],
-  "weights": [],
-  "combinationType": "geometric"
-  "environnement": {
-    "gravity": 1.0,
-    "density": 1.0,
-    "wind_x": 1.0,
-    "wind_y": 1.0,;
-    "wind_z": 1.0,
-
-  }
-}
 
 
 

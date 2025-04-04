@@ -66,6 +66,54 @@ class GeminiSocketService {
         path: "/socket.io", // Explicit path
       });
 
+      // Add error handler before other events
+      this.socket.on("connect_error", (error) => {
+        console.error("GeminiSocketService: Connection error", error.message);
+        this.connected = false;
+        geminiConnected.set(false);
+
+        // Broadcast error to all handlers - looks like a connection status message
+        const errorMsg = error.message || "Connection failed";
+
+        // Check for quota errors in the connection error
+        if (
+          errorMsg.toLowerCase().includes("quota") ||
+          errorMsg.toLowerCase().includes("exceeded")
+        ) {
+          console.error(
+            "GeminiSocketService: QUOTA EXCEEDED detected in connection error"
+          );
+
+          // Notify all handlers with a fake connection status message
+          this.messageHandlers.forEach((handler) =>
+            handler({
+              type: "gemini_connection_status",
+              connected: false,
+              state: "quota_exceeded",
+              error_reason: "quota_exceeded",
+              error_message:
+                "You exceeded your current quota. Please check your Google Cloud billing details.",
+              timestamp: Date.now() / 1000,
+            })
+          );
+
+          // Also dispatch a window event
+          window.dispatchEvent(
+            new CustomEvent("gemini-connection-status", {
+              detail: {
+                type: "gemini_connection_status",
+                connected: false,
+                state: "quota_exceeded",
+                error_reason: "quota_exceeded",
+                error_message:
+                  "You exceeded your current quota. Please check your Google Cloud billing details.",
+                timestamp: Date.now() / 1000,
+              },
+            })
+          );
+        }
+      });
+
       this.socket.on("connect", () => {
         console.log("GeminiSocketService: Connected to Flask Socket.IO", {
           id: this.socket.id,
@@ -89,30 +137,50 @@ class GeminiSocketService {
       });
 
       this.socket.on("gemini_connection_status", (data) => {
-        // Simple logging and state update
+        // Simple logging and state update with fallback for missing values
+        const state = data.state || "unknown";
         console.log(
-          "GeminiSocketService: Connection status:",
-          data.connected,
-          data.state
+          `GeminiSocketService: Connection status: ${data.connected}, state: ${state}`
         );
+
+        // Immediately log any error messages
+        if (data.error_message) {
+          console.error(
+            `GeminiSocketService: Error message received: ${data.error_message}`
+          );
+        }
+
+        if (data.error_reason === "quota_exceeded") {
+          console.error("GeminiSocketService: QUOTA EXCEEDED ERROR DETECTED");
+        }
 
         // Update connected state
         this.connected = data.connected;
         geminiConnected.set(data.connected);
 
+        // Also dispatch a window event for components that don't use the handler system
+        window.dispatchEvent(
+          new CustomEvent("gemini-connection-status", {
+            detail: {
+              type: "gemini_connection_status",
+              ...data,
+              state: state,
+            },
+          })
+        );
+
         // Directly pass through all data without special handling
         this.messageHandlers.forEach((handler) =>
-          handler({ type: "gemini_connection_status", ...data })
+          handler({
+            type: "gemini_connection_status",
+            ...data,
+            // Ensure state is never undefined
+            state: state,
+          })
         );
       });
 
       this.socket.on("gemini_response", (data) => {
-        console.log(
-          "GeminiSocketService: Received response",
-          data.complete ? "(complete)" : "(streaming)",
-          data.content ? data.content.substring(0, 30) + "..." : "no content"
-        );
-
         // Add to responses store if it has content
         if (data.content) {
           // Include image information in the response if available
@@ -150,10 +218,6 @@ class GeminiSocketService {
         console.log("GeminiSocketService: Disconnected from Flask Socket.IO");
         this.connected = false;
         geminiConnected.set(false);
-      });
-
-      this.socket.on("connect_error", (error) => {
-        console.error("GeminiSocketService: Connection error", error);
       });
     } catch (error) {
       console.error("GeminiSocketService: Setup error", error);

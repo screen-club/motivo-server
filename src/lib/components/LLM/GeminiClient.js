@@ -28,7 +28,7 @@ export function createGeminiClient(
     timeout: 10000,
     autoConnect: true,
     forceNew: true,
-    path: '/socket.io'
+    path: "/socket.io",
   };
 
   const connect = (url) => {
@@ -37,11 +37,48 @@ export function createGeminiClient(
       cleanupSocket();
 
       console.log("GeminiClient: Creating new connection to", apiUrl);
+
+      // Handle connection before creating socket
+      if (!url) {
+        console.error("GeminiClient: Invalid API URL");
+        addSystemMessage("Error: Cannot connect to Gemini - invalid API URL");
+        return false;
+      }
+
+      // Create the socket with better error handling
       flaskSocket = io(apiUrl, socketConfig);
+
+      // Set up event listeners immediately
       setupSocketListeners();
+
+      // Add direct error handlers for Socket.IO connection events
+      flaskSocket.on("connect_error", (error) => {
+        console.error("GeminiClient: Connection error", error.message);
+        // Check for quota errors in the error message
+        const errorMsg = error.message || "";
+        if (
+          errorMsg.toLowerCase().includes("quota") ||
+          errorMsg.toLowerCase().includes("exceeded")
+        ) {
+          addSystemMessage(
+            "⚠️ API QUOTA EXCEEDED: Check Google Cloud billing details"
+          );
+        } else {
+          addSystemMessage(`Connection error: ${error.message}`);
+        }
+        isConnected = false;
+      });
+
+      flaskSocket.on("error", (error) => {
+        console.error("GeminiClient: Socket error", error);
+        addSystemMessage(`Socket error: ${error}`);
+        isConnected = false;
+      });
+
       return true;
     } catch (error) {
       console.error("Flask socket setup error", error);
+      addSystemMessage(`Connection error: ${error.message}`);
       return false;
     }
   };
@@ -68,24 +105,68 @@ export function createGeminiClient(
     });
 
     flaskSocket.on("gemini_connection_status", (data) => {
+      // CRITICAL - make sure data object has a state even if server didn't send one
+      if (!data.state) {
+        data.state = isConnected ? "connected" : "disconnected";
+      }
+
       isConnected = data.connected;
+
+      console.log(
+        `GeminiClient: Connection status update - connected: ${data.connected}, state: ${data.state}`
+      );
+
+      // ALWAYS prioritize showing quota exceeded errors
+      if (
+        data.state === "quota_exceeded" ||
+        data.error_reason === "quota_exceeded"
+      ) {
+        const errorMsg =
+          data.error_message ||
+          "API quota exceeded. Check your Google Cloud billing details.";
+        console.error(`GeminiClient: QUOTA EXCEEDED ERROR - ${errorMsg}`);
+        addSystemMessage(`⚠️ API QUOTA EXCEEDED - ${errorMsg}`);
+
+        // Don't show any other message after quota error
+        return;
+      }
+
+      // Then handle other error messages
+      if (data.error_message) {
+        console.error(`GeminiClient: Error message: ${data.error_message}`);
+        addSystemMessage(`Connection error: ${data.error_message}`);
+      } else if (!data.connected) {
+        // Only show disconnection message if it's not a quota error
+        addSystemMessage(`API connection lost. Status: ${data.state}`);
+      }
+
+      // Dispatch a custom event for connection status with normalized data
+      window.dispatchEvent(
+        new CustomEvent("gemini-message", {
+          detail: {
+            type: "gemini_connection_status",
+            ...data,
+            state: data.state, // Ensure state is never undefined
+          },
+        })
+      );
     });
 
     // Relay Gemini responses via custom events
     flaskSocket.on("gemini_response", (data) => {
-      console.log("GeminiClient: Received response", data.complete ? "(complete)" : "(streaming)");
-      
-      window.dispatchEvent(new CustomEvent('gemini-message', { 
-        detail: {
-          type: "gemini_response",
-          ...data
-        }
-      }));
-    });
+      if (data.complete) {
+        console.log("GeminiClient: Received complete response");
+        console.log("GeminiClient: result", data.result);
+      }
 
-    flaskSocket.on("connect_error", (error) => {
-      console.error("GeminiClient: Connection error", error.message);
-      isConnected = false;
+      window.dispatchEvent(
+        new CustomEvent("gemini-message", {
+          detail: {
+            type: "gemini_response",
+            ...data,
+          },
+        })
+      );
     });
 
     flaskSocket.on("disconnect", () => {
@@ -112,8 +193,9 @@ export function createGeminiClient(
 
     if (data.content) {
       const lastMessage = updatedConversation[updatedConversation.length - 1];
-      const isExistingAssistantMessage = lastMessage && lastMessage.role === "assistant";
-      
+      const isExistingAssistantMessage =
+        lastMessage && lastMessage.role === "assistant";
+
       if (isExistingAssistantMessage && !data.complete) {
         // Update existing streaming message
         updateExistingMessage(lastMessage, data, false);
@@ -125,7 +207,7 @@ export function createGeminiClient(
         // Create new message
         const newMessage = createNewMessage(data);
         updatedConversation.push(newMessage);
-        
+
         if (data.complete) {
           processCompleteMessage(newMessage.content);
         }
@@ -138,17 +220,17 @@ export function createGeminiClient(
       qualityScore,
       isComplete: data.complete || false,
     };
-    
+
     // Helper to update existing message
     function updateExistingMessage(message, data, isComplete) {
       message.content = data.content;
       message.streaming = !isComplete;
-      
+
       if (data.image_path) {
         addImageInfo(message, data);
       }
     }
-    
+
     // Helper to create a new message
     function createNewMessage(data) {
       const message = {
@@ -156,11 +238,11 @@ export function createGeminiClient(
         content: data.content,
         streaming: !data.complete,
       };
-      
+
       if (data.image_path) {
         addImageInfo(message, data);
       }
-      
+
       return message;
     }
 
@@ -175,38 +257,41 @@ export function createGeminiClient(
         return;
       }
 
-      console.log("GeminiClient: Found rewards in response, processing");
-      
+      console.log("GeminiClient: complete.");
+      console.log(content);
       // Clear existing rewards
       websocketService.send({
         type: "clear_active_rewards",
         preserve_z: true,
       });
-      
+
       rewardStore.cleanRewardsLocal();
 
       // Prepare rewards with IDs and auto_capture flag
-      const rewards = structuredResponse.result.rewards.map(reward => ({
+      const rewards = structuredResponse.result.rewards.map((reward) => ({
         ...reward,
         auto_capture: true,
         id: reward.id || uuidFn(),
       }));
-      
+
       // Equal weights for all rewards
       const weights = rewards.map(() => 1.0);
 
       // Send rewards after a short delay to ensure clear completes
       setTimeout(() => {
-        const requestId = `reward_batch_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-        
+        const requestId = `reward_batch_${Date.now()}_${Math.random()
+          .toString(36)
+          .slice(2, 9)}`;
+
         websocketService.send({
           type: "request_reward",
           reward: {
             rewards,
             weights,
-            combinationType: structuredResponse.result.combinationType || "geometric",
+            combinationType:
+              structuredResponse.result.combinationType || "geometric",
           },
-          add_to_existing: true,
+          add_to_existing: false,
           batch_mode: true,
           timestamp: new Date().toISOString(),
           message_id: requestId,
@@ -293,12 +378,16 @@ export function createGeminiClient(
   const sendMessage = (message, options = {}) => {
     // Check connection state
     if (!flaskSocket) {
-      addSystemMessage("Error: Could not send message - Gemini service not initialized");
+      addSystemMessage(
+        "Error: Could not send message - Gemini service not initialized"
+      );
       return Promise.resolve(false);
     }
-    
+
     if (!flaskSocket.connected) {
-      addSystemMessage("Error: Could not send message - Gemini service disconnected. Trying to reconnect...");
+      addSystemMessage(
+        "Error: Could not send message - Gemini service disconnected. Trying to reconnect..."
+      );
       flaskSocket.connect();
       return Promise.resolve(false);
     }
@@ -307,41 +396,58 @@ export function createGeminiClient(
       try {
         addSystemMessage("Capturing frame...");
         const messageId = options.id || uuidFn();
-        
+
         // Set timeout for frame capture (8 seconds)
         const captureTimeout = setTimeout(() => {
           console.warn("Frame capture timeout - continuing without image");
-          updateLatestSystemMessage("Frame capture timed out, continuing without image");
+          updateLatestSystemMessage(
+            "Frame capture timed out, continuing without image"
+          );
           sendMessageToGemini(message, messageId, options, null);
           resolve(true);
         }, 8000);
-        
+
         // Try to capture frame
         try {
           const frameCaptureResult = await captureFrame();
           clearTimeout(captureTimeout);
-          
+
           if (frameCaptureResult && frameCaptureResult.success) {
             // Frame capture succeeded
-            updateLatestSystemMessage("Frame captured successfully, sending to Gemini...");
-            
+            updateLatestSystemMessage(
+              "Frame captured successfully, sending to Gemini..."
+            );
+
             // Add body positions to message if available
-            const enhancedMessage = addBodyPositionsToMessage(message, frameCaptureResult);
-            
+            const enhancedMessage = addBodyPositionsToMessage(
+              message,
+              frameCaptureResult
+            );
+
             // Send message with frame
-            sendMessageToGemini(enhancedMessage, messageId, options, frameCaptureResult);
+            sendMessageToGemini(
+              enhancedMessage,
+              messageId,
+              options,
+              frameCaptureResult
+            );
           } else {
             // Frame capture failed but we got a response
-            updateLatestSystemMessage("Error capturing frame: " + (frameCaptureResult?.error || "Unknown error"));
+            updateLatestSystemMessage(
+              "Error capturing frame: " +
+                (frameCaptureResult?.error || "Unknown error")
+            );
             sendMessageToGemini(message, messageId, options, null);
           }
         } catch (captureError) {
           // Exception during frame capture
           clearTimeout(captureTimeout);
-          updateLatestSystemMessage("Error capturing frame: " + captureError.message);
+          updateLatestSystemMessage(
+            "Error capturing frame: " + captureError.message
+          );
           sendMessageToGemini(message, messageId, options, null);
         }
-        
+
         resolve(true);
       } catch (error) {
         console.error("Error in sendMessage:", error);
@@ -350,44 +456,53 @@ export function createGeminiClient(
       }
     });
   };
-  
+
   /**
    * Helper to send a message to Gemini API
    */
-  const sendMessageToGemini = (message, messageId, options, frameCaptureResult) => {
+  const sendMessageToGemini = (
+    message,
+    messageId,
+    options,
+    frameCaptureResult
+  ) => {
     // Prepare message payload
     const payload = {
       message,
       id: messageId,
       add_to_existing: options.add_to_existing || false,
-      include_image: frameCaptureResult ? options.include_image !== false : false,
-      auto_correct: options.auto_correct || false
+      include_image: frameCaptureResult
+        ? options.include_image !== false
+        : false,
+      auto_correct: options.auto_correct || false,
     };
-    
+
     // Add frame data if available
     if (frameCaptureResult) {
       payload.frame_url = frameCaptureResult.frameUrl;
       payload.positions = frameCaptureResult.positions;
     }
-    
+
     // Send message
     flaskSocket.emit("gemini_message", payload);
   };
-  
+
   /**
    * Add body positions to message text
    */
   const addBodyPositionsToMessage = (message, frameCaptureResult) => {
     let bodyPositionsAsString = "{}";
-    
+
     if (frameCaptureResult?.positions?.all_body_positions) {
       try {
-        bodyPositionsAsString = JSON.stringify(frameCaptureResult.positions.all_body_positions);
+        bodyPositionsAsString = JSON.stringify(
+          frameCaptureResult.positions.all_body_positions
+        );
       } catch (error) {
         console.error("Error processing body positions:", error);
       }
     }
-    
+
     return message + "\n\n" + "BODY POSITIONS: " + bodyPositionsAsString;
   };
 
@@ -400,7 +515,7 @@ export function createGeminiClient(
    */
   const captureFrame = () => {
     frameRequestCounter++; // Ensure unique request ID
-    
+
     return new Promise(async (resolve) => {
       // Check for WebSocket connection
       if (!websocketService.isConnected()) {
@@ -411,41 +526,44 @@ export function createGeminiClient(
 
       try {
         // Create unique request ID
-        const requestId = `frame_${Date.now()}_${frameRequestCounter}_${uuidFn().slice(0, 8)}`;
+        const requestId = `frame_${Date.now()}_${frameRequestCounter}_${uuidFn().slice(
+          0,
+          8
+        )}`;
         console.log(`Creating frame capture with requestId: ${requestId}`);
-        
+
         // State tracking
         let responseTimeout;
         let frameData = null;
         let positionsData = null;
         let partialTimeout = null;
         let handlers = { message: null, snapshot: null };
-        
+
         // Set up handlers for cleaning up
         const cleanup = () => {
           if (handlers.message) {
             handlers.message();
             handlers.message = null;
           }
-          
+
           if (handlers.snapshot) {
             handlers.snapshot();
             handlers.snapshot = null;
           }
-          
+
           if (partialTimeout) {
             clearTimeout(partialTimeout);
             partialTimeout = null;
           }
         };
-        
+
         // Handler for checking complete response
         const checkAndResolve = () => {
           // If we have both frame and position data, we're done
           if (frameData && positionsData) {
             clearTimeout(responseTimeout);
             cleanup();
-            
+
             if (frameData.status === "success" && frameData.frame_path) {
               resolve({
                 success: true,
@@ -464,20 +582,22 @@ export function createGeminiClient(
             }
           }
         };
-        
+
         // Handler for frame and position messages
         const messageHandler = (data) => {
           if (data.type === "frame_captured" && data.requestId === requestId) {
             frameData = data;
-            
+
             // Set timeout for positions if we got frame but not positions
             if (!positionsData && !partialTimeout) {
               partialTimeout = setTimeout(() => {
                 if (frameData && !positionsData) {
-                  console.log("TARGET POSITIONS TAKING TOO LONG - RESOLVING WITH FRAME ONLY");
+                  console.log(
+                    "TARGET POSITIONS TAKING TOO LONG - RESOLVING WITH FRAME ONLY"
+                  );
                   cleanup();
                   clearTimeout(responseTimeout);
-                  
+
                   if (frameData.status === "success" && frameData.frame_path) {
                     resolve({
                       success: true,
@@ -497,18 +617,22 @@ export function createGeminiClient(
                 }
               }, 1500); // Short timeout for positions
             }
-            
+
             checkAndResolve();
-          } 
-          else if (data.type === "target_positions" && data.requestId === requestId) {
+          } else if (
+            data.type === "target_positions" &&
+            data.requestId === requestId
+          ) {
             positionsData = data;
             if (partialTimeout) {
               clearTimeout(partialTimeout);
               partialTimeout = null;
             }
             checkAndResolve();
-          } 
-          else if (data.type === "frame_captured" && data.status === "error") {
+          } else if (
+            data.type === "frame_captured" &&
+            data.status === "error"
+          ) {
             // Handle errors even if requestId doesn't match
             console.error("⚠️ Frame capture error:", data.error);
             cleanup();
@@ -519,7 +643,7 @@ export function createGeminiClient(
             });
           }
         };
-        
+
         // Handler for snapshot responses
         const snapshotHandler = (data) => {
           if (data.type === "snapshot_created") {
@@ -528,9 +652,12 @@ export function createGeminiClient(
                 frameData = {
                   type: "frame_captured",
                   status: "success",
-                  frame_path: data.frame_path || data.timestamped_path || data.public_path,
+                  frame_path:
+                    data.frame_path ||
+                    data.timestamped_path ||
+                    data.public_path,
                   requestId: requestId,
-                  timestamp: data.timestamp_str || data.timestamp
+                  timestamp: data.timestamp_str || data.timestamp,
                 };
                 checkAndResolve();
               }
@@ -540,25 +667,25 @@ export function createGeminiClient(
                   type: "frame_captured",
                   status: "error",
                   error: data.error || "Unknown error creating snapshot",
-                  requestId: requestId
+                  requestId: requestId,
                 };
                 checkAndResolve();
               }
             }
           }
         };
-        
+
         // Register message handlers
         handlers.message = websocketService.addMessageHandler(messageHandler);
         handlers.snapshot = websocketService.addMessageHandler(snapshotHandler);
-        
+
         // Request a snapshot
         websocketService.send({
           type: "make_snapshot",
           requestId: requestId,
           timestamp: new Date().toISOString(),
         });
-        
+
         // Request target positions after delay
         setTimeout(() => {
           websocketService.send({
@@ -566,7 +693,7 @@ export function createGeminiClient(
             requestId: requestId,
             timestamp: new Date().toISOString(),
           });
-          
+
           // Retry position request after delay if needed
           setTimeout(() => {
             if (!positionsData) {
@@ -578,11 +705,15 @@ export function createGeminiClient(
             }
           }, 2000);
         }, 500);
-        
+
         // Set overall timeout
         responseTimeout = setTimeout(() => {
           // Return partial result if we have frame but no positions
-          if (frameData && frameData.status === "success" && frameData.frame_path) {
+          if (
+            frameData &&
+            frameData.status === "success" &&
+            frameData.frame_path
+          ) {
             console.log("⚠️ PARTIAL TIMEOUT - Got frame but no positions data");
             cleanup();
             resolve({
@@ -599,7 +730,7 @@ export function createGeminiClient(
               type: "make_snapshot",
               timestamp: new Date().toISOString(),
             });
-            
+
             // Final timeout
             setTimeout(() => {
               cleanup();
@@ -608,12 +739,13 @@ export function createGeminiClient(
                 success: false,
                 error: "Timeout waiting for frame capture and target positions",
                 positions: positionsData ? positionsData.data || {} : {},
-                positionStatus: positionsData ? positionsData.status : "timed_out",
+                positionStatus: positionsData
+                  ? positionsData.status
+                  : "timed_out",
               });
             }, 2000);
           }
         }, 10000);
-        
       } catch (error) {
         console.error("Error requesting frame:", error);
         resolve({ success: false, error: error.message });
@@ -626,13 +758,13 @@ export function createGeminiClient(
    */
   const disconnect = () => {
     if (!flaskSocket) return;
-    
+
     console.log("GeminiClient: Disconnecting socket");
     try {
       // Clean up event listeners and close connection
       flaskSocket.removeAllListeners();
       flaskSocket.disconnect();
-      
+
       // Force close the engine for good measure
       if (flaskSocket.io?.engine) {
         flaskSocket.io.engine.close();
@@ -640,7 +772,7 @@ export function createGeminiClient(
     } catch (err) {
       console.error("Error during client disconnect:", err);
     }
-    
+
     // Reset state
     flaskSocket = null;
     isConnected = false;
@@ -654,10 +786,10 @@ export function createGeminiClient(
     if (!websocketService.isConnected()) {
       return false;
     }
-    
+
     websocketService.send({
       type: "gemini_clear_conversation",
-      client_id: clientId
+      client_id: clientId,
     });
     return true;
   };

@@ -191,8 +191,8 @@
           "name": "position",
           "targets": [
             {
-              "body": "Pelvis",
-              "z": 0.3,
+              "body": "Head",
+              "z": 1.0,
               "weight": 1.0,
               "sigmoid": "quadratic",
               "margin": 0.2
