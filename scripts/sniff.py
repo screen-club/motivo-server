@@ -11,8 +11,8 @@ from lib.api import APIClient
 
 # Configuration
 CONFIG = {
-    'WS_URI': 'ws://localhost:8765',
-    'API_URL': 'http://localhost:5002',
+    'WS_URI': 'ws://192.168.1.38:8765',
+    'API_URL': 'http://192.168.1.38:5002',
     'MAX_RETRIES': 3,
     'RETRY_DELAY': 2,
     'DEFAULT_FPS': 4,  # Default frames per second for websocket streaming
@@ -97,7 +97,15 @@ def prepare_animation_for_db(poses, trans):
         "trans": trans
     }
 
-async def upload_npz_to_db(npz_path):
+async def parse_users_input(users_input):
+    """Parse comma-separated users input into a list or None"""
+    if not users_input or users_input.strip() == "":
+        return None
+    
+    # Split by comma and strip whitespace from each name
+    return [user.strip() for user in users_input.split(",") if user.strip()]
+
+async def upload_npz_to_db(npz_path, users=None):
     """Convert NPZ file and upload to database"""
     try:
         # Convert NPZ to SMPL format
@@ -120,7 +128,8 @@ async def upload_npz_to_db(npz_path):
         result = api_client.add_config(
             title=animation_name,
             data=db_data,
-            type="pose"
+            type="pose",
+            users=users
         )
         
         logger.info(f"Successfully uploaded animation '{animation_name}' to database")
@@ -130,7 +139,7 @@ async def upload_npz_to_db(npz_path):
         logger.error(f"Error uploading animation to database: {e}")
         return False
 
-async def upload_npz_folder_to_db(folder_path):
+async def upload_npz_folder_to_db(folder_path, users=None):
     """Upload all NPZ files in folder to database"""
     try:
         npz_files = [f for f in os.listdir(folder_path) if f.endswith('.npz')]
@@ -144,7 +153,7 @@ async def upload_npz_folder_to_db(folder_path):
             full_path = os.path.join(folder_path, npz_file)
             logger.info(f"Processing: {npz_file}")
             
-            success = await upload_npz_to_db(full_path)
+            success = await upload_npz_to_db(full_path, users)
             if success:
                 logger.info(f"Successfully uploaded: {npz_file}")
             else:
@@ -390,12 +399,18 @@ async def interactive_client():
                                 await load_npz_animation_folder(websocket, folder_path, stop_event)
                         elif choice == '5':
                             npz_path = input("\nEnter the path to the NPZ file: ").strip()
+                            users_input = input("\nEnter usernames (comma-separated) or leave empty: ").strip()
+                            users = await parse_users_input(users_input)
+                            
                             if npz_path:
-                                await upload_npz_to_db(npz_path)
+                                await upload_npz_to_db(npz_path, users)
                         elif choice == '6':
                             folder_path = input("\nEnter the path to the NPZ folder: ").strip()
+                            users_input = input("\nEnter usernames (comma-separated) or leave empty: ").strip()
+                            users = await parse_users_input(users_input)
+                            
                             if folder_path:
-                                await upload_npz_folder_to_db(folder_path)
+                                await upload_npz_folder_to_db(folder_path, users)
                         elif choice == '7':
                             logger.info("Exiting program...")
                             stop_event.set()

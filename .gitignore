@@ -62,3 +62,4 @@ motivo/poses_test.json
 
 storage/
 scripts/npz-animations
+scripts/animation/stand_up_animation.npz

@@ -15,7 +15,9 @@ class APIClient:
                    data: Dict[str, Any], 
                    type: str = "pose",
                    thumbnail: str = "",
-                   cache_file_path: str = None) -> Dict[str, Any]:
+                   cache_file_path: str = None,
+                   users: List[str] = None,
+                   ) -> Dict[str, Any]:
         """
         Add a new configuration to the database
         
@@ -37,7 +39,8 @@ class APIClient:
                     "type": type,
                     "data": data,
                     "thumbnail": thumbnail,
-                    "cache_file_path": cache_file_path
+                    "cache_file_path": cache_file_path,
+                    "users": users,
                 }
             )
             response.raise_for_status()
