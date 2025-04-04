@@ -4,6 +4,7 @@ import logging
 import json
 import numpy as np
 import os
+import time
 from datetime import datetime
 from scipy.spatial.transform import Rotation as R
 from pathlib import Path
@@ -162,18 +163,47 @@ async def upload_npz_folder_to_db(folder_path, users=None):
     except Exception as e:
         logger.error(f"Error processing folder: {e}")
 
+async def response_handler(websocket, stop_event):
+    """Handle WebSocket responses without blocking frame sending"""
+    try:
+        while not stop_event.is_set():
+            try:
+                response = await asyncio.wait_for(websocket.recv(), timeout=0.1)
+                try:
+                    response_data = json.loads(response)
+                    if response_data.get('type') != 'smpl_update':  # Don't log frequent updates
+                        logger.debug(f"Response received: {response_data.get('type')}")
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid JSON response: {response}")
+            except asyncio.TimeoutError:
+                # No response within timeout, continue listening
+                pass
+            except Exception as e:
+                logger.error(f"Response handler error: {e}")
+                if "connection is closed" in str(e) or "code" in str(e):
+                    stop_event.set()
+                    break
+    except Exception as e:
+        logger.error(f"Response handler fatal error: {e}")
+        stop_event.set()
+
 async def heartbeat(websocket, stop_event):
     """Send periodic heartbeat to keep connection alive"""
     try:
         while not stop_event.is_set():
-            await websocket.ping()
+            try:
+                await websocket.ping()
+            except Exception as e:
+                logger.error(f"Heartbeat error: {e}")
+                stop_event.set()
+                break
             await asyncio.sleep(CONFIG['HEARTBEAT_INTERVAL'])
     except Exception as e:
-        logger.error(f"Heartbeat error: {e}")
+        logger.error(f"Heartbeat fatal error: {e}")
         stop_event.set()
 
 async def send_smpl_pose(websocket, poses, trans, frame_idx=0):
-    """Send a single SMPL pose frame to the websocket with timeout"""
+    """Send a single SMPL pose frame to the websocket - non-blocking"""
     try:
         message = {
             "type": "load_pose_smpl",
@@ -185,28 +215,13 @@ async def send_smpl_pose(websocket, poses, trans, frame_idx=0):
         }
         
         await websocket.send(json.dumps(message))
-        response = await asyncio.wait_for(
-            websocket.recv(), 
-            timeout=CONFIG['RESPONSE_TIMEOUT']
-        )
-        
-        # Validate response
-        try:
-            response_data = json.loads(response)
-            if response_data.get('type') == 'smpl_update':
-                return True
-            logger.warning(f"Unexpected response type: {response_data.get('type')}")
-        except json.JSONDecodeError:
-            logger.warning(f"Invalid JSON response: {response}")
-            
         return True
         
-    except asyncio.TimeoutError:
-        logger.error("Response timeout")
-        raise
     except Exception as e:
         logger.error(f"Send error: {e}")
-        raise
+        if "connection is closed" in str(e):
+            raise
+        return False
 
 async def send_fake_smpl_pose(websocket):
     """Send a test SMPL pose"""
@@ -229,7 +244,7 @@ async def send_fake_smpl_pose(websocket):
     logger.info(f"Received response: {response}")
 
 async def send_npz_as_smpl(websocket, npz_path, stop_event):
-    """Convert and send NPZ animation with frame rate control"""
+    """Convert and send NPZ animation with frame rate control - non-blocking approach"""
     logger.info(f"Converting NPZ animation: {npz_path}")
     
     smpl_data = convert_npz_to_smpl(npz_path)
@@ -260,28 +275,68 @@ async def send_npz_as_smpl(websocket, npz_path, stop_event):
     # Adjust frame delay based on FPS
     frame_delay = 1.0 / fps
     
-    for frame_idx in frame_indices:
-        if stop_event.is_set():
-            logger.info("Stopping animation due to connection issues")
-            return
-
-        retries = 0
-        while retries < CONFIG['MAX_RETRIES']:
+    # Track performance metrics
+    sent_frames = 0
+    dropped_frames = 0
+    start_time = time.time()
+    
+    # Define FPS monitoring function
+    def log_performance():
+        if sent_frames > 0:
+            elapsed = time.time() - start_time
+            actual_fps = sent_frames / elapsed if elapsed > 0 else 0
+            logger.info(f"Performance: Sent {sent_frames} frames, dropped {dropped_frames}, " 
+                      f"actual fps: {actual_fps:.2f}, target: {fps}")
+    
+    # Schedule periodic performance logging
+    performance_log_task = asyncio.create_task(
+        asyncio.sleep(5)  # Log after 5 seconds
+    )
+    
+    try:
+        for frame_idx in frame_indices:
+            if stop_event.is_set():
+                logger.info("Stopping animation due to connection issues")
+                break
+            
+            frame_start = time.time()
+            
             try:
-                logger.info(f"Sending frame {frame_idx + 1}/{len(poses)}")
+                logger.debug(f"Sending frame {frame_idx + 1}/{len(poses)}")
                 success = await send_smpl_pose(websocket, poses, trans, frame_idx)
-                if success:
-                    break
-            except Exception as e:
-                retries += 1
-                if retries == CONFIG['MAX_RETRIES']:
-                    logger.error(f"Failed to send frame {frame_idx + 1} after {CONFIG['MAX_RETRIES']} attempts")
-                    stop_event.set()
-                    return
-                logger.info(f"Retry {retries}/{CONFIG['MAX_RETRIES']} after error: {e}")
-                await asyncio.sleep(CONFIG['RETRY_DELAY'])
                 
-        await asyncio.sleep(frame_delay)
+                if success:
+                    sent_frames += 1
+                else:
+                    dropped_frames += 1
+                    logger.warning(f"Failed to send frame {frame_idx + 1}")
+                
+                # Calculate how long to sleep to maintain target FPS
+                elapsed = time.time() - frame_start
+                sleep_time = max(0, frame_delay - elapsed)
+                
+                if elapsed > frame_delay:
+                    logger.debug(f"Frame sending took {elapsed:.4f}s, exceeding frame delay of {frame_delay:.4f}s")
+                
+                await asyncio.sleep(sleep_time)
+                
+                # Log performance periodically
+                if performance_log_task.done():
+                    log_performance()
+                    performance_log_task = asyncio.create_task(asyncio.sleep(5))
+                
+            except Exception as e:
+                if "connection is closed" in str(e) or "code" in str(e):
+                    logger.error(f"WebSocket connection closed while sending frame {frame_idx + 1}: {e}")
+                    stop_event.set()
+                    break
+                else:
+                    logger.error(f"Error sending frame {frame_idx + 1}: {e}")
+                    dropped_frames += 1
+    
+    finally:
+        # Final performance report
+        log_performance()
 
 async def get_current_context(websocket):
     """Request and display current context information"""
@@ -364,85 +419,120 @@ async def display_menu():
         except ValueError:
             print("Invalid input. Please enter a number.")
 
-async def interactive_client():
-    """Main interactive client with connection management"""
-    retries = 0
-    stop_event = asyncio.Event()
-    
-    while retries < CONFIG['MAX_RETRIES']:
+async def establish_connection():
+    """Establish WebSocket connection with proper error handling"""
+    for retry in range(CONFIG['MAX_RETRIES']):
         try:
             logger.info(f"Connecting to {CONFIG['WS_URI']}...")
-            async with websockets.connect(CONFIG['WS_URI']) as websocket:
+            websocket = await websockets.connect(CONFIG['WS_URI'])
+            
+            # Wait for the initial connection message
+            response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+            response_data = json.loads(response)
+            
+            if response_data.get('type') == 'connection_established':
                 logger.info("Connected successfully!")
-                
-                # Reset stop event for new connection
-                stop_event.clear()
-                
-                # Start heartbeat task
-                heartbeat_task = asyncio.create_task(heartbeat(websocket, stop_event))
-                
-                while not stop_event.is_set():
-                    try:
-                        choice = await display_menu()
-                        
-                        if choice == '1':
-                            await send_fake_smpl_pose(websocket)
-                        elif choice == '2':
-                            await get_current_context(websocket)
-                        elif choice == '3':
-                            npz_path = input("\nEnter the path to the NPZ file: ").strip()
-                            if npz_path:
-                                await send_npz_as_smpl(websocket, npz_path, stop_event)
-                        elif choice == '4':
-                            folder_path = input("\nEnter the path to the NPZ folder: ").strip()
-                            if folder_path:
-                                await load_npz_animation_folder(websocket, folder_path, stop_event)
-                        elif choice == '5':
-                            npz_path = input("\nEnter the path to the NPZ file: ").strip()
-                            users_input = input("\nEnter usernames (comma-separated) or leave empty: ").strip()
-                            users = await parse_users_input(users_input)
-                            
-                            if npz_path:
-                                await upload_npz_to_db(npz_path, users)
-                        elif choice == '6':
-                            folder_path = input("\nEnter the path to the NPZ folder: ").strip()
-                            users_input = input("\nEnter usernames (comma-separated) or leave empty: ").strip()
-                            users = await parse_users_input(users_input)
-                            
-                            if folder_path:
-                                await upload_npz_folder_to_db(folder_path, users)
-                        elif choice == '7':
-                            logger.info("Exiting program...")
-                            stop_event.set()
-                            heartbeat_task.cancel()
-                            return
-                        
-                        if choice != '7' and not stop_event.is_set():
-                            input("\nPress Enter to continue...")
-                            
-                    except websockets.exceptions.WebSocketException as e:
-                        logger.error(f"WebSocket error during operation: {e}")
-                        stop_event.set()
-                        break
-                
-                # Clean up heartbeat task
-                if not heartbeat_task.done():
-                    heartbeat_task.cancel()
-                        
-        except websockets.exceptions.WebSocketException as e:
-            retries += 1
-            if retries < CONFIG['MAX_RETRIES']:
-                logger.error(f"Connection error: {e}")
-                logger.info(f"Retrying in {CONFIG['RETRY_DELAY']} seconds... (Attempt {retries}/{CONFIG['MAX_RETRIES']})")
-                await asyncio.sleep(CONFIG['RETRY_DELAY'])
-                continue
+                return websocket
             else:
-                logger.error(f"Failed to connect after {CONFIG['MAX_RETRIES']} attempts")
-                return
-                
+                logger.warning(f"Unexpected initial response: {response_data.get('type')}")
+                await websocket.close()
+        
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Connection attempt {retry+1} failed: {e}")
+            if retry < CONFIG['MAX_RETRIES'] - 1:
+                wait_time = CONFIG['RETRY_DELAY'] * (retry + 1)
+                logger.info(f"Retrying in {wait_time} seconds...")
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error("Failed to establish connection after maximum retries")
+                return None
+    
+    return None
+
+async def interactive_client():
+    """Main interactive client with connection management"""
+    while True:
+        websocket = await establish_connection()
+        if not websocket:
+            logger.error("Could not establish WebSocket connection. Exiting.")
             return
+
+        # Set up connection management 
+        stop_event = asyncio.Event()
+        
+        # Start background tasks for connection management
+        response_task = asyncio.create_task(response_handler(websocket, stop_event))
+        heartbeat_task = asyncio.create_task(heartbeat(websocket, stop_event))
+        
+        while not stop_event.is_set():
+            try:
+                choice = await display_menu()
+                
+                if choice == '1':
+                    await send_fake_smpl_pose(websocket)
+                elif choice == '2':
+                    await get_current_context(websocket)
+                elif choice == '3':
+                    npz_path = input("\nEnter the path to the NPZ file: ").strip()
+                    if npz_path:
+                        await send_npz_as_smpl(websocket, npz_path, stop_event)
+                elif choice == '4':
+                    folder_path = input("\nEnter the path to the NPZ folder: ").strip()
+                    if folder_path:
+                        await load_npz_animation_folder(websocket, folder_path, stop_event)
+                elif choice == '5':
+                    npz_path = input("\nEnter the path to the NPZ file: ").strip()
+                    users_input = input("\nEnter usernames (comma-separated) or leave empty: ").strip()
+                    users = await parse_users_input(users_input)
+                    
+                    if npz_path:
+                        await upload_npz_to_db(npz_path, users)
+                elif choice == '6':
+                    folder_path = input("\nEnter the path to the NPZ folder: ").strip()
+                    users_input = input("\nEnter usernames (comma-separated) or leave empty: ").strip()
+                    users = await parse_users_input(users_input)
+                    
+                    if folder_path:
+                        await upload_npz_folder_to_db(folder_path, users)
+                elif choice == '7':
+                    logger.info("Exiting program...")
+                    stop_event.set()
+                    break
+                
+                if choice != '7' and not stop_event.is_set():
+                    input("\nPress Enter to continue...")
+                
+            except Exception as e:
+                logger.error(f"Operation error: {e}")
+                
+                # Check if we need to reconnect
+                if "connection is closed" in str(e) or "code" in str(e):
+                    logger.error("Connection lost during operation. Reconnecting...")
+                    stop_event.set()
+                    break
+        
+        # Clean up tasks
+        for task in [response_task, heartbeat_task]:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        
+        # Close WebSocket if still open
+        try:
+            await websocket.close()
+        except:
+            pass
+        
+        # Exit if user chose to exit
+        if choice == '7':
+            break
+        
+        # Otherwise reconnect
+        logger.info("Reconnecting...")
+        await asyncio.sleep(2)
 
 if __name__ == "__main__":
     try:
