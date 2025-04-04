@@ -188,18 +188,19 @@
     currentReward = {
       rewards: [
         {
-        "name": "position",
-        "targets": [
-        
-          {
-            "body": "Pelvis",
-            "z": 0.8,
-            "weight": 1.0
-          }
-        ],
-        "upright_weight": 0.0,
-        "control_weight": 0.99
-      }
+          "name": "position",
+          "targets": [
+            {
+              "body": "Pelvis",
+              "z": 0.3,
+              "weight": 1.0,
+              "sigmoid": "quadratic",
+              "margin": 0.2
+            }
+          ],
+          "upright_weight": 0.0,
+          "control_weight": 0.1
+        }
       ],
       weights: [1.0]
     }

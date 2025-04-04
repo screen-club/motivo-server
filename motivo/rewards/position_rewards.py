@@ -1,7 +1,3 @@
-"""
-Advanced position-based rewards for precise 3D control of humanoid body parts.
-"""
-
 import numpy as np
 from humenv import rewards as humenv_rewards
 from dm_control.utils import rewards
@@ -12,123 +8,122 @@ from humenv.rewards import get_chest_upright
 
 # Define the transformation functions directly here to avoid complex imports
 def get_rotation_matrix_from_pelvis(model, data, name="Pelvis"):
-    """
-    Extract the rotation matrix of the humanoid's pelvis to define its local coordinate system.
-    """
     try:
         body_id = model.body(name).id
         rotation_matrix = data.xmat[body_id].reshape(3, 3).copy()
         return rotation_matrix
     except:
-        # Fallback to identity matrix if body not found
         return np.eye(3)
 
 def transform_point_to_local_frame(point, origin, rotation_matrix):
-    """
-    Transform a point from global coordinates to the local coordinate frame
-    defined by an origin and rotation matrix.
-    """
-    # Translate to origin
     translated = point - origin
-    
-    # Apply inverse rotation (transpose for rotation matrices)
     local_point = rotation_matrix.T @ translated
-    
     return local_point
+
+BODY_PART_MARGINS = {
+    "Head": 0.05,
+    "Chest": 0.1,
+    "L_Hand": 0.03,
+    "R_Hand": 0.03,
+    "Pelvis": 0.07,
+    "L_Toe": 0.01,
+    "R_Toe": 0.01,
+}
 
 @dataclasses.dataclass
 class PositionTarget:
-    """Target configuration for a body part."""
-    x: Optional[float] = None  # None means this axis is ignored
+    x: Optional[float] = None
     y: Optional[float] = None
     z: Optional[float] = None
+    orientation: Optional[np.ndarray] = None
     weight: float = 1.0
-    margin: float = 0.2
-    sigmoid: str = "linear"  # Added sigmoid parameter for customizing reward shape
+    margin: Optional[float] = None
+    margin_x: Optional[float] = None
+    margin_y: Optional[float] = None
+    margin_z: Optional[float] = None
+    sigmoid: str = "linear"
 
 @dataclasses.dataclass
 class PositionReward(humenv_rewards.RewardFunction):
-    """
-    Reward for controlling multiple body parts' positions.
-    Supports selective axis control with individual weights.
-    Uses the humanoid's orientation for proper lateral/forward movement calculations.
-    """
-    targets: Dict[str, PositionTarget]  # body_name -> target
-    upright_weight: float = 0.3 # Removed upright component
+    targets: Dict[str, PositionTarget]
+    upright_weight: float = 0.2
     control_weight: float = 0.2
-    use_local_frame: bool = False  # Use the humanoid's orientation for calculations
-    debug: bool = False  # Enable debug logging
+    orientation_weight: float = 0.2
+    use_local_frame: bool = False
+    debug: bool = False
 
     def compute(self, model: mujoco.MjModel, data: mujoco.MjData) -> float:
-        # Position rewards
         total_position_reward = 0.0
-        total_effective_weight = 0.0 # Sum of weights for bodies with active targets
+        total_orientation_reward = 0.0
+        total_effective_weight = 0.0
 
-        # Get the humanoid's reference frame if we're using local coordinates
         pelvis_pos = data.xpos[model.body("Pelvis").id].copy()
         pelvis_rotation = get_rotation_matrix_from_pelvis(model, data) if self.use_local_frame else np.eye(3)
 
-        if self.debug:
-            print(f"Pelvis position: {pelvis_pos}")
-            print(f"Pelvis rotation matrix:\\n{pelvis_rotation}")
-
         for body_name, target in self.targets.items():
-            # Get the current position of the body part
-            current_pos = data.xpos[model.body(body_name).id].copy()
+            try:
+                body_id = model.body(body_name).id
+                current_pos = data.xpos[body_id].copy()
+                current_rot = data.xmat[body_id].reshape(3, 3).copy()
 
-            # Don't calculate reward for Pelvis if using local frame, it's always [0,0,0]
-            if self.use_local_frame and body_name == "Pelvis":
+                if self.use_local_frame and body_name == "Pelvis":
+                    continue
+
+                if self.use_local_frame:
+                    current_pos = transform_point_to_local_frame(current_pos, pelvis_pos, pelvis_rotation)
+                    current_rot = pelvis_rotation.T @ current_rot
+
+                margin = target.margin or BODY_PART_MARGINS.get(body_name, 0.05)
+                margins = [
+                    target.margin_x if target.margin_x is not None else margin,
+                    target.margin_y if target.margin_y is not None else margin,
+                    target.margin_z if target.margin_z is not None else margin
+                ]
+
+                axis_rewards = []
+                for i, (axis_val, target_val) in enumerate([
+                    (current_pos[0], target.x),
+                    (current_pos[1], target.y),
+                    (current_pos[2], target.z)
+                ]):
+                    if target_val is not None:
+                        reward = rewards.tolerance(
+                            axis_val,
+                            bounds=(target_val - margins[i], target_val + margins[i]),
+                            margin=margins[i],
+                            value_at_margin=0.01,
+                            sigmoid=target.sigmoid
+                        )
+                        print(f"---")
+                        print("Margin: ", margins[i])
+                        print("Target: ", target_val)
+                        print("sigmoid: ", target.sigmoid)
+                        #print("Reward: ", reward)
+                        reward = reward.item() if hasattr(reward, 'item') else float(reward)
+                        axis_rewards.append(reward)
+
+                if axis_rewards:
+                    body_reward = np.mean(axis_rewards)
+                    total_position_reward += target.weight * body_reward
+                    total_effective_weight += target.weight
+
+                if target.orientation is not None:
+                    if target.orientation.shape == (3, 3):
+                        dot_product = np.trace(np.dot(current_rot.T, target.orientation))
+                        similarity = (dot_product - 1) / 2.0
+                        orientation_reward = max(0.0, similarity)
+                    else:
+                        orientation_reward = 0.0
+                    total_orientation_reward += target.weight * orientation_reward
+
+            except Exception as e:
                 if self.debug:
-                    print(f"Skipping Pelvis target in local frame (always at [0,0,0])")
+                    print(f"Error processing body {body_name}: {e}")
                 continue
 
-            # Transform to local coordinates if needed
-            if self.use_local_frame:
-                local_pos = transform_point_to_local_frame(current_pos, pelvis_pos, pelvis_rotation)
-                if self.debug:
-                    print(f"Body: {body_name}, Global pos: {current_pos}, Local pos: {local_pos}")
-                current_pos = local_pos
-            elif self.debug:
-                 print(f"Body: {body_name}, Global pos: {current_pos}")
+        position_reward = total_position_reward / total_effective_weight if total_effective_weight > 0 else 0.0
+        orientation_reward = total_orientation_reward / total_effective_weight if total_effective_weight > 0 else 0.0
 
-
-            axis_rewards = []
-
-            # Check each axis
-            for i, (axis_val, target_val) in enumerate([
-                (current_pos[0], target.x),
-                (current_pos[1], target.y),
-                (current_pos[2], target.z)
-            ]):
-                if target_val is not None:
-                  
-
-                     # Calculate pelvis height reward - the main focus
-                    reward = rewards.tolerance(
-                        axis_val,
-                        bounds=(0, target_val),  # Reward for being at or below target height
-                        sigmoid="linear",
-                        margin=0.2,
-                        value_at_margin=0.01,
-                    )
-
-                    reward = reward.item() if hasattr(reward, 'item') else float(reward)
-                    if self.debug:
-                        axis_name = ['lateral (x)', 'forward (y)', 'height (z)'][i]
-                        print(f"  {body_name} {axis_name}: value={axis_val:.3f}, target={target_val:.3f}, reward={reward:.3f}")
-                    axis_rewards.append(reward)
-
-            if axis_rewards:
-                body_reward = np.mean(axis_rewards)
-                total_position_reward += 1.0 * body_reward
-                total_effective_weight += 1.0
-
-        # Use the weighted sum directly instead of normalizing
-        position_reward = total_position_reward
-
-        # Removed upright reward calculation
-
-        # Compute control cost
         ctrl = data.ctrl.copy()
         control_reward = rewards.tolerance(
             np.linalg.norm(ctrl),
@@ -139,22 +134,27 @@ class PositionReward(humenv_rewards.RewardFunction):
         )
         control_reward = control_reward.item() if hasattr(control_reward, 'item') else float(control_reward)
 
-        # Combine rewards: Normalize position and control weights
-        pos_weight = 1.0 - self.control_weight
-        ctrl_weight = self.control_weight
+        upright = get_chest_upright(model, data)
+        upright_reward = upright.item() if hasattr(upright, 'item') else float(upright)
 
+        remaining_weight = 1.0 - self.control_weight - self.upright_weight - self.orientation_weight
         final_reward = (
-            pos_weight * position_reward +
-            ctrl_weight * control_reward
+            remaining_weight * position_reward +
+            self.orientation_weight * orientation_reward +
+            self.control_weight * control_reward +
+            self.upright_weight * upright_reward
         )
 
         if self.debug:
-            print(f"--- Reward Calculation ---")
-            print(f"  Position Reward (normalized): {position_reward:.4f} (Weight: {pos_weight:.2f})")
-            print(f"  Control Reward: {control_reward:.4f} (Weight: {ctrl_weight:.2f})")
-            print(f"  Final Reward: {final_reward:.4f}")
+            print("--- Reward Breakdown ---")
+            print(f"Position Reward: {position_reward:.4f} (Weight: {remaining_weight:.2f})")
+            print(f"Orientation Reward: {orientation_reward:.4f} (Weight: {self.orientation_weight:.2f})")
+            print(f"Control Reward: {control_reward:.4f} (Weight: {self.control_weight:.2f})")
+            print(f"Upright Reward: {upright_reward:.4f} (Weight: {self.upright_weight:.2f})")
+            print(f"Final Reward: {final_reward:.4f}")
 
         return float(final_reward)
+
 
     @staticmethod
     def reward_from_name(name: str) -> Optional["humenv_rewards.RewardFunction"]:

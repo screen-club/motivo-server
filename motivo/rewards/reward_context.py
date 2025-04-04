@@ -534,7 +534,8 @@ def create_reward_function(reward_type, weight):
                 y=target.get('y'),
                 z=target.get('z'),
                 weight=target.get('weight', 1.0),
-                margin=target.get('margin', 0.2)
+                sigmoid=target.get('sigmoid', 'linear'),
+                margin=target.get('margin', 1.0)
             )
         
         return (PositionReward(
