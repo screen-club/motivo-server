@@ -54,7 +54,7 @@ class PositionReward(humenv_rewards.RewardFunction):
     Uses the humanoid's orientation for proper lateral/forward movement calculations.
     """
     targets: Dict[str, PositionTarget]  # body_name -> target
-    # upright_weight: float = 0.3 # Removed upright component
+    upright_weight: float = 0.3 # Removed upright component
     control_weight: float = 0.2
     use_local_frame: bool = False  # Use the humanoid's orientation for calculations
     debug: bool = False  # Enable debug logging
@@ -101,13 +101,17 @@ class PositionReward(humenv_rewards.RewardFunction):
                 (current_pos[2], target.z)
             ]):
                 if target_val is not None:
+                  
+
+                     # Calculate pelvis height reward - the main focus
                     reward = rewards.tolerance(
-                        abs(axis_val - target_val),
-                        bounds=(0, target.margin),
-                        margin=target.margin,
+                        axis_val,
+                        bounds=(0, target_val),  # Reward for being at or below target height
+                        sigmoid="linear",
+                        margin=0.2,
                         value_at_margin=0.01,
-                        sigmoid=target.sigmoid
                     )
+
                     reward = reward.item() if hasattr(reward, 'item') else float(reward)
                     if self.debug:
                         axis_name = ['lateral (x)', 'forward (y)', 'height (z)'][i]
@@ -116,11 +120,11 @@ class PositionReward(humenv_rewards.RewardFunction):
 
             if axis_rewards:
                 body_reward = np.mean(axis_rewards)
-                total_position_reward += target.weight * body_reward
-                total_effective_weight += target.weight
+                total_position_reward += 1.0 * body_reward
+                total_effective_weight += 1.0
 
-        # Normalize the summed position reward
-        position_reward = total_position_reward / total_effective_weight if total_effective_weight > 0 else 0.0
+        # Use the weighted sum directly instead of normalizing
+        position_reward = total_position_reward
 
         # Removed upright reward calculation
 
@@ -315,4 +319,103 @@ reward = PositionReward.create({
                     "z": float(local_pos[2])
                 }
             
-            positions[body_name] = position_data 
+            positions[body_name] = position_data
+            
+        return positions
+        
+    def get_reward_breakdown(self, model: mujoco.MjModel, data: mujoco.MjData) -> Dict[str, float]:
+        """
+        Get a detailed breakdown of the reward components.
+        
+        Returns:
+            Dict with format:
+            {
+                "total": float,
+                "position": float,
+                "control": float,
+                "body_parts": {
+                    "body_name": float,
+                    ...
+                }
+            }
+        """
+        # Position rewards
+        body_rewards = {}
+        total_position_reward = 0.0
+        total_effective_weight = 0.0
+
+        # Get the humanoid's reference frame if we're using local coordinates
+        pelvis_pos = data.xpos[model.body("Pelvis").id].copy()
+        pelvis_rotation = get_rotation_matrix_from_pelvis(model, data) if self.use_local_frame else np.eye(3)
+
+        for body_name, target in self.targets.items():
+            # Get the current position of the body part
+            try:
+                current_pos = data.xpos[model.body(body_name).id].copy()
+                
+                # Don't calculate reward for Pelvis if using local frame, it's always [0,0,0]
+                if self.use_local_frame and body_name == "Pelvis":
+                    continue
+    
+                # Transform to local coordinates if needed
+                if self.use_local_frame:
+                    current_pos = transform_point_to_local_frame(current_pos, pelvis_pos, pelvis_rotation)
+    
+                axis_rewards = []
+    
+                # Check each axis
+                for i, (axis_val, target_val) in enumerate([
+                    (current_pos[0], target.x),
+                    (current_pos[1], target.y),
+                    (current_pos[2], target.z)
+                ]):
+                    if target_val is not None:
+                        reward = rewards.tolerance(
+                            axis_val,
+                            bounds=(target_val - target.margin, target_val + target.margin),
+                            margin=target.margin,
+                            value_at_margin=0.01,
+                            sigmoid=target.sigmoid
+                        )
+                        reward = reward.item() if hasattr(reward, 'item') else float(reward)
+                        axis_rewards.append(reward)
+    
+                if axis_rewards:
+                    body_reward = np.mean(axis_rewards)
+                    body_rewards[body_name] = float(body_reward)
+                    total_position_reward += target.weight * body_reward
+                    total_effective_weight += target.weight
+            except Exception as e:
+                if self.debug:
+                    print(f"Error processing body {body_name}: {e}")
+                continue
+
+        # Use the weighted sum directly instead of normalizing
+        position_reward = total_position_reward
+
+        # Compute control cost
+        ctrl = data.ctrl.copy()
+        control_reward = rewards.tolerance(
+            np.linalg.norm(ctrl),
+            bounds=(0, 1),
+            margin=1,
+            value_at_margin=0,
+            sigmoid="quadratic"
+        )
+        control_reward = control_reward.item() if hasattr(control_reward, 'item') else float(control_reward)
+
+        # Combine rewards: Normalize position and control weights
+        pos_weight = 1.0 - self.control_weight
+        ctrl_weight = self.control_weight
+
+        final_reward = (
+            pos_weight * position_reward +
+            ctrl_weight * control_reward
+        )
+
+        return {
+            "total": float(final_reward),
+            "position": float(position_reward),
+            "control": float(control_reward),
+            "body_parts": body_rewards
+        } 

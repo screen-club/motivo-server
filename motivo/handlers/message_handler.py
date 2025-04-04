@@ -518,84 +518,110 @@ class MessageHandler:
             await websocket.send(json.dumps(response))
 
     async def handle_mix_pose_reward(self, websocket, data: Dict[str, Any]) -> None:
-        """Mix pose-based and reward-based behaviors"""
+        """Mix pose-based and reward-based behaviors with enhanced fusion strategies."""
         try:
             logger.info("Mixing pose and reward behaviors...")
             goal_qpos = np.array(data.get("pose", []))
             reward_config = data.get("reward", {})
             mix_weight = data.get("mix_weight", 0.5)
+            mix_strategy = data.get("mix_strategy", "mlp_fusion")
 
             if len(goal_qpos) != 76:
                 raise ValueError(f"Invalid pose length: {len(goal_qpos)}, expected 76")
 
-            # Save current physics state
             current_qpos = self.env.unwrapped.data.qpos.copy()
             current_qvel = self.env.unwrapped.data.qvel.copy()
 
-            # Temporarily set to goal pose to get observation
-            self.env.unwrapped.set_physics(
-                qpos=goal_qpos,
-                qvel=np.zeros(75)
-            )
-
-            # Get goal observation
+            self.env.unwrapped.set_physics(qpos=goal_qpos, qvel=np.zeros(75))
             goal_obs = torch.tensor(
                 self.env.unwrapped.get_obs()["proprio"].reshape(1, -1),
                 device=self.model.cfg.device,
                 dtype=torch.float32
             )
+            self.env.unwrapped.set_physics(qpos=current_qpos, qvel=current_qvel)
 
-            # Restore original physics state (without reset)
-            self.env.unwrapped.set_physics(
-                qpos=current_qpos,
-                qvel=current_qvel
-            )
-
-            # Get current observation after restoring
-            current_obs = torch.tensor(
-                self.env.unwrapped.get_obs()["proprio"].reshape(1, -1),
-                device=self.model.cfg.device,
-                dtype=torch.float32
-            )
-
-            # Use tracking_inference for smoother transitions
             try:
-                # Get pose inference result and await if it's a coroutine
                 pose_result = self.model.tracking_inference(next_obs=goal_obs)
-                if asyncio.iscoroutine(pose_result):
-                    pose_z = await pose_result
-                else:
-                    pose_z = pose_result
-                
-                # Get the reward context - now it's synchronous
+                pose_z = await pose_result if asyncio.iscoroutine(pose_result) else pose_result
                 reward_z = self.get_reward_context(reward_config)
-                
-                # Interpolate between contexts using mix_weight
-                result_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
-                
-                # Store the result
-                self.current_z = result_z
-                
-            except Exception as e:
-                logger.error(f"Error in pose/reward mixing: {str(e)}")
-                # Use default z as fallback
-                if hasattr(self, 'default_z'):
-                    self.current_z = self.default_z
+
+                pose_z = pose_z.to(self.model.cfg.device)
+                reward_z = reward_z.to(self.model.cfg.device)
+
+                if mix_strategy == "linear":
+                    result_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
+                    logger.info("Using linear interpolation strategy")
+
+                elif mix_strategy == "normalized":
+                    combined = (1 - mix_weight) * pose_z + mix_weight * reward_z
+                    result_z = torch.nn.functional.normalize(combined, p=2, dim=1)
+                    logger.info("Using normalized average strategy")
+
+                elif mix_strategy == "slerp":
+                    pose_z_norm = torch.nn.functional.normalize(pose_z, p=2, dim=1)
+                    reward_z_norm = torch.nn.functional.normalize(reward_z, p=2, dim=1)
+                    dot = torch.sum(pose_z_norm * reward_z_norm, dim=1, keepdim=True).clamp(-1.0, 1.0)
+                    omega = torch.acos(dot)
+                    sin_omega = torch.sin(omega)
+                    result_z = torch.where(
+                        sin_omega > 1e-4,
+                        (torch.sin((1 - mix_weight) * omega) / sin_omega) * pose_z +
+                        (torch.sin(mix_weight * omega) / sin_omega) * reward_z,
+                        (1 - mix_weight) * pose_z + mix_weight * reward_z
+                    )
+                    logger.info("Using spherical interpolation strategy")
+
+                elif mix_strategy == "max_component":
+                    mask = (torch.abs(pose_z) > torch.abs(reward_z)).float()
+                    result_z = mask * pose_z + (1 - mask) * reward_z
+                    logger.info("Using max component strategy")
+
+                elif mix_strategy == "add":
+                    result_z = pose_z + reward_z
+                    logger.info("Using addition strategy")
+
+                elif mix_strategy == "mlp_fusion":
+                    fusion_mlp = torch.nn.Sequential(
+                        torch.nn.Linear(2 * pose_z.shape[1], 2 * pose_z.shape[1]),
+                        torch.nn.ReLU(),
+                        torch.nn.Linear(2 * pose_z.shape[1], pose_z.shape[1])
+                    ).to(self.model.cfg.device)
+                    with torch.no_grad():
+                        result_z = fusion_mlp(torch.cat([pose_z, reward_z], dim=-1))
+                    logger.info("Using MLP fusion strategy")
+
+                elif mix_strategy == "gated":
+                    gate_layer = torch.nn.Sequential(
+                        torch.nn.Linear(2 * pose_z.shape[1], 1),
+                        torch.nn.Sigmoid()
+                    ).to(self.model.cfg.device)
+                    with torch.no_grad():
+                        gate = gate_layer(torch.cat([pose_z, reward_z], dim=-1))
+                        result_z = gate * pose_z + (1 - gate) * reward_z
+                    logger.info("Using adaptive gating strategy")
+
                 else:
-                    raise
+                    result_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
+                    logger.warning(f"Unknown mix strategy '{mix_strategy}', defaulting to linear")
+
+            except Exception as e:
+                result_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
+                logger.error(f"Error in {mix_strategy} strategy: {str(e)}, falling back to linear")
+
+            self.current_z = result_z
 
             response = {
                 "type": "mix_updated",
                 "status": "success",
                 "mix_weight": mix_weight,
+                "mix_strategy": mix_strategy,
                 "timestamp": datetime.now().isoformat()
             }
             await websocket.send(json.dumps(response))
-            
+
         except Exception as e:
             error_msg = f"Error mixing behaviors: {str(e)}"
             logger.error(error_msg)
-            
             response = {
                 "type": "mix_updated",
                 "status": "error",
@@ -603,6 +629,7 @@ class MessageHandler:
                 "timestamp": datetime.now().isoformat()
             }
             await websocket.send(json.dumps(response))
+
 
     async def handle_debug_model_info(self, websocket, data: Dict[str, Any]) -> None:
         """Send debug information about model state"""

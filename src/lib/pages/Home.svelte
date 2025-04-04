@@ -192,9 +192,8 @@
         "targets": [
         
           {
-            "body": "R_Hand",
-            "z": 0.5,
-            "y": .0,
+            "body": "Pelvis",
+            "z": 0.8,
             "weight": 1.0
           }
         ],
