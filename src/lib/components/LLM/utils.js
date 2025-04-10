@@ -40,6 +40,7 @@ export function extractStructuredResponse(content) {
       const allRewards = [];
       const allWeights = [];
       let combinationType = "geometric";
+      let foundEnvironnement = null; // Variable to store environment data
 
       for (const match of matches) {
         const jsonString = (match[1] || match[2] || match[3]).trim();
@@ -78,6 +79,22 @@ export function extractStructuredResponse(content) {
             if (parsedJson.result.combinationType) {
               combinationType = parsedJson.result.combinationType;
             }
+
+            // Check for environnement within result
+            if (
+              parsedJson.result.environnement &&
+              typeof parsedJson.result.environnement === "object"
+            ) {
+              foundEnvironnement = parsedJson.result.environnement;
+            }
+          }
+
+          // Also check for environnement directly under parsedJson (less common but possible)
+          else if (
+            parsedJson.environnement &&
+            typeof parsedJson.environnement === "object"
+          ) {
+            foundEnvironnement = parsedJson.environnement;
           }
 
           // Also check if we find a response field to use as explanation
@@ -100,6 +117,7 @@ export function extractStructuredResponse(content) {
           rewards: allRewards,
           weights: allWeights,
           combinationType: combinationType,
+          ...(foundEnvironnement && { environnement: foundEnvironnement }),
         };
       } else {
         // If no rewards were found, fall back to using the first valid JSON
@@ -112,10 +130,23 @@ export function extractStructuredResponse(content) {
             if (parsedJson.response) {
               structured.explanation = parsedJson.response;
               structured.result = parsedJson.result;
+              // Ensure environnement is included in the fallback case too
+              if (foundEnvironnement && structured.result) {
+                structured.result.environnement = foundEnvironnement;
+              } else if (foundEnvironnement && !structured.result) {
+                // If result doesn't exist, create it just for environnement
+                structured.result = { environnement: foundEnvironnement };
+              }
               break;
             } else {
               // Otherwise store the whole JSON as the result
               structured.result = parsedJson;
+              // Ensure environnement is included here too
+              if (foundEnvironnement && structured.result) {
+                structured.result.environnement = foundEnvironnement;
+              } else if (foundEnvironnement && !structured.result) {
+                structured.result = { environnement: foundEnvironnement };
+              }
             }
           } catch (e) {
             // Skip invalid JSON

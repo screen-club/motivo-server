@@ -20,7 +20,7 @@ function createParameterStore() {
   function sendParameters(params) {
     websocketService.send({
       type: "update_parameters",
-      parameters: params
+      parameters: params,
     });
   }
 

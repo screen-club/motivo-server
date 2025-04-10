@@ -688,18 +688,53 @@ class GeminiService:
                 # Send the response when we get a complete turn or significant chunk
                 if (text_content and len(text_content) > 10) or turn_complete:
                     if current_response:
+                        processed_content = current_response # Keep original text
+                        environnement_data = None
+
+                        # Try parsing the accumulated response as JSON
+                        try:
+                            parsed_json = json.loads(current_response)
+                            
+                            # Check for result and environnement keys
+                            if isinstance(parsed_json, dict) and "result" in parsed_json and isinstance(parsed_json["result"], dict) and "environnement" in parsed_json["result"]:
+                                env = parsed_json["result"]["environnement"]
+                                if isinstance(env, dict):
+                                    environnement_data = {
+                                        "gravity": env.get("gravity", -9.81),
+                                        "density": env.get("density", 1.0),
+                                        "wind_x": env.get("wind_x", 0.0),
+                                        "wind_y": env.get("wind_y", 0.0),
+                                        "wind_z": env.get("wind_z", 0.0)
+                                    }
+                                    logger.info(f"Found and processed environnement data: {environnement_data}")
+                                else:
+                                     logger.warning("Found 'environnement' key but its value is not a dictionary.")
+                            # Store the potentially modified JSON back into content if needed or keep original text
+                            # For now, we'll just extract the environment data and send the original text content
+                            # If you want to send the *parsed* JSON (potentially modified), change `processed_content`
+                            # processed_content = parsed_json # Example: Send parsed JSON instead of original text
+
+                        except json.JSONDecodeError:
+                            # If it's not valid JSON, just proceed with the text content
+                            logger.debug("Response content is not valid JSON, sending as text.")
+                            pass # Keep processed_content as original text
+
                         # Determine client IDs that should receive this response
                         client_ids = list(self.client_sessions.keys())
                         
                         # Add response to incoming queue for processing
                         response_data = {
                             "type": "gemini_response",
-                            "content": current_response,
+                            "content": processed_content, # Send original or parsed content
                             "timestamp": time.time(),
                             "complete": turn_complete,
                             "message_id": current_message_id
                         }
                         
+                        # Add the validated environnement data if found
+                        if environnement_data:
+                            response_data["environnement"] = environnement_data
+
                         # Get image data directly from client session if available
                         if client_ids:  # Remove turn_complete check to include image in all responses
                             client_id = client_ids[0]
@@ -731,8 +766,11 @@ class GeminiService:
                         if turn_complete:
                             current_response = ""
                             turn_in_progress = False
+                            current_message_id = None # Reset message ID tracking for the next turn
                 elif not text_content and not turn_complete:
-                    logger.warning("No text content found in response")
+                    # Only log warning if turn is not complete, otherwise empty text might be valid
+                    if not turn_complete:
+                        logger.warning("Received message part without text content and turn not complete.")
                 
                 # Check for error messages
                 if "error" in response:
@@ -758,8 +796,10 @@ class GeminiService:
                             "type": "gemini_response",
                             "content": current_response,
                             "timestamp": time.time(),
-                            "complete": True,
-                            "message_id": current_message_id
+                            "complete": True, # Mark as complete due to error
+                            "message_id": current_message_id,
+                            "error": True, # Add an error flag
+                            "error_message": "API quota exceeded" # Specific error message
                         }
                         
                         # Add client info if available
@@ -786,6 +826,7 @@ class GeminiService:
                         # Clear buffer and break loop
                         current_response = ""
                         turn_in_progress = False
+                        current_message_id = None # Reset message ID tracking
                         break
             
             except websockets.exceptions.ConnectionClosed as ws_err:

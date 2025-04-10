@@ -56,6 +56,7 @@ class PositionReward(humenv_rewards.RewardFunction):
         total_position_reward = 0.0
         total_orientation_reward = 0.0
         total_effective_weight = 0.0
+        
 
         pelvis_pos = data.xpos[model.body("Pelvis").id].copy()
         pelvis_rotation = get_rotation_matrix_from_pelvis(model, data) if self.use_local_frame else np.eye(3)
@@ -94,10 +95,10 @@ class PositionReward(humenv_rewards.RewardFunction):
                             value_at_margin=0.01,
                             sigmoid=target.sigmoid
                         )
-                        print(f"---")
-                        print("Margin: ", margins[i])
-                        print("Target: ", target_val)
-                        print("sigmoid: ", target.sigmoid)
+                        #print(f"---")
+                        #print("Margin: ", margins[i])
+                        #print("Target: ", target_val)
+                        #print("sigmoid: ", target.sigmoid)
                         #print("Reward: ", reward)
                         reward = reward.item() if hasattr(reward, 'item') else float(reward)
                         axis_rewards.append(reward)
@@ -134,15 +135,15 @@ class PositionReward(humenv_rewards.RewardFunction):
         )
         control_reward = control_reward.item() if hasattr(control_reward, 'item') else float(control_reward)
 
-        upright = get_chest_upright(model, data)
-        upright_reward = upright.item() if hasattr(upright, 'item') else float(upright)
+        #upright = get_chest_upright(model, data)
+        #upright_reward = upright.item() if hasattr(upright, 'item') else float(upright)
 
-        remaining_weight = 1.0 - self.control_weight - self.upright_weight - self.orientation_weight
+        remaining_weight = 1.0 - self.control_weight - self.orientation_weight
         final_reward = (
             remaining_weight * position_reward +
             self.orientation_weight * orientation_reward +
-            self.control_weight * control_reward +
-            self.upright_weight * upright_reward
+            self.control_weight * control_reward 
+            #self.upright_weight * upright_reward
         )
 
         if self.debug:
@@ -150,7 +151,7 @@ class PositionReward(humenv_rewards.RewardFunction):
             print(f"Position Reward: {position_reward:.4f} (Weight: {remaining_weight:.2f})")
             print(f"Orientation Reward: {orientation_reward:.4f} (Weight: {self.orientation_weight:.2f})")
             print(f"Control Reward: {control_reward:.4f} (Weight: {self.control_weight:.2f})")
-            print(f"Upright Reward: {upright_reward:.4f} (Weight: {self.upright_weight:.2f})")
+            #print(f"Upright Reward: {upright_reward:.4f} (Weight: {self.upright_weight:.2f})")
             print(f"Final Reward: {final_reward:.4f}")
 
         return float(final_reward)

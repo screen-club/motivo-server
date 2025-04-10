@@ -11,6 +11,7 @@ from core.model_manager import initialize_model_and_env
 from core.simulation import run_simulation_loop
 from core.logging_config import setup_logging
 from network.websocket_handlers import handle_websocket
+from rewards.position_rewards import PositionReward
 
 # Set up exception handler for asyncio
 def global_exception_handler(loop, context):
@@ -89,6 +90,9 @@ async def main():
         # Set up logging
         logger = setup_logging(debug=config.debug)
         logger.info("Starting Motivo Server")
+        
+        # Print available body parts for PositionReward
+        PositionReward.print_usage()
         
         # Set asyncio exception handler
         loop = asyncio.get_event_loop()

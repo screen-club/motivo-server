@@ -518,118 +518,160 @@ class MessageHandler:
             await websocket.send(json.dumps(response))
 
     async def handle_mix_pose_reward(self, websocket, data: Dict[str, Any]) -> None:
-        """Mix pose-based and reward-based behaviors with enhanced fusion strategies."""
+        """Mix dynamic hold-pose reward context with input reward context."""
         try:
-            logger.info("Mixing pose and reward behaviors...")
-            goal_qpos = np.array(data.get("pose", []))
-            reward_config = data.get("reward", {})
-            mix_weight = data.get("mix_weight", 0.5)
-            mix_strategy = data.get("mix_strategy", "mlp_fusion")
+            # --- 1. Get Target Pose, Input Reward Config & Mix Params ---
+            use_current_pose = data.get("use_current_pose", False)
+            reward_config_input = data.get("reward", {}) # Input reward config
+            mix_weight = data.get("mix_weight", 0.5) # Weight for the INPUT reward context
+            mix_strategy = data.get("mix_strategy", "linear")
 
-            if len(goal_qpos) != 76:
-                raise ValueError(f"Invalid pose length: {len(goal_qpos)}, expected 76")
+            # mix_weight = 0 # REMOVED HARDCODING - Use value from input data
+            
+            logger.info(f"Mixing dynamic hold reward and input reward.")
+            logger.info(f"  Strategy: {mix_strategy}, Weight (for input reward): {mix_weight:.2f}")
 
+            # Determine the target qpos for the hold reward generation
+            if use_current_pose:
+                pose_target_qpos = self.env.unwrapped.data.qpos.copy()
+            else:
+                pose_target_qpos = np.array(data.get("pose", []))
+                if not pose_target_qpos.any(): raise ValueError("Pose data needed if use_current_pose is false")
+            if len(pose_target_qpos) != 76: raise ValueError(f"Invalid qpos length: {len(pose_target_qpos)}")
+
+            # --- 2. Extract Target Positions for Hold Reward ---
+            target_positions = {}
+            key_body_parts = ["Head", "L_Hand", "R_Hand", "L_Toe", "R_Toe", "Pelvis", "Chest"]
             current_qpos = self.env.unwrapped.data.qpos.copy()
             current_qvel = self.env.unwrapped.data.qvel.copy()
-
-            self.env.unwrapped.set_physics(qpos=goal_qpos, qvel=np.zeros(75))
-            goal_obs = torch.tensor(
-                self.env.unwrapped.get_obs()["proprio"].reshape(1, -1),
-                device=self.model.cfg.device,
-                dtype=torch.float32
-            )
-            self.env.unwrapped.set_physics(qpos=current_qpos, qvel=current_qvel)
-
             try:
-                pose_result = self.model.tracking_inference(next_obs=goal_obs)
-                pose_z = await pose_result if asyncio.iscoroutine(pose_result) else pose_result
-                reward_z = self.get_reward_context(reward_config)
+                self.env.unwrapped.set_physics(qpos=pose_target_qpos, qvel=np.zeros(75))
+                for part_name in key_body_parts:
+                    try: target_positions[part_name] = self.env.unwrapped.data.xpos[self.env.unwrapped.model.body(part_name).id].copy().tolist()
+                    except KeyError: logger.warning(f"Body part '{part_name}' not found, skipping for hold reward.")
+            finally:
+                self.env.unwrapped.set_physics(qpos=current_qpos, qvel=current_qvel)
+            if not target_positions: raise RuntimeError("Failed to extract target positions for hold reward.")
 
-                pose_z = pose_z.to(self.model.cfg.device)
-                reward_z = reward_z.to(self.model.cfg.device)
+            # --- 3. Calculate Hold Pose Reward Context (hold_pose_reward_z) ---
+            hold_pose_rewards_list = []
+            for part_name, pos in target_positions.items():
+                target_spec = {"body": part_name, "x": pos[0], "y": pos[1], "z": pos[2], "weight": 10.0, "margin": 0.01, "sigmoid": "linear"}
+                hold_pose_rewards_list.append({"name": "position", "targets": [target_spec], "upright_weight": 0.0, "control_weight": 0.0})
+            reward_config_hold = {"rewards": hold_pose_rewards_list, "weights": [1.0]*len(hold_pose_rewards_list), "combinationType": "geometric", "name": "DynamicHoldPose"}
+            
+            logger.info("Initiating hold-pose reward context computation...")
+            # Use the standard async-initiating method
+            hold_pose_reward_z = self.get_reward_context(reward_config_hold)
+            # Note: hold_pose_reward_z now holds the *current* z, not the newly computed one yet
+            logger.info("Hold-pose reward context computation initiated.")
 
+            # --- 4. Calculate Input Reward Context (input_reward_z) ---
+            input_reward_z = None
+            if reward_config_input and reward_config_input.get('rewards'):
+                logger.info("Initiating input reward context computation...")
+                # Use the standard async-initiating method
+                input_reward_z = self.get_reward_context(reward_config_input)
+                # Note: input_reward_z now holds the *current* z (same as above), not the new one yet
+                logger.info("Input reward context computation initiated.")
+            else:
+                logger.info("Input reward config is empty, using current context for mixing.")
+                # If no input, use the current context (same as hold_pose_reward_z)
+                input_reward_z = hold_pose_reward_z 
+            
+            # Handle case where the initial context was None
+            if hold_pose_reward_z is None:
+                logger.warning("Initial context (hold_pose_reward_z) is None, using default z for mixing.")
+                default_z_val = self.default_z if hasattr(self, 'default_z') and self.default_z is not None else torch.zeros((1, 256), device=self.model.cfg.device) # Assuming latent dim 256
+                hold_pose_reward_z = default_z_val
+            if input_reward_z is None: 
+                 logger.warning("Initial context (input_reward_z) is None, using default z for mixing.")
+                 input_reward_z = hold_pose_reward_z # Use the same default
+
+            # --- 5. Mix Reward Contexts (using potentially stale initial values) ---
+            device = self.model.cfg.device
+            hold_pose_reward_z = hold_pose_reward_z.to(device)
+            input_reward_z = input_reward_z.to(device)
+            
+            logger.info(f"Mixing hold and input reward contexts (initial values) using strategy: {mix_strategy}, weight (input): {mix_weight}")
+            w_input = mix_weight
+            w_hold = 1.0 - mix_weight
+            
+            result_z = None
+            try:
                 if mix_strategy == "linear":
-                    result_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
-                    logger.info("Using linear interpolation strategy")
-
+                    result_z = w_hold * hold_pose_reward_z + w_input * input_reward_z
                 elif mix_strategy == "normalized":
-                    combined = (1 - mix_weight) * pose_z + mix_weight * reward_z
+                    combined = w_hold * hold_pose_reward_z + w_input * input_reward_z
                     result_z = torch.nn.functional.normalize(combined, p=2, dim=1)
-                    logger.info("Using normalized average strategy")
-
                 elif mix_strategy == "slerp":
-                    pose_z_norm = torch.nn.functional.normalize(pose_z, p=2, dim=1)
-                    reward_z_norm = torch.nn.functional.normalize(reward_z, p=2, dim=1)
-                    dot = torch.sum(pose_z_norm * reward_z_norm, dim=1, keepdim=True).clamp(-1.0, 1.0)
+                    hold_norm = torch.nn.functional.normalize(hold_pose_reward_z, p=2, dim=1)
+                    input_norm = torch.nn.functional.normalize(input_reward_z, p=2, dim=1)
+                    dot = torch.sum(hold_norm * input_norm, dim=1, keepdim=True).clamp(-1.0, 1.0)
                     omega = torch.acos(dot)
                     sin_omega = torch.sin(omega)
                     result_z = torch.where(
                         sin_omega > 1e-4,
-                        (torch.sin((1 - mix_weight) * omega) / sin_omega) * pose_z +
-                        (torch.sin(mix_weight * omega) / sin_omega) * reward_z,
-                        (1 - mix_weight) * pose_z + mix_weight * reward_z
+                        (torch.sin(w_hold * omega) / sin_omega) * hold_pose_reward_z +
+                        (torch.sin(w_input * omega) / sin_omega) * input_reward_z,
+                        w_hold * hold_pose_reward_z + w_input * input_reward_z
                     )
-                    logger.info("Using spherical interpolation strategy")
-
-                elif mix_strategy == "max_component":
-                    mask = (torch.abs(pose_z) > torch.abs(reward_z)).float()
-                    result_z = mask * pose_z + (1 - mask) * reward_z
-                    logger.info("Using max component strategy")
-
-                elif mix_strategy == "add":
-                    result_z = pose_z + reward_z
-                    logger.info("Using addition strategy")
-
-                elif mix_strategy == "mlp_fusion":
-                    fusion_mlp = torch.nn.Sequential(
-                        torch.nn.Linear(2 * pose_z.shape[1], 2 * pose_z.shape[1]),
-                        torch.nn.ReLU(),
-                        torch.nn.Linear(2 * pose_z.shape[1], pose_z.shape[1])
-                    ).to(self.model.cfg.device)
-                    with torch.no_grad():
-                        result_z = fusion_mlp(torch.cat([pose_z, reward_z], dim=-1))
-                    logger.info("Using MLP fusion strategy")
-
-                elif mix_strategy == "gated":
-                    gate_layer = torch.nn.Sequential(
-                        torch.nn.Linear(2 * pose_z.shape[1], 1),
-                        torch.nn.Sigmoid()
-                    ).to(self.model.cfg.device)
-                    with torch.no_grad():
-                        gate = gate_layer(torch.cat([pose_z, reward_z], dim=-1))
-                        result_z = gate * pose_z + (1 - gate) * reward_z
-                    logger.info("Using adaptive gating strategy")
-
                 else:
-                    result_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
                     logger.warning(f"Unknown mix strategy '{mix_strategy}', defaulting to linear")
+                    result_z = w_hold * hold_pose_reward_z + w_input * input_reward_z
+            except Exception as mix_e:
+                 logger.error(f"Error during mixing strategy '{mix_strategy}': {mix_e}. Falling back to linear.")
+                 result_z = w_hold * hold_pose_reward_z + w_input * input_reward_z
+            
+            if result_z is None: raise RuntimeError(f"Mixing failed for strategy: {mix_strategy}")
 
-            except Exception as e:
-                result_z = (1 - mix_weight) * pose_z + mix_weight * reward_z
-                logger.error(f"Error in {mix_strategy} strategy: {str(e)}, falling back to linear")
-
+            # --- 6. Set Active Context --- 
+            # Set based on the mix of initial values. Background tasks will update later.
             self.current_z = result_z
+            logger.info("Initial mixed context set. Background computations initiated.")
 
+            # --- 7. Update State --- 
+            # Represent the state based on the initiated computations
+            if reward_config_input and reward_config_input.get('rewards'):
+                self.active_rewards = reward_config_input # Show the input config as primary
+                self.current_reward_config = reward_config_input
+            else:
+                 self.active_rewards = reward_config_hold # Show the hold config if no input
+                 self.current_reward_config = reward_config_hold
+                 logger.info("Input reward empty, setting active_rewards to dynamic hold config.")
+
+            self.active_poses = {
+                "type": "MixedReward_HoldVsInput_Async",
+                "name": "RewardMixState_Async",
+                "target_qpos_for_hold": pose_target_qpos.tolist(),
+                "mix_weight_input": mix_weight,
+                "mix_strategy": mix_strategy
+            }
+            
+            # --- 8. Send Response --- 
             response = {
-                "type": "mix_updated",
+                "type": "mix_reward_only_updated", # Keep same type
                 "status": "success",
-                "mix_weight": mix_weight,
+                "message": "Initiated mix of dynamic hold reward and input reward context.",
                 "mix_strategy": mix_strategy,
+                "mix_weight_input": mix_weight,
+                "active_rewards": self.active_rewards,
+                "active_poses": self.active_poses,
                 "timestamp": datetime.now().isoformat()
             }
             await websocket.send(json.dumps(response))
 
         except Exception as e:
-            error_msg = f"Error mixing behaviors: {str(e)}"
+            error_msg = f"Error mixing reward contexts: {str(e)}"
             logger.error(error_msg)
+            traceback.print_exc()
             response = {
-                "type": "mix_updated",
+                "type": "mix_reward_only_updated",
                 "status": "error",
                 "error": error_msg,
                 "timestamp": datetime.now().isoformat()
             }
             await websocket.send(json.dumps(response))
-
 
     async def handle_debug_model_info(self, websocket, data: Dict[str, Any]) -> None:
         """Send debug information about model state"""
@@ -1221,11 +1263,9 @@ class MessageHandler:
                         "z": float(current_pos[2])
                     }
                 }
-              
-
-                #position_data = {}
-                
+                              
                 # Calculate local position relative to pelvis
+
                 '''
                 local_pos = transform_point_to_local_frame(current_pos, pelvis_pos, pelvis_rotation)
                 position_data["local"] = {
@@ -1234,42 +1274,15 @@ class MessageHandler:
                     "z": float(local_pos[2])
                 }
                 '''
+               
                 
                 all_body_positions[body_name] = position_data
-            
-            # Also process position rewards if any are active
-            if self.active_rewards and 'rewards' in self.active_rewards:
-                for reward_config in self.active_rewards['rewards']:
-                    reward_name = reward_config.get('name', '')
-                    
-                    # Check if this is a position reward
-                    if reward_name.startswith('position-'):
-                        try:
-                            reward_obj = PositionReward.reward_from_name(reward_name)
-                            
-                            if reward_obj:
-                                # Get target configurations
-                                targets = reward_obj.get_serialized_targets()
-                                
-                                # Get current positions
-                                current_positions = reward_obj.get_current_positions(
-                                    self.env.unwrapped.model,
-                                    self.env.unwrapped.data
-                                )
-                                
-                                positions_data[reward_name] = {
-                                    "targets": targets,
-                                    "current_positions": current_positions
-                                }
-                        except Exception as e:
-                            logger.warning(f"Error processing position reward {reward_name}: {str(e)}")
-                            continue
+      
             
             response = {
                 "type": "target_positions",
                 "status": "success",
                 "data": {
-                    "reward_positions": positions_data,
                     "all_body_positions": all_body_positions
                 },
                 "timestamp": datetime.now().isoformat()

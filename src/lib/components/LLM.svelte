@@ -370,7 +370,7 @@
       
       isProcessing = true;
       
-      console.log("correctionPrompt", correctionPrompt);
+      //console.log("correctionPrompt", correctionPrompt);
       geminiClient.sendMessage(correctionPrompt, { 
         add_to_existing: true, 
         include_image: true,
@@ -431,7 +431,7 @@
           setTimeout(() => handler(), 0); // Allow this function to complete first
           clearTimeout(timeoutId);
           
-          console.log("Received debug_model_info:", data.is_computing);
+          //console.log("Received debug_model_info:", data.is_computing);
           
           // Check if rewards are computing
           isComputingRewards = data.is_computing === true;

@@ -2,6 +2,7 @@
 import { io } from "socket.io-client";
 import { extractStructuredResponse, processRewards } from "./utils.js";
 import { v4 as uuidv4 } from "uuid";
+import { parameterStore } from "../../stores/parameterStore.js";
 
 // Global counter for unique request IDs to prevent duplication
 let frameRequestCounter = 0;
@@ -175,6 +176,33 @@ export function createGeminiClient(
       structuredResponse = extractStructuredResponse(content);
       qualityScore = extractQualityScore(content);
 
+      if (
+        structuredResponse?.result?.environnement &&
+        typeof structuredResponse.result.environnement === "object"
+      ) {
+        const envData = structuredResponse.result.environnement;
+        console.log(
+          "GeminiClient: Found environnement data, updating store and server:",
+          envData
+        );
+
+        const expectedEnvKeys = [
+          "gravity",
+          "density",
+          "wind_x",
+          "wind_y",
+          "wind_z",
+        ];
+
+        for (const key of expectedEnvKeys) {
+          if (envData.hasOwnProperty(key)) {
+            const value = envData[key];
+            parameterStore.updateParameter(key, value);
+            console.log(`GeminiClient: Updated parameter ${key} to ${value}`);
+          }
+        }
+      }
+
       const hasRewards = structuredResponse.result?.rewards?.length > 0;
       if (!hasRewards) {
         console.log("No rewards found in response");
@@ -183,7 +211,8 @@ export function createGeminiClient(
 
       console.log("GeminiClient: complete.");
       console.log(content);
-      // Clear existing rewards
+
+      // Clear existing rewards on the backend before applying new ones
       websocketService.send({
         type: "clear_active_rewards",
         preserve_z: true,
@@ -200,31 +229,59 @@ export function createGeminiClient(
 
       // Equal weights for all rewards
       const weights = rewards.map(() => 1.0);
-
-      // Send rewards after a short delay to ensure clear completes
+      const combinationType =
+        structuredResponse.result.combinationType || "geometric";
+      //const useMix = structuredResponse.result?.use_mix === true;
+      const useMix = true;
+      // Send rewards or mix request after a short delay
       setTimeout(() => {
-        const requestId = `reward_batch_${Date.now()}_${Math.random()
-          .toString(36)
-          .slice(2, 9)}`;
+        const requestId = `request_${
+          useMix ? "mix" : "reward"
+        }_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
-        websocketService.send({
-          type: "request_reward",
-          reward: {
-            rewards,
-            weights,
-            combinationType:
-              structuredResponse.result.combinationType || "geometric",
-          },
-          add_to_existing: false,
-          batch_mode: true,
-          timestamp: new Date().toISOString(),
-          message_id: requestId,
-        });
+        if (useMix) {
+          // Send mix_pose_reward message
+          const mixWeight = structuredResponse.result?.mix_weight ?? 0.1; // Default 0.5
+          const mixStrategy =
+            structuredResponse.result?.mix_strategy ?? "mlp_fusion"; // Default strategy
 
-        // Update local state
+          websocketService.send({
+            type: "mix_pose_reward",
+            reward: {
+              // The reward part of the mix
+              rewards,
+              weights,
+              combinationType,
+            },
+            use_current_pose: true, // Use the character's current pose
+            mix_weight: mixWeight,
+            mix_strategy: mixStrategy,
+            timestamp: new Date().toISOString(),
+            message_id: requestId,
+          });
+          console.log(
+            `GeminiClient: Sent mix_pose_reward with ${rewards.length} rewards, weight ${mixWeight}, strategy ${mixStrategy}`
+          );
+        } else {
+          // Send standard request_reward message
+          websocketService.send({
+            type: "request_reward",
+            reward: {
+              rewards,
+              weights,
+              combinationType,
+            },
+            add_to_existing: false,
+            batch_mode: true,
+            timestamp: new Date().toISOString(),
+            message_id: requestId,
+          });
+          console.log(`GeminiClient: Sent ${rewards.length} rewards in batch`);
+        }
+
+        // Update local state regardless of message type
         rewardStore.setRewards(rewards);
-        console.log(`GeminiClient: Sent ${rewards.length} rewards in batch`);
-      }, 500);
+      }, 50);
     }
 
     // Helper to add image info to message
@@ -337,16 +394,13 @@ export function createGeminiClient(
           clearTimeout(captureTimeout);
 
           if (frameCaptureResult && frameCaptureResult.success) {
-            // Frame capture succeeded
-            updateLatestSystemMessage(
-              "Frame captured successfully, sending to Gemini..."
-            );
-
             // Add body positions to message if available
             const enhancedMessage = addBodyPositionsToMessage(
               message,
               frameCaptureResult
             );
+
+            console.log("enhancedMessage", enhancedMessage);
 
             // Send message with frame
             sendMessageToGemini(
