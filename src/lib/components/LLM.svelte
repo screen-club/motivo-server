@@ -4,6 +4,7 @@
   import { v4 as uuidv4 } from 'uuid';
   import { rewardStore } from '../stores/rewardStore';
   import { chatStore } from '../stores/chatStore';
+  import { llmPromptStore } from '../stores/llmInteractionStore';
   import { webrtcService } from '../services/webrtc';
   import geminiSocketService from '../services/gemini';
   import MarkdownIt from 'markdown-it';
@@ -46,6 +47,16 @@
   let lastActivityTime = $state(Date.now());
   let inactivityTimeout = $state(null);
   const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+  // Subscribe to the llmPromptStore using $effect rune
+  $effect(() => {
+    const promptFromStore = $llmPromptStore;
+    if (promptFromStore) {
+      console.log('LLM.svelte: Received prompt from store:', promptFromStore);
+      submitPrompt(promptFromStore);
+      llmPromptStore.set(null);
+    }
+  });
 
   // Initialize markdown parser
   const md = new MarkdownIt({
@@ -575,6 +586,40 @@
     updateActivityTime();
     ensureGeminiConnection();
     geminiClient.checkConnection();
+  }
+
+  // Internal function to submit a prompt
+  function submitPrompt(promptToSubmit) {
+    if (!promptToSubmit || !promptToSubmit.trim()) return;
+    
+    // Ensure connection before sending message
+    ensureGeminiConnection();
+    
+    isProcessing = true;
+    const currentPrompt = promptToSubmit.trim();
+    
+    // Add user message to conversation
+    const newConversation = [...geminiConversation, {
+      role: 'user',
+      content: currentPrompt
+    }];
+    
+    // Update conversation
+    updateConversation(newConversation);
+    scrollChatToBottom();
+    
+    // Send message to Gemini
+    geminiClient.sendMessage(currentPrompt, { add_to_existing: false })
+      .then(result => {
+        if (!result) {
+          isProcessing = false;
+        }
+      })
+      .catch(error => {
+        console.error("Error sending message to Gemini:", error);
+        addSystemMessage("Error sending message to Gemini");
+        isProcessing = false;
+      });
   }
 </script>
 

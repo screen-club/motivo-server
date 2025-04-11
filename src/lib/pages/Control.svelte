@@ -14,6 +14,7 @@
     import LLM from '../components/LLM.svelte';
     import { chatStore } from '../stores/chatStore';
     import PresetsList from '../components/presets/PresetsList.svelte';
+    import { defaultPresetPromptStore } from '../stores/llmInteractionStore';
     
     let isSocketReady = $state(false);
     let cleanupListener;
@@ -24,6 +25,15 @@
     let activePanel = $state(
       storedPanel === 'rewards' || storedPanel === 'llm' ? storedPanel : 'rewards'
     );
+    
+    // State for default preset prompt
+    let isEditingDefaultPrompt = $state(false);
+    let defaultPromptValue = $state('');
+    
+    // Subscribe to defaultPresetPromptStore
+    $effect(() => {
+        defaultPromptValue = $defaultPresetPromptStore;
+    });
     
     // Subscribe to favoriteStore to get the count
     let favoritesCount = $state(0);
@@ -60,6 +70,14 @@
                 totalSteps = total;
             });
             isTestingAll = true;
+        }
+    }
+
+    // Function to save updated default prompt
+    function saveDefaultPrompt() {
+        if (defaultPromptValue.trim()) {
+            defaultPresetPromptStore.set(defaultPromptValue);
+            isEditingDefaultPrompt = false;
         }
     }
 
@@ -143,6 +161,49 @@
                 </div>
             {:else if activePanel === 'llm'}
                 <div class="flex-1 bg-purple-100/50 p-4 rounded-xl">
+                    <!-- Default Preset Prompt Editor -->
+                    <div class="mb-4 p-3 bg-white rounded-lg shadow-sm">
+                        <div class="flex justify-between items-center mb-2">
+                            <h3 class="font-medium text-gray-800">Default Preset Prompt</h3>
+                            {#if isEditingDefaultPrompt}
+                                <div class="flex gap-2">
+                                    <button 
+                                        class="px-3 py-1 text-xs bg-green-500 text-white rounded-md hover:bg-green-600"
+                                        onclick={saveDefaultPrompt}
+                                    >
+                                        Save
+                                    </button>
+                                    <button 
+                                        class="px-3 py-1 text-xs bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300"
+                                        onclick={() => {
+                                            defaultPromptValue = $defaultPresetPromptStore;
+                                            isEditingDefaultPrompt = false;
+                                        }}
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            {:else}
+                                <button 
+                                    class="px-3 py-1 text-xs bg-blue-500 text-white rounded-md hover:bg-blue-600"
+                                    onclick={() => isEditingDefaultPrompt = true}
+                                >
+                                    Edit
+                                </button>
+                            {/if}
+                        </div>
+                        
+                        {#if isEditingDefaultPrompt}
+                            <textarea
+                                bind:value={defaultPromptValue}
+                                class="w-full p-2 border border-gray-300 rounded-md h-24 text-sm"
+                                placeholder="Enter default prompt for preset analysis..."
+                            ></textarea>
+                            <p class="text-xs text-gray-500 mt-1">This prompt will be used when analyzing presets with the IA button.</p>
+                        {:else}
+                            <p class="text-sm bg-gray-50 p-2 rounded-md">{defaultPromptValue}</p>
+                        {/if}
+                    </div>
                     
                     <LLM />
                 </div>

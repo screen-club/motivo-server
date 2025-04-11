@@ -6,6 +6,7 @@
   import { get } from 'svelte/store';
   import { currentlyPlayingPresetId } from "../../stores/playbackStore";
   import { onDestroy, createEventDispatcher } from 'svelte';
+  import { llmPromptStore, defaultPresetPromptStore } from '../../stores/llmInteractionStore';
   
   const dispatch = createEventDispatcher();
 
@@ -182,6 +183,14 @@
     // No need to set prevFPS here as it's handled in the reactive statement
     updateAnimationParams();
   }
+
+  function handleIAPrompt() {
+    stopAnimation();
+    // Use the default prompt from the store instead of hardcoding it
+    const defaultPrompt = get(defaultPresetPromptStore);
+    // Set the store value instead of dispatching an event
+    llmPromptStore.set(defaultPrompt);
+  }
 </script>
 
 <div
@@ -294,38 +303,66 @@
   </div>
 
   <!-- Action buttons -->
-  <div class="flex justify-end gap-2 mb-3">
+  <div class="flex justify-between items-center gap-2 mb-3">
     {#if preset.type !== "timeline"}
-      {#if isAnimation(preset)}
-        {#if isAnimationPlaying}
-          <button
-            class="text-sm text-orange-600 hover:text-orange-800"
-            on:click={stopAnimation}
-          >
-            Stop
-          </button>
+      <div class="flex gap-2">
+        {#if isAnimation(preset)}
+          {#if isAnimationPlaying}
+            <button
+              class="inline-flex items-center justify-center p-2 rounded-md bg-orange-100 text-orange-700 hover:bg-orange-200 transition-colors"
+              on:click={stopAnimation}
+              aria-label="Stop animation"
+              title="Stop"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+                <path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h8.5a.75.75 0 00.75-.75V3.75A.75.75 0 0014.25 3h-8.5z" />
+              </svg>
+            </button>
+          {:else}
+            <button
+              class="inline-flex items-center justify-center p-2 rounded-md bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors"
+              on:click={handleLoad}
+              aria-label="Play animation"
+              title="Play"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+                <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+              </svg>
+            </button>
+          {/if}
         {:else}
           <button
-            class="text-sm text-blue-600 hover:text-blue-800"
-            on:click={handleLoad}
+            class="inline-flex items-center justify-center p-2 rounded-md bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors"
+            on:click={() => onLoad(preset)}
+            aria-label="Play preset"
+            title="Play"
           >
-            Play
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+              <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+            </svg>
           </button>
         {/if}
-      {:else}
+        
         <button
-          class="text-sm text-blue-600 hover:text-blue-800"
-          on:click={() => onLoad(preset)}
+          class="inline-flex items-center justify-center px-2.5 py-1.5 rounded-md bg-purple-100 text-purple-700 hover:bg-purple-200 transition-colors"
+          on:click={handleIAPrompt}
+          title="Send preset to LLM for analysis"
+          aria-label="AI analysis"
         >
-          Play
+          <span class="text-xs font-medium">IA</span>
         </button>
-      {/if}
+      </div>
     {/if}
+    
     <button
-      class="text-sm text-red-600 hover:text-red-800"
+      class="inline-flex items-center justify-center p-2 rounded-md bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
       on:click={() => onDelete(preset.id)}
+      aria-label="Delete preset"
+      title="Delete"
     >
-      Delete
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+        <path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clip-rule="evenodd" />
+      </svg>
     </button>
   </div>
   
