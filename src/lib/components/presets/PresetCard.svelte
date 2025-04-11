@@ -87,7 +87,12 @@
         speedFactor: speedFactor
       });
     } else {
-      onLoad(preset);
+      // Always treat as an animation, even for single frame poses
+      onLoad(preset, { 
+        isAnimation: true, 
+        fps: animationFPS,
+        speedFactor: speedFactor
+      });
     }
   }
 
