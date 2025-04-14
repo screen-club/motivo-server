@@ -800,9 +800,20 @@
           viewportStart={viewportStart}
           viewportDuration={viewportDuration}
           on:lfoGenerated={event => {
-            if (envelopeComponent) {
-              envelopeComponent.loadEnvelopes(event.detail.envelope);
-              envelopes = event.detail.envelope;
+            if (envelopeComponent && event.detail.paramName) {
+              // Only update the specific parameter's points, not the entire envelope object
+              const paramName = event.detail.paramName;
+              const newPoints = event.detail.newPoints;
+              
+              // Create a copy of the current envelopes
+              const updatedEnvelopes = { ...envelopes };
+              
+              // Update only the current parameter's points
+              updatedEnvelopes[paramName] = newPoints;
+              
+              // Update the envelope component and save
+              envelopeComponent.loadEnvelopes(updatedEnvelopes);
+              envelopes = updatedEnvelopes;
               saveTimelineChanges();
             }
           }}

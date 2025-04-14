@@ -94,9 +94,13 @@
   
   // Apply the LFO curve to the envelope
   function applyLFO() {
-    const envelope = generateLFOCurve();
-    if (envelope) {
-      dispatch('lfoGenerated', { envelope });
+    const newCurve = generateLFOCurve();
+    if (newCurve && currentParam) {
+      // Only replace the current parameter's curve, not the entire envelope object
+      dispatch('lfoGenerated', { 
+        paramName: currentParam, 
+        newPoints: newCurve[currentParam] 
+      });
     }
   }
   
