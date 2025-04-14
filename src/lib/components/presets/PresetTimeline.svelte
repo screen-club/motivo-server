@@ -6,6 +6,7 @@
   import { parameterStore } from '../../stores/parameterStore';
   import { DbService } from '../../services/db';
   import PresetTimelineEnvelope from './PresetTimelineEnvelope.svelte';
+  import EnvelopeLFO from '../parameters/EnvelopeLFO.svelte';
 
   
   export let duration = 180;
@@ -790,15 +791,35 @@
 <!-- Conditionally render the envelope component with transition -->
 {#if showEnvelope}
   <div transition:slide={{ duration: 300 }}>
-    <PresetTimelineEnvelope 
-      currentTime={currentTime} 
-      duration={duration}
-      viewportStart={viewportStart}
-      viewportDuration={viewportDuration}
-      timelineId={timelineId}
-      on:envelopeChanged={handleEnvelopeChanged}
-      bind:this={envelopeComponent}
-    />
+    <div class="flex flex-col md:flex-row gap-4">
+      <!-- LFO generator component -->
+      <div class="w-full md:w-1/4">
+        <EnvelopeLFO 
+          currentParam={envelopeComponent?.currentParam} 
+          duration={duration}
+          on:lfoGenerated={event => {
+            if (envelopeComponent) {
+              envelopeComponent.loadEnvelopes(event.detail.envelope);
+              envelopes = event.detail.envelope;
+              saveTimelineChanges();
+            }
+          }}
+        />
+      </div>
+      
+      <!-- Envelope editor component -->
+      <div class="w-full md:w-3/4">
+        <PresetTimelineEnvelope 
+          currentTime={currentTime} 
+          duration={duration}
+          viewportStart={viewportStart}
+          viewportDuration={viewportDuration}
+          timelineId={timelineId}
+          on:envelopeChanged={handleEnvelopeChanged}
+          bind:this={envelopeComponent}
+        />
+      </div>
+    </div>
   </div>
 {/if}
 
