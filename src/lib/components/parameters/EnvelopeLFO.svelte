@@ -10,10 +10,9 @@
 
   // LFO properties
   let waveform = 'sine'; // 'sine', 'square', 'triangle'
-  let frequency = 0.1; // cycles per second
+  let frequencyPercent = 10; // 0-100% scale for cycle frequency
   let amplitude = 0.5; // percentage of min/max range
   let offset = 0.5; // center point (0.0 to 1.0)
-  let phase = 0; // phase offset in degrees (0-360)
   
   // Canvas for preview
   let canvasRef;
@@ -50,14 +49,17 @@
     const range = paramBounds.max - paramBounds.min;
     const centerValue = paramBounds.min + (range * offset);
     const amplitudeValue = range * amplitude;
-    const phaseRadians = (phase * Math.PI) / 180;
     
-    // Generate at least 20 points for a smooth curve
-    const numPoints = Math.max(20, Math.min(100, Math.floor(duration * frequency * 10)));
+    // Convert frequency percentage to actual cycles over duration
+    // 0% = 1 cycle over entire duration, 100% = 20 cycles over duration
+    const cyclesOverDuration = 1 + (frequencyPercent / 100) * 19; // 1 to 20 cycles
+    
+    // Generate at least 20 points for a smooth curve, more for higher frequencies
+    const numPoints = Math.max(20, Math.min(200, Math.floor(cyclesOverDuration * 20)));
     
     for (let i = 0; i <= numPoints; i++) {
       const time = (i / numPoints) * duration;
-      const normalizedTime = (time / duration) * (frequency * duration) * 2 * Math.PI + phaseRadians;
+      const normalizedTime = (time / duration) * cyclesOverDuration * 2 * Math.PI;
       
       let value;
       switch (waveform) {
@@ -182,7 +184,7 @@
   
   // Auto-update preview when parameters change
   $: {
-    if (waveform && frequency && amplitude && offset && currentParam) {
+    if (waveform && frequencyPercent !== undefined && amplitude && offset && currentParam) {
       updatePreview();
     }
   }
@@ -267,17 +269,21 @@
     <div>
       <div class="flex justify-between">
         <label for="frequency" class="text-xs text-gray-600">Frequency:</label>
-        <span class="text-xs text-gray-500">{frequency.toFixed(2)} Hz</span>
+        <span class="text-xs text-gray-500">{frequencyPercent}%</span>
       </div>
       <input 
         id="frequency" 
         type="range" 
-        min="0.01" 
-        max="1" 
-        step="0.01" 
-        bind:value={frequency} 
+        min="0" 
+        max="100" 
+        step="1" 
+        bind:value={frequencyPercent} 
         class="w-full"
       />
+      <div class="flex justify-between text-xs text-gray-400">
+        <span>Few cycles</span>
+        <span>Many cycles</span>
+      </div>
     </div>
     
     <!-- Amplitude -->
@@ -310,23 +316,6 @@
         max="1" 
         step="0.01" 
         bind:value={offset} 
-        class="w-full"
-      />
-    </div>
-    
-    <!-- Phase -->
-    <div>
-      <div class="flex justify-between">
-        <label for="phase" class="text-xs text-gray-600">Phase:</label>
-        <span class="text-xs text-gray-500">{phase}°</span>
-      </div>
-      <input 
-        id="phase" 
-        type="range" 
-        min="0" 
-        max="360" 
-        step="15" 
-        bind:value={phase} 
         class="w-full"
       />
     </div>
