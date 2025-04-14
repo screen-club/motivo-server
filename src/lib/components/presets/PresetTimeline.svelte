@@ -797,6 +797,8 @@
         <EnvelopeLFO 
           currentParam={envelopeComponent?.currentParam} 
           duration={duration}
+          viewportStart={viewportStart}
+          viewportDuration={viewportDuration}
           on:lfoGenerated={event => {
             if (envelopeComponent) {
               envelopeComponent.loadEnvelopes(event.detail.envelope);
