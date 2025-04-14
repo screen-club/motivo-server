@@ -8,6 +8,7 @@
   import { selectedUser } from '../../stores/userStore';
   import PresetTimeline from './PresetTimeline.svelte';
   import PresetCard from './PresetCard.svelte';
+  import PresetCardAdd from './PresetCardAdd.svelte';
   import VideoBuffer from '../../services/videoBuffer';
   import { webrtcService } from '../../services/webrtc';
 
@@ -587,6 +588,7 @@
           
           {#if showTimelines}
             <div class="flex flex-wrap gap-4 transition-all duration-300">
+              <PresetCardAdd on:add={saveCurrentTimeline} />
               {#each filterPresets(presets).filter(p => p.type === 'timeline') as preset (preset.id)}
                 <PresetCard
                   {preset}
