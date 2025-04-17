@@ -1,0 +1,64 @@
+services:
+  backend:
+    image: yassinsiouda/motivo-server-back:latest
+    ports:
+      - "5002:5002"
+      - "8765:8765"
+    env_file:
+      - .env
+    volumes:
+      - ./storage:/app/storage
+    restart: unless-stopped
+    depends_on:
+      - coturn
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+  
+  frontend:
+    network_mode: host
+    image: yassinsiouda/motivo-client-front:latest
+    expose:
+      - "0.0.0.0:5004:5173"
+    depends_on:
+      - backend
+    env_file:
+      - .env
+    restart: unless-stopped
+
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host
+    #volumes:
+    #  - ./coturn/turnserver.conf:/etc/turnserver.conf
+    restart: unless-stopped
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "5349:5349/udp"
+      - "5349:5349/tcp"
+      #- "49152-65535:49152-65535/udp"
+    environment:
+      - TURN_USERNAME=${VITE_TURN_USERNAME:-admin}
+      - TURN_PASSWORD=${VITE_TURN_PASSWORD:-password}
+    command: -c /etc/turnserver.conf
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+
+
+  watchtower:
+    image: containrrr/watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 30 --cleanup --remove-volumes --stop-timeout 10s
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_STOP_TIMEOUT=10s
+    restart: unless-stopped

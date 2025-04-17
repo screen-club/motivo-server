@@ -16,11 +16,11 @@ class Config:
         self.default_model = "metamotivo-M-1"
         
         # Base paths
-        self.public_dir = os.path.join(os.path.dirname(os.getcwd()), 'public')
-        self.storage_dir = os.path.join(self.public_dir, 'storage')
+        self.storage_dir = 'storage'
         
         # Derived paths
-        self.cache_dir = os.path.join(self.storage_dir, 'cache')
+        self.cache_dir = os.path.join(self.storage_dir, 'model')
+        self.public_dir = os.path.join(os.path.dirname(os.getcwd()), 'public')
         self.shared_frames_dir = os.path.join(  self.public_dir, 'public', 'shared_frames')
         self.gemini_frame_path = os.path.join(self.shared_frames_dir, 'latest_frame.jpg')
         self.captured_frames_dir = os.path.join(self.storage_dir, 'captured_frames')

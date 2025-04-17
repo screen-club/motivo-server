@@ -103,7 +103,12 @@
         speedFactor: speedFactor
       });
     } else {
-      onLoad(preset);
+      // Always treat as an animation, even for single frame poses
+      onLoad(preset, { 
+        isAnimation: true, 
+        fps: animationFPS,
+        speedFactor: speedFactor
+      });
     }
   }
 
@@ -275,7 +280,20 @@
 
   <!-- Title and type -->
   <div class="flex justify-between items-start mb-2">
-    <h3 class="font-semibold text-gray-800">{preset.title}</h3>
+    <!-- Editable title field -->
+    <input 
+      type="text" 
+      bind:value={preset.title} 
+      on:blur={async () => {
+        try {
+          await DbService.updateConfig(preset.id, { title: preset.title });
+          dispatch('titleUpdated', { title: preset.title });
+        } catch (error) {
+          console.error("Failed to update title:", error);
+        }
+      }}
+      class="font-semibold text-gray-800 bg-transparent focus:bg-gray-100 focus:ring-1 focus:ring-blue-500 focus:outline-none rounded px-1"
+    />
     <span class="text-xs px-2 py-1 rounded-full {preset.type === 'pose' ? 'bg-blue-100 text-blue-800' : preset.type === 'rewards' ? 'bg-green-100 text-green-800' : preset.type === 'timeline' ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-800'}">
       {preset.type}
     </span>
