@@ -12,19 +12,21 @@ import logging
 import time
 import socket
 import ipaddress
+import os
 
 
 logger = logging.getLogger('webrtc_manager')
 
 # Helper function to check for private IP addresses
-def is_private_ip(ip_str):
-    try:
-        ip = ipaddress.ip_address(ip_str)
-        # Check for private ranges (IPv4/IPv6) and loopback
-        return ip.is_private or ip.is_loopback
-    except ValueError:
-        # Invalid IP string
-        return False
+# Removed the is_private_ip function as it's no longer used by the main logic
+# def is_private_ip(ip_str):
+#     try:
+#         ip = ipaddress.ip_address(ip_str)
+#         # Check for private ranges (IPv4/IPv6) and loopback
+#         return ip.is_private or ip.is_loopback
+#     except ValueError:
+#         # Invalid IP string
+#         return False
 
 class FrameVideoStreamTrack(VideoStreamTrack):
     """
@@ -200,37 +202,25 @@ class WebRTCManager:
     """
     
     def __init__(self, video_quality="medium"):
-        import os
+        import os # Already imported above, technically redundant but harmless
         
-        # --- Network Environment Detection ---
-        is_potentially_online = False
-        try:
-            hostname = socket.gethostname()
-            addrinfo = socket.getaddrinfo(hostname, None)
-            local_ips = set()
-            for item in addrinfo:
-                # item[4] is the sockaddr tuple, item[4][0] is the IP address
-                ip = item[4][0]
-                local_ips.add(ip)
-                if not is_private_ip(ip):
-                    # Found a non-private, non-loopback IP, assume online
-                    is_potentially_online = True
-                    logger.debug(f"Detected potentially public IP: {ip}")
-                    break 
-            if not is_potentially_online:
-                 logger.debug(f"Detected only private/loopback IPs: {local_ips}")
-        except socket.gaierror:
-            logger.warning("Could not determine local IP addresses via hostname lookup.")
-            # Fallback: Assume potentially online to be safe, use env var if needed?
-            # For now, we'll assume online as a safer default if detection fails.
-            is_potentially_online = True 
-        # --- End Network Environment Detection ---
+        # --- Network Environment Determination ---
+        # Check environment variable first
+        use_ice_str = os.environ.get('USE_ICE_SERVER', 'true').lower()
+        should_use_ice = use_ice_str != 'false'
+
+        if not should_use_ice:
+            logger.info("`USE_ICE_SERVER` environment variable is set to false. Skipping external ICE servers.")
+        else:
+            logger.info("Configuring external ICE servers (USE_ICE_SERVER is not 'false').")
+
+        # --- End Network Environment Determination ---
 
         ice_servers = []
-        if not is_potentially_online:
-            logger.info("Detected local/private network - skipping external ICE servers.")
+        if not should_use_ice:
+            logger.info("Local network mode enabled - skipping external ICE servers.")
         else:
-            logger.info("Detected potentially online network - configuring external ICE servers.")
+            logger.info("Online network mode enabled - configuring external ICE servers.")
             # Get STUN/TURN server info from environment (or use default)
             # Multiple STUN servers for redundancy
             stun_urls = [
@@ -549,11 +539,7 @@ class WebRTCManager:
                     
                     # Use RTCIceCandidate.from_sdp to parse the candidate string
                     try:
-                        # Prepend 'a=' if not present (standard SDP format is 'a=candidate...')
-                        if not candidate_str.startswith("candidate:"):
-                            # It's unusual for it not to start with 'candidate:', but handle just in case
-                            logger.warning(f"Candidate string for {client_id} missing 'candidate:' prefix: {candidate_str}")
-                            # Attempt parsing anyway, might work depending on aiortc version
+                        # Attempt parsing anyway, might work depending on aiortc version
                         
                         # We need sdpMid and sdpMLineIndex for context when adding
                         # aiortc expects the full candidate line including 'a=' prefix

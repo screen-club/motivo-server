@@ -26,13 +26,23 @@ import requests
 
 # Try imports as package first, then as local modules if that fails
 try:
-    from webserver.services.gemini import GeminiService
-    from webserver.database.models import Content, initialize_database
-except ImportError:
-   
-    # Try local imports
-    from services.gemini import GeminiService
-    from database.models import Content, initialize_database
+    # Now imports should work assuming the script is run from webserver dir or project root
+    from webserver.services.gemini import GeminiService # Keep as relative within package if needed
+    from webserver.database.models import Content, initialize_database # Keep as relative
+except ImportError as e:
+    print(f"Initial import error: {e}")
+    # Fallback for running script directly
+    print("Attempting local imports as fallback.")
+    try:
+        from services.gemini import GeminiService
+        from database.models import Content, initialize_database
+    except ImportError as e2:
+        print(f"Fallback import error: {e2}")
+        print("CRITICAL: Failed to import necessary modules. Check project structure and PYTHONPATH.")
+        # Exit or set crucial variables to None with warnings
+        GeminiService = None
+        Content = None
+        initialize_database = lambda: print("Database init skipped due to import error")
 
 
 # ============================================================================
@@ -603,7 +613,74 @@ def download_file(filename):
         logging.error(f"Error serving download file: {str(e)}")
         return jsonify({'error': str(e)}), 404
 
+# New route to serve videos from storage/videos
+@app.route('/storage_videos/<path:filename>')
+def serve_storage_video(filename):
+    """Serve videos from the motivo/storage/videos directory."""
+    try:
+        # Path relative to webserver.py: up one level, then into motivo/storage/videos
+        storage_videos_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../motivo/storage/videos'))
+
+        logging.debug(f"Attempting to serve video from: {storage_videos_dir} / {filename}")
+        # Basic security check to prevent path traversal
+        if '..' in filename or filename.startswith('/'):
+             return jsonify({'error': 'Invalid filename'}), 400
+        return send_from_directory(storage_videos_dir, filename)
+    except FileNotFoundError:
+        logging.error(f"Video file not found: {os.path.join(storage_videos_dir, filename)}")
+        return jsonify({'error': 'File not found'}), 404
+    except Exception as e:
+        logging.error(f"Error serving storage video: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 # API routes
+@app.route('/api/videos', methods=['GET'])
+def list_videos():
+    """Lists videos available in the motivo/storage/videos folder."""
+    video_list = []
+    try:
+        # Calculate downloads path relative to this script, matching the /downloads route
+        script_dir = os.path.dirname(__file__)
+
+        # Path relative to webserver.py: up one level, then into motivo/storage/videos
+        target_folder = os.path.abspath(os.path.join(script_dir, '../motivo/storage/videos'))
+
+        logging.info(f"Listing videos from: {target_folder}") # Log the path being used
+
+        if not os.path.exists(target_folder):
+            logging.error(f"Downloads folder not found: {target_folder}")
+            # Attempt to create it? Or just report error.
+            os.makedirs(target_folder, exist_ok=True) # Create if missing, might be empty
+            # return jsonify({'error': 'Downloads directory not found.'}), 500
+
+        for filename in os.listdir(target_folder):
+            # Optional: Filter for specific video extensions if needed
+            if filename.lower().endswith(('.mp4', '.webm', '.ogg')):
+                video_path = os.path.join(target_folder, filename)
+                try:
+                    file_stat = os.stat(video_path)
+                    video_list.append({
+                        'filename': filename,
+                        'url': f'/storage_videos/{filename}', # Use the new serving route
+                        'size': file_stat.st_size,
+                        'last_modified': file_stat.st_mtime,
+                        'created_at': file_stat.st_ctime
+                    })
+                except Exception as stat_error:
+                     logging.error(f"Error stating file {filename}: {stat_error}")
+                     # Optionally skip this file or add basic info
+                     video_list.append({'filename': filename, 'url': f'/storage_videos/{filename}', 'error': 'Could not retrieve file details'})
+
+
+        # Sort by creation time, newest first
+        video_list.sort(key=lambda x: x.get('created_at', 0), reverse=True)
+
+        return jsonify(video_list)
+    except Exception as e:
+        logging.error(f"Error listing videos: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'error': 'Failed to list videos.'}), 500
+
 @app.route('/generate-reward', methods=['POST'])
 def generate_reward():
     

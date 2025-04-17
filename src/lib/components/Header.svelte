@@ -15,6 +15,7 @@
 
   $: isControlActive = $location === '/control' || $location === '/';
   $: isTestingActive = $location === '/testing';
+  $: isVideosActive = $location === '/videos';
 
   function handleMessage(data) {
     if (data.type === "debug_model_info") {
@@ -43,6 +44,11 @@
           to="/control" 
           class={isControlActive ? 'text-blue-600 font-medium' : 'hover:text-blue-600'}>
           Control
+        </Link>
+        <Link 
+          to="/videos" 
+          class={isVideosActive ? 'text-blue-600 font-medium' : 'hover:text-blue-600'}>
+          Videos
         </Link>
         <Link 
           to="/testing" 

@@ -16,15 +16,15 @@ export const QUALITY_OPTIONS = [
 
 // Default ICE server configuration
 export const getIceServers = () => {
-  // Skip ICE servers on localhost for development
-  if (
-    window.location.hostname === "localhost" ||
-    window.location.hostname === "127.0.0.1"
-  ) {
-    console.log("Running on localhost - skipping ICE servers");
+  // Check environment variable to determine if ICE servers should be used
+  const useIce = import.meta.env.VITE_USE_ICE_SERVER !== "false";
+
+  if (!useIce) {
+    console.log("VITE_USE_ICE_SERVER is false - skipping ICE servers");
     return [];
   }
 
+  console.log("Using configured ICE servers");
   return [
     // Project-specific TURN server
     {

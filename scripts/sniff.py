@@ -16,7 +16,7 @@ import argparse
 CONFIG = {
     'WS_URI': 'ws://51.159.163.145:8765',
     'WS_URI_LOCAL': 'ws://localhost:8765',
-    'API_URL': 'http://192.168.1.38:5002',
+    'API_URL': 'http://51.159.163.145:5002',
     'API_URL_LOCAL': 'http://localhost:5002',
     'MAX_RETRIES': 3,
     'RETRY_DELAY': 2,

@@ -7,6 +7,7 @@
   import Home from './lib/pages/Home.svelte';
   import About from './lib/pages/About.svelte';
   import Control from './lib/pages/Control.svelte';
+  import Videos from './lib/pages/Videos.svelte';
   import Footer from './lib/components/Footer.svelte';
   import VersionInfo from './lib/components/VersionInfo.svelte';
   
@@ -28,6 +29,7 @@
         <Route path="/"><Control /></Route>
         <Route path="/testing"><Home /></Route>
         <Route path="/about"><About /></Route>
+        <Route path="/videos"><Videos /></Route>
         <Route path="/live"><LiveFeed /></Route>
         <Route path="/control"><Control /></Route>
       </div>
