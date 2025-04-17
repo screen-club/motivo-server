@@ -348,7 +348,7 @@ class VideoRecorder:
                 frame_to_write = frame.copy()
 
             # Convert RGB frame to BGR for OpenCV
-            bgr_frame = cv2.cvtColor(frame_to_write, cv2.COLOR_RGB2BGR)
+            #bgr_frame = cv2.cvtColor(frame_to_write, cv2.COLOR_RGB2BGR)
             self._frame_count += 1 # Increment frame count immediately
             current_frame_num = self._frame_count # Store for logging
 
@@ -356,7 +356,7 @@ class VideoRecorder:
             write_task = self.loop.run_in_executor(
                 self.executor, 
                 self._write_frame_sync, # Call a synchronous wrapper
-                bgr_frame, 
+                frame_to_write, 
                 current_frame_num
             )
             self._pending_writes.append(write_task)

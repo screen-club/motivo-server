@@ -227,14 +227,30 @@ async def render_and_process_frame(frame_count, q_percentage, last_frame_save_ti
         # Render frame directly
         frame = app_state.env.render()
         
-        # Apply overlays directly
+        # --- ADD RED DOT BEFORE DISPLAY ---
+        # Draw red dot directly onto the frame if recording, *before* display
+        if app_state.message_handler.video_recorder and app_state.message_handler.video_recorder.recording:
+            # Frame is RGB, so red is (255, 0, 0)
+            h, w = frame.shape[:2]
+            radius = 10 # Adjust radius as needed
+            center = (w - radius - 10, radius + 10) # Top-right corner with padding
+            color = (255, 0, 0) # Red in RGB
+            thickness = -1 # Filled circle
+            cv2.circle(frame, center, radius, color, thickness) # Modify frame in place
+        
+        # Apply overlays and display the frame (now potentially with red dot)
         frame_with_overlays = app_state.display_manager.show_frame(
-            frame,
+            frame, # Pass the potentially modified frame
             q_percentage=q_percentage,
             is_computing=app_state.message_handler.is_computing_reward
         )
         
+        # --- REMOVE RED DOT DRAWING AFTER DISPLAY ---
+        # if app_state.message_handler.video_recorder and app_state.message_handler.video_recorder.recording:
+            # ... (old drawing code removed) ...
+
         # Make a copy for WebRTC to avoid any potential memory issues
+        # This copy now includes the red dot if recording
         frame_copy = frame_with_overlays.copy()
         
         # Update WebRTC stream with proper task management - async operations
@@ -269,15 +285,13 @@ async def render_and_process_frame(frame_count, q_percentage, last_frame_save_ti
                 logger.debug(f"Cleaned up {len(done_tasks)} completed WebRTC tasks, {len(app_state.pending_webrtc_tasks)} pending")
 
             
-        
         except Exception as e:
             logger.error(f"Error setting up WebRTC broadcast: {e}")
         
         # Add frame to video recorder if active
         if app_state.message_handler.video_recorder and app_state.message_handler.video_recorder.recording:
             try:
-                # Use the frame *with* overlays for recording
-                # Create a task to run add_frame asynchronously without blocking the loop
+                # Use the frame with the potential red dot overlay (now frame_with_overlays)
                 asyncio.create_task(app_state.message_handler.video_recorder.add_frame(frame_with_overlays))
             except Exception as video_err:
                 # Log error if task creation fails (unlikely for add_frame setup)

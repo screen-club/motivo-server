@@ -1355,7 +1355,7 @@ class MessageHandler:
 
             self.video_recorder = VideoRecorder(
                 output_path=video_path,
-                fps=config.fps,
+                fps=config.fps / 2, # Use half the simulation FPS for recording
                 width=width,
                 height=height
             )
