@@ -6,6 +6,7 @@ import logging
 import numpy as np
 import torch
 from datetime import datetime
+import json
 
 from core.config import config
 from core.state import app_state
@@ -25,10 +26,13 @@ async def run_simulation_loop():
     frame_count = 0
     last_frame_save_time = 0
     app_state.is_running = True
+    target_frame_duration = 1.0 / config.fps
+    loop_start_time = time.monotonic()
     
-    logger.info("Starting simulation loop")
+    logger.info(f"Starting simulation loop (Target FPS: {config.fps}, Target Duration: {target_frame_duration:.4f}s)")
     
     while app_state.is_running:
+        iter_start_time = time.monotonic()
         try:
             # Get current context - should be a tensor, not a coroutine
             current_z = app_state.message_handler.get_current_z()
@@ -87,21 +91,38 @@ async def run_simulation_loop():
             observation, _, terminated, truncated, _ = app_state.env.step(action_for_env)
             
             # These operations remain async
-            await broadcast_pose_update(q_percentage)
+            await broadcast_pose_update(q_percentage, frame_count)
             await render_and_process_frame(frame_count, q_percentage, last_frame_save_time)
             frame_count += 1
             
             if terminated:
                 observation, _ = app_state.env.reset()
             
-            await asyncio.sleep(1/config.fps)
+            # Calculate actual duration and sleep time
+            iter_end_time = time.monotonic()
+            iter_duration = iter_end_time - iter_start_time
+            sleep_duration = target_frame_duration - iter_duration
+
+            # Log timing info periodically (e.g., every 60 frames)
+            if frame_count % 60 == 0:
+                logger.debug(f"Frame {frame_count}: Iter Duration={iter_duration:.4f}s, Sleep Duration={sleep_duration:.4f}s (Target={target_frame_duration:.4f}s)")
+
+            # Sleep for the remaining time, OR sleep for 0 to yield control if behind schedule
+            await asyncio.sleep(max(0, sleep_duration))
+            # else: # Optional: Log if we are falling behind
+            #     # This case is now handled by sleeping for 0
+            #     # logger.warning(f"Frame {frame_count}: Loop took longer ({iter_duration:.4f}s) than target ({target_frame_duration:.4f}s). No sleep.")
+
         except Exception as e:
             logger.error(f"Error in simulation loop: {str(e)}")
             await asyncio.sleep(1)  # Sleep longer on error
     
-    logger.info("Simulation loop ended")
+    loop_end_time = time.monotonic()
+    total_duration = loop_end_time - loop_start_time
+    actual_avg_fps = frame_count / total_duration if total_duration > 0 else 0
+    logger.info(f"Simulation loop ended. Ran for {total_duration:.2f}s, {frame_count} frames. Actual avg FPS: {actual_avg_fps:.2f}")
 
-async def broadcast_pose_update(q_percentage):
+async def broadcast_pose_update(q_percentage, frame_count: int):
     """Get current pose data and broadcast to clients"""
     try:
         # Get pose data from environment
@@ -125,7 +146,18 @@ async def broadcast_pose_update(q_percentage):
             "position_names": position_names,
             "cache_file": str(cache_file) if cache_file else None
         }
-        
+
+        # Log payload size before sending
+        try:
+             payload_json = json.dumps(pose_data)
+             payload_size = len(payload_json)
+             # Log periodically or if size exceeds a threshold to avoid spam
+             if frame_count % 60 == 0: # Log every 60 frames (use passed frame_count)
+                  logger.debug(f"Broadcasting pose_data payload size: {payload_size} bytes")
+        except Exception as e:
+             logger.error(f"Error serializing pose_data for size check: {e}")
+             payload_json = "{}" # Use empty dict string on error
+
         # Check if websocket manager is properly initialized
         if not hasattr(app_state, 'ws_manager') or app_state.ws_manager is None:
             logger.warning("WebSocket manager not initialized, skipping broadcast")
@@ -138,11 +170,11 @@ async def broadcast_pose_update(q_percentage):
         # Broadcast with timeout protection
         try:
             await asyncio.wait_for(
-                app_state.ws_manager.broadcast(pose_data),
-                timeout=0.5  # 500ms timeout
+                app_state.ws_manager.broadcast(pose_data), # Pass the dict, manager handles serialization
+                timeout=1.5  # Increased timeout from 0.5s to 1.5s
             )
         except asyncio.TimeoutError:
-            logger.warning("Broadcast operation timed out after 0.5 seconds")
+            logger.warning("Broadcast operation timed out after 1.5 seconds")
             # Handle stale connections
             await cleanup_stale_connections()
         except Exception as broadcast_error:
@@ -241,6 +273,16 @@ async def render_and_process_frame(frame_count, q_percentage, last_frame_save_ti
         except Exception as e:
             logger.error(f"Error setting up WebRTC broadcast: {e}")
         
+        # Add frame to video recorder if active
+        if app_state.message_handler.video_recorder and app_state.message_handler.video_recorder.recording:
+            try:
+                # Use the frame *with* overlays for recording
+                # Create a task to run add_frame asynchronously without blocking the loop
+                asyncio.create_task(app_state.message_handler.video_recorder.add_frame(frame_with_overlays))
+            except Exception as video_err:
+                # Log error if task creation fails (unlikely for add_frame setup)
+                logger.error(f"Error scheduling frame for video recorder: {video_err}")
+
         # Check for key presses (quit/save) - KEEP THIS ON MAIN THREAD TOO
         should_quit, should_save = app_state.display_manager.check_key()
         if should_quit:

@@ -10,12 +10,14 @@ from scipy.spatial.transform import Rotation as R
 from pathlib import Path
 from lib.api import APIClient
 import requests
+import argparse
 
 # Configuration
 CONFIG = {
     'WS_URI': 'ws://51.159.163.145:8765',
+    'WS_URI_LOCAL': 'ws://localhost:8765',
     'API_URL': 'http://192.168.1.38:5002',
-    #'API_URL': 'http://localhost:5002',
+    'API_URL_LOCAL': 'http://localhost:5002',
     'MAX_RETRIES': 3,
     'RETRY_DELAY': 2,
     'DEFAULT_FPS': 4,  # Default frames per second for websocket streaming
@@ -26,8 +28,12 @@ CONFIG = {
 }
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)  # Changed from DEBUG to INFO
 logger = logging.getLogger(__name__)
+# Reduce websockets protocol logging even further
+logging.getLogger('websockets').setLevel(logging.WARNING)
+# Prevent asyncio debug logs
+logging.getLogger('asyncio').setLevel(logging.WARNING)
 
 # SMPL joint definitions
 SKEL_JOINTS = [
@@ -173,23 +179,51 @@ async def upload_npz_folder_to_db(folder_path, users=None):
 async def response_handler(websocket, stop_event):
     """Handle WebSocket responses without blocking frame sending"""
     try:
+        # Keep track of received updates to detect high load
+        update_count = 0
+        last_log_time = time.monotonic()
+        receive_buffer = bytearray(1024 * 1024)  # 1MB receive buffer
+
         while not stop_event.is_set():
             try:
+                # If using a buffer becomes too complex, just try to receive
+                # and immediately discard smpl_update messages
                 response = await asyncio.wait_for(websocket.recv(), timeout=0.1)
+                
+                # Quick check if it's an smpl_update before parsing the full JSON
+                if '"type":"smpl_update"' in response or '"type": "smpl_update"' in response:
+                    # Count for periodic reporting but otherwise ignore
+                    update_count += 1
+                    
+                    # Report rate every ~5 seconds
+                    current_time = time.monotonic()
+                    if current_time - last_log_time >= 5.0:
+                        elapsed = current_time - last_log_time
+                        updates_per_second = update_count / elapsed if elapsed > 0 else 0
+                        logger.info(f"Receiving ~{updates_per_second:.1f} pose updates/second (skipping processing)")
+                        update_count = 0
+                        last_log_time = current_time
+                    
+                    continue  # Skip further processing for these messages
+                
+                # For all other message types, process normally
                 try:
                     response_data = json.loads(response)
-                    if response_data.get('type') != 'smpl_update':  # Don't log frequent updates
-                        logger.debug(f"Response received: {response_data.get('type')}")
+                    logger.debug(f"Response received: {response_data.get('type')}")
                 except json.JSONDecodeError:
                     logger.warning(f"Invalid JSON response: {response}")
             except asyncio.TimeoutError:
                 # No response within timeout, continue listening
                 pass
             except Exception as e:
-                logger.error(f"Response handler error: {e}")
                 if "connection is closed" in str(e) or "code" in str(e):
+                    logger.error(f"Response handler error: {e}")
                     stop_event.set()
                     break
+                else:
+                    # Don't log every error - only critical ones - to reduce output
+                    if "1001" not in str(e):  # Normal close
+                        logger.error(f"Response handler error: {e}")
     except Exception as e:
         logger.error(f"Response handler fatal error: {e}")
         stop_event.set()
@@ -437,6 +471,32 @@ async def trigger_webserver_ai_prompt(prompt=None):
     except Exception as e:
         logger.error(f"An unexpected error occurred while sending the trigger: {e}")
 
+async def start_video_recording(websocket):
+    """Send command to start video recording."""
+    message = {
+        "type": "start_video_recording",
+        "timestamp": datetime.now().isoformat()
+    }
+    logger.info("Sending start video recording command...")
+    try:
+        await websocket.send(json.dumps(message))
+        # Optionally wait for a response confirming start, but keep it simple for now
+    except Exception as e:
+        logger.error(f"Failed to send start video recording command: {e}")
+
+async def stop_video_recording(websocket):
+    """Send command to stop video recording."""
+    message = {
+        "type": "stop_video_recording",
+        "timestamp": datetime.now().isoformat()
+    }
+    logger.info("Sending stop video recording command...")
+    try:
+        await websocket.send(json.dumps(message))
+        # Optionally wait for confirmation
+    except Exception as e:
+        logger.error(f"Failed to send stop video recording command: {e}")
+
 async def display_menu():
     """Display the main menu and get user choice"""
     print("\n=== Motivo WebSocket Client Menu ===")
@@ -447,14 +507,16 @@ async def display_menu():
     print("5. Upload NPZ animation to database")
     print("6. Upload NPZ folder to database")
     print("7. Trigger General AI Prompt (via HTTP)")
-    print("8. Exit")
+    print("8. Start Video Recording")
+    print("9. Stop Video Recording")
+    print("10. Exit")
     
     while True:
         try:
-            choice = input("\nEnter your choice (1-8): ")
-            if choice in ['1', '2', '3', '4', '5', '6', '7', '8']:
+            choice = input("\nEnter your choice (1-10): ")
+            if choice in [str(i) for i in range(1, 11)]:
                 return choice
-            print("Invalid choice. Please enter a number between 1 and 8.")
+            print("Invalid choice. Please enter a number between 1 and 10.")
         except ValueError:
             print("Invalid input. Please enter a number.")
 
@@ -463,7 +525,9 @@ async def establish_connection():
     for retry in range(CONFIG['MAX_RETRIES']):
         try:
             logger.info(f"Connecting to {CONFIG['WS_URI']}...")
-            websocket = await websockets.connect(CONFIG['WS_URI'])
+            # Add query param to indicate this is a lightweight client
+            uri = f"{CONFIG['WS_URI']}?client_type=lightweight"
+            websocket = await websockets.connect(uri)
             
             # Wait for the initial connection message
             response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
@@ -547,11 +611,15 @@ async def interactive_client():
                             custom_prompt = None
                     await trigger_webserver_ai_prompt(prompt=custom_prompt)
                 elif choice == '8':
+                    await start_video_recording(websocket)
+                elif choice == '9':
+                    await stop_video_recording(websocket)
+                elif choice == '10':
                     logger.info("Exiting program...")
                     stop_event.set()
                     break
                 
-                if choice != '8' and not stop_event.is_set():
+                if choice != '10' and not stop_event.is_set():
                     input("\nPress Enter to continue...")
                 
             except Exception as e:
@@ -580,7 +648,7 @@ async def interactive_client():
                 logger.warning(f"Error closing simulation websocket: {e}")
         
         # Exit outer loop if user chose to exit
-        if choice == '8':
+        if choice == '10':
             break
         
         # Otherwise reconnect simulation websocket
@@ -588,6 +656,22 @@ async def interactive_client():
         await asyncio.sleep(CONFIG['RETRY_DELAY'])
 
 if __name__ == "__main__":
+    # --- Argument Parsing ---
+    parser = argparse.ArgumentParser(description="Connect to Motivo WebSocket and interact.")
+    parser.add_argument("--local", action="store_true",
+                        help="Use localhost for WebSocket and API connections instead of remote defaults.")
+    args = parser.parse_args()
+
+    # --- Update Config based on args ---
+    if args.local:
+        logger.info("Using --local flag: Connecting to localhost services.")
+        CONFIG['WS_URI'] = CONFIG['WS_URI_LOCAL']
+        CONFIG['API_URL'] = CONFIG['API_URL_LOCAL']
+    else:
+        logger.info("Using default remote service addresses.")
+        # Keep the default remote URLs already set
+
+    # --- Run the client ---
     # Ensure APIClient is correctly imported and available
     # If APIClient is not used for the POST, ensure 'requests' is installed
     # pip install requests

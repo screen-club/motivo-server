@@ -10,14 +10,14 @@ import websockets
 import inspect
 import traceback
 import atexit
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional
 import concurrent.futures
 import time
 
 from core.config import config
-from utils.frame_utils import FrameRecorder, save_shared_frame
+from utils.frame_utils import FrameRecorder, save_shared_frame, VideoRecorder
 from rewards.reward_context import compute_reward_context
 
 logger = logging.getLogger('message_handler')
@@ -49,6 +49,8 @@ class MessageHandler:
         self.frame_recorder = None
         self.computation_status = None
         self.last_computation_id = None
+        self.video_recorder = None
+        self.stop_recording_timer = None
         
         # Environment variables from config
         self.backend_domain = config.backend_domain
@@ -66,6 +68,8 @@ class MessageHandler:
             "load_pose_smpl": self.handle_load_pose_smpl,
             "start_recording": self.handle_start_recording,
             "stop_recording": self.handle_stop_recording,
+            "start_video_recording": self.handle_start_video_recording,
+            "stop_video_recording": self.handle_stop_video_recording,
             "load_pose": self.handle_load_pose,
             "clear_active_rewards": self.handle_clear_active_rewards,
             "update_reward": self.handle_update_reward,
@@ -85,6 +89,9 @@ class MessageHandler:
         
     def __del__(self):
         """Clean up resources when this instance is garbage collected"""
+        # Ensure video recording is stopped on deletion
+        if self.video_recorder and self.video_recorder.recording:
+            asyncio.create_task(self._force_stop_video_recording())
         # Remove from instances list
         if self in MessageHandler._instances:
             MessageHandler._instances.remove(self)
@@ -93,6 +100,14 @@ class MessageHandler:
     def cleanup_all(cls):
         """Class method to clean up all instances' resources"""
         logger.info(f"Cleaning up {len(cls._instances)} MessageHandler instances")
+        for instance in list(cls._instances): # Iterate over a copy
+            if instance.video_recorder and instance.video_recorder.recording:
+                 logger.warning("Force stopping video recording during cleanup")
+                 # This might block if not careful, consider running in executor
+                 try:
+                     instance.video_recorder.stop()
+                 except Exception as e:
+                     logger.error(f"Error stopping video recorder during cleanup: {e}")
         # Clear instances list
         cls._instances.clear()
 
@@ -1313,11 +1328,151 @@ class MessageHandler:
                 
             await websocket.send(json.dumps(response))
 
+    async def handle_start_video_recording(self, websocket, data: Dict[str, Any]) -> None:
+        """Start recording simulation frames as a video."""
+        if self.video_recorder and self.video_recorder.recording:
+            await websocket.send(json.dumps({
+                "type": "video_recording_status",
+                "status": "error",
+                "error": "Video recording is already in progress.",
+                "timestamp": datetime.now().isoformat()
+            }))
+            return
+
+        try:
+            # Ensure videos directory exists using storage_dir
+            videos_dir = os.path.join(config.storage_dir, "videos")
+            os.makedirs(videos_dir, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            video_filename = f"recording_{timestamp}.mp4"
+            video_path = os.path.join(videos_dir, video_filename)
+
+            # Get frame dimensions (might need adjustment based on actual rendering)
+            # Using a common default, but ideally get from env or renderer
+            frame = self.env.render() # Render one frame to get dimensions
+            height, width, _ = frame.shape
+
+            self.video_recorder = VideoRecorder(
+                output_path=video_path,
+                fps=config.fps,
+                width=width,
+                height=height
+            )
+            self.video_recorder.start() # Mark as recording
+
+            # Set a 60-second timer to automatically stop recording
+            loop = asyncio.get_running_loop()
+            self.stop_recording_timer = loop.call_later(60, asyncio.create_task, self._auto_stop_video_recording(websocket))
+
+            logger.info(f"Started video recording to {video_path}")
+            response = {
+                "type": "video_recording_status",
+                "status": "started",
+                "path": video_path,
+                "timestamp": datetime.now().isoformat()
+            }
+            await websocket.send(json.dumps(response))
+
+        except Exception as e:
+            logger.error(f"Error starting video recording: {str(e)}")
+            traceback.print_exc()
+            response = {
+                "type": "video_recording_status",
+                "status": "error",
+                "error": f"Failed to start recording: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            await websocket.send(json.dumps(response))
+            self.video_recorder = None # Clean up on error
+
+    async def _auto_stop_video_recording(self, websocket):
+        """Automatically stops video recording after the timeout."""
+        logger.info("Automatic 60s timeout reached for video recording.")
+        await self.handle_stop_video_recording(websocket, {"auto_stopped": True})
+
+    async def _force_stop_video_recording(self):
+        """Force stops video recording without needing websocket."""
+        if self.video_recorder and self.video_recorder.recording:
+            try:
+                if self.stop_recording_timer:
+                    self.stop_recording_timer.cancel()
+                    self.stop_recording_timer = None
+                video_path = self.video_recorder.output_path
+                self.video_recorder.stop()
+                logger.info(f"Force stopped video recording. Saved to: {video_path}")
+            except Exception as e:
+                logger.error(f"Error force stopping video recording: {str(e)}")
+            finally:
+                self.video_recorder = None
+
+    async def handle_stop_video_recording(self, websocket, data: Dict[str, Any]) -> None:
+        """Stop recording simulation frames and save the video file."""
+        if not self.video_recorder or not self.video_recorder.recording:
+            await websocket.send(json.dumps({
+                "type": "video_recording_status",
+                "status": "error",
+                "error": "No video recording is currently active.",
+                "timestamp": datetime.now().isoformat()
+            }))
+            return
+
+        try:
+            # Cancel the automatic stop timer if it exists and hasn't fired
+            if self.stop_recording_timer:
+                self.stop_recording_timer.cancel()
+                self.stop_recording_timer = None
+
+            video_path = self.video_recorder.output_path
+            self.video_recorder.stop() # Finalize the video file
+
+            logger.info(f"Stopped video recording. Saved to: {video_path}")
+
+            # Create download URL (optional, requires webserver setup for /outputs/videos)
+            # relative_path = os.path.relpath(video_path, config.outputs_dir)
+            # download_url = f"http://{self.backend_domain}:{self.webserver_port}/outputs/{relative_path}" # Example URL structure
+
+            response = {
+                "type": "video_recording_status",
+                "status": "stopped",
+                "path": video_path,
+                # "downloadUrl": download_url, # Uncomment if serving the file
+                "timestamp": datetime.now().isoformat(),
+                "auto_stopped": data.get("auto_stopped", False)
+            }
+            await websocket.send(json.dumps(response))
+
+        except Exception as e:
+            logger.error(f"Error stopping video recording: {str(e)}")
+            traceback.print_exc()
+            response = {
+                "type": "video_recording_status",
+                "status": "error",
+                "error": f"Failed to stop recording: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }
+            await websocket.send(json.dumps(response))
+        finally:
+            # Ensure recorder is cleaned up regardless of success/failure
+            self.video_recorder = None
+            if self.stop_recording_timer: # Clean up timer just in case
+                 self.stop_recording_timer.cancel()
+                 self.stop_recording_timer = None
+
 # Register cleanup function after the class is defined
 def _cleanup_message_handlers_at_exit():
     if hasattr(MessageHandler, 'cleanup_all'):
         logger.info("Running MessageHandler cleanup at exit")
-        MessageHandler.cleanup_all()
-    
+        # Use asyncio.run() for async cleanup if needed and safe
+        try:
+             MessageHandler.cleanup_all() # Keep sync for now, might need adjustments
+        except RuntimeError as e:
+             if "cannot schedule new futures after shutdown" in str(e):
+                  logger.warning("Asyncio loop already shut down during atexit cleanup.")
+             else:
+                  raise
+        except Exception as e:
+             logger.error(f"Error during MessageHandler cleanup: {e}")
+
 # Register the cleanup function
 atexit.register(_cleanup_message_handlers_at_exit)

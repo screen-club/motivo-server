@@ -10,9 +10,21 @@ import fractions
 import traceback
 import logging
 import time
+import socket
+import ipaddress
 
 
 logger = logging.getLogger('webrtc_manager')
+
+# Helper function to check for private IP addresses
+def is_private_ip(ip_str):
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        # Check for private ranges (IPv4/IPv6) and loopback
+        return ip.is_private or ip.is_loopback
+    except ValueError:
+        # Invalid IP string
+        return False
 
 class FrameVideoStreamTrack(VideoStreamTrack):
     """
@@ -188,67 +200,99 @@ class WebRTCManager:
     """
     
     def __init__(self, video_quality="medium"):
-        # ICE servers configuration - read from environment or use defaults
         import os
         
-        # Get STUN/TURN server info from environment (or use default)
-        # Multiple STUN servers for redundancy
-        stun_urls = [
-            "stun:stun.l.google.com:19302",  # Google STUN
-            "stun:stun1.l.google.com:19302", # Google STUN backup
-            "stun:stun.stunprotocol.org:3478" # Open STUN project
-        ]
-        
-        # Use configured STUN or default to the first in our list
-        stun_url = os.environ.get("VITE_STUN_URL", stun_urls[0])
-        turn_url = os.environ.get("VITE_TURN_URL", "")
-        turn_username = os.environ.get("VITE_TURN_USERNAME", "")
-        turn_password = os.environ.get("VITE_TURN_PASSWORD", "")
-        
+        # --- Network Environment Detection ---
+        is_potentially_online = False
+        try:
+            hostname = socket.gethostname()
+            addrinfo = socket.getaddrinfo(hostname, None)
+            local_ips = set()
+            for item in addrinfo:
+                # item[4] is the sockaddr tuple, item[4][0] is the IP address
+                ip = item[4][0]
+                local_ips.add(ip)
+                if not is_private_ip(ip):
+                    # Found a non-private, non-loopback IP, assume online
+                    is_potentially_online = True
+                    logger.debug(f"Detected potentially public IP: {ip}")
+                    break 
+            if not is_potentially_online:
+                 logger.debug(f"Detected only private/loopback IPs: {local_ips}")
+        except socket.gaierror:
+            logger.warning("Could not determine local IP addresses via hostname lookup.")
+            # Fallback: Assume potentially online to be safe, use env var if needed?
+            # For now, we'll assume online as a safer default if detection fails.
+            is_potentially_online = True 
+        # --- End Network Environment Detection ---
+
         ice_servers = []
-        
-        # Add multiple STUN servers for redundancy
-        ice_servers.append(RTCIceServer(urls=stun_urls))
-        
-        # Add TURN servers if configured
-        if turn_url and turn_username and turn_password:
-            # Regular TURN (UDP)
-            ice_servers.append(
-                RTCIceServer(
-                    urls=[turn_url],
-                    username=turn_username,
-                    credential=turn_password
-                )
-            )
+        if not is_potentially_online:
+            logger.info("Detected local/private network - skipping external ICE servers.")
+        else:
+            logger.info("Detected potentially online network - configuring external ICE servers.")
+            # Get STUN/TURN server info from environment (or use default)
+            # Multiple STUN servers for redundancy
+            stun_urls = [
+                "stun:stun.l.google.com:19302",  # Google STUN
+                "stun:stun1.l.google.com:19302", # Google STUN backup
+                "stun:stun.stunprotocol.org:3478" # Open STUN project
+            ]
             
-            # TURN over TCP (for restrictive firewalls)
-            if turn_url.startswith("turn:"):
-                # Fix duplicate prefix bug by not replacing turn: with turn: again
-                tcp_turn_url = turn_url + "?transport=tcp"
+            # Use configured STUN or default to the first in our list
+            # Use os.environ.get("VITE_STUN_URL", ...) for consistency with frontend naming
+            stun_url_config = os.environ.get("VITE_STUN_URL")
+            if stun_url_config:
+                stun_urls = [stun_url_config] # Override defaults if specific one is provided
+
+            turn_url = os.environ.get("VITE_TURN_URL", "")
+            turn_username = os.environ.get("VITE_TURN_USERNAME", "")
+            turn_password = os.environ.get("VITE_TURN_PASSWORD", "")
+            
+            # Add multiple STUN servers for redundancy
+            ice_servers.append(RTCIceServer(urls=stun_urls))
+            
+            # Add TURN servers if configured
+            if turn_url and turn_username and turn_password:
+                # Regular TURN (UDP)
                 ice_servers.append(
                     RTCIceServer(
-                        urls=[tcp_turn_url],
+                        urls=[turn_url],
                         username=turn_username,
                         credential=turn_password
                     )
                 )
                 
-            # TURNS (TURN over TLS for secure connections)
-            if turn_url.startswith("turn:"):
-                turns_url = turn_url.replace("turn:", "turns:")
-                ice_servers.append(
-                    RTCIceServer(
-                        urls=[turns_url],
-                        username=turn_username,
-                        credential=turn_password
+                # TURN over TCP (for restrictive firewalls)
+                if turn_url.startswith("turn:"):
+                    # Fix duplicate prefix bug by not replacing turn: with turn: again
+                    tcp_turn_url = turn_url + "?transport=tcp"
+                    ice_servers.append(
+                        RTCIceServer(
+                            urls=[tcp_turn_url],
+                            username=turn_username,
+                            credential=turn_password
+                        )
                     )
-                )
+                    
+                # TURNS (TURN over TLS for secure connections)
+                # Note: TURNS often uses a different port (e.g., 5349 or 443)
+                # Ensure the VITE_TURN_URL is correct for TURNS if used.
+                if turn_url.startswith("turn:"):
+                    # Simple replacement might not be enough if port needs changing
+                    turns_url = turn_url.replace("turn:", "turns:") 
+                    ice_servers.append(
+                        RTCIceServer(
+                            urls=[turns_url],
+                            username=turn_username,
+                            credential=turn_password
+                        )
+                    )
         
-        logger.info(f"Configured with {len(ice_servers)} ICE servers")
+        logger.info(f"Initialized with {len(ice_servers)} ICE servers.")
         
-        # Configure RTCConfiguration - aiortc uses simpler configuration
-        # than the W3C standard WebRTC API
-        self.rtc_configuration = RTCConfiguration(ice_servers)
+        # Configure RTCConfiguration
+        self.rtc_configuration = RTCConfiguration(iceServers=ice_servers)
         
         # Store peer connections
         self.peer_connections: Dict[str, RTCPeerConnection] = {}
@@ -315,14 +359,14 @@ class WebRTCManager:
         # Check each connection
         for client_id, pc in list(self.peer_connections.items()):
             try:
-                # Check if connection is stale (no activity for 30 seconds)
+                # Check if connection is stale (no activity for a longer period)
                 if hasattr(pc, '_last_active_time'):
                     inactive_time = now - pc._last_active_time
-                    if inactive_time > 30:
+                    if inactive_time > 60: # Increased stale threshold to 60s
                         stale_connections.append(client_id)
                         
-                        # If very stale (2+ minutes), close it
-                        if inactive_time > 120:
+                        # If very stale (3+ minutes), close it
+                        if inactive_time > 180: # Increased closing threshold to 180s
                             logger.warning(f"Connection {client_id} inactive for {inactive_time:.1f}s, closing")
                             await self.close_connection(client_id)
                             continue
@@ -493,35 +537,101 @@ class WebRTCManager:
                 
                 # Handle different candidate formats from browsers
                 if isinstance(candidate, dict):
-                    # Extract candidate string if we got a full object
-                    if "candidate" in candidate:
-                        candidate_str = candidate.get("candidate", "")
-                        if not candidate_str:
-                            # Empty candidate string is normal (end of candidates)
-                            return True
+                    # Extract the raw SDP candidate string
+                    candidate_str = candidate.get("candidate", "")
+                    sdp_mid = candidate.get("sdpMid") # Keep sdpMid for context
+                    sdp_mline_index = candidate.get("sdpMLineIndex") # Keep sdpMLineIndex
                     
-                    # Construct proper RTCIceCandidate
+                    if not candidate_str:
+                        # Empty candidate string is normal (end of candidates)
+                        logger.debug(f"Received candidate object with empty candidate string for {client_id}")
+                        return True
+                    
+                    # Use RTCIceCandidate.from_sdp to parse the candidate string
                     try:
-                        candidate_obj = RTCIceCandidate(
-                            component=candidate.get("component", 0),
-                            foundation=candidate.get("foundation", ""),
-                            ip=candidate.get("ip", ""),
-                            port=candidate.get("port", 0),
-                            priority=candidate.get("priority", 0),
-                            protocol=candidate.get("protocol", ""),
-                            type=candidate.get("type", ""),
-                            sdpMid=candidate.get("sdpMid", ""),
-                            sdpMLineIndex=candidate.get("sdpMLineIndex", 0)
-                        )
+                        # Prepend 'a=' if not present (standard SDP format is 'a=candidate...')
+                        if not candidate_str.startswith("candidate:"):
+                            # It's unusual for it not to start with 'candidate:', but handle just in case
+                            logger.warning(f"Candidate string for {client_id} missing 'candidate:' prefix: {candidate_str}")
+                            # Attempt parsing anyway, might work depending on aiortc version
+                        
+                        # We need sdpMid and sdpMLineIndex for context when adding
+                        # aiortc expects the full candidate line including 'a=' prefix
+                        full_sdp_line = f"a=candidate:{candidate_str}" 
+
+                        # Parse the full SDP line using from_sdp
+                        # Note: from_sdp might not exist in all aiortc versions. 
+                        # If it doesn't, we might need manual parsing or library update.
+                        if hasattr(RTCIceCandidate, 'from_sdp'):
+                            candidate_obj = RTCIceCandidate.from_sdp(full_sdp_line)
+                            # Ensure sdpMid and sdpMLineIndex are set correctly from the original dict
+                            # as from_sdp might not capture them depending on format.
+                            candidate_obj.sdpMid = sdp_mid
+                            candidate_obj.sdpMLineIndex = sdp_mline_index
+                        else:
+                             # Fallback if from_sdp is not available (older aiortc?) - Requires manual parsing
+                             logger.warning("RTCIceCandidate.from_sdp not found. Manually parsing candidate string.")
+                             try:
+                                 # Basic SDP candidate line parsing: a=candidate:<foundation> <component-id> <transport> <priority> <connection-address> <port> typ <candidate-type> ...
+                                 # Example: a=candidate:4234997325 1 udp 2043278322 192.168.1.100 52482 typ host ...
+                                 
+                                 # Remove 'a=candidate:' prefix if present for easier splitting
+                                 if full_sdp_line.startswith("a=candidate:"):
+                                     parts_str = full_sdp_line[len("a=candidate:"):]
+                                 else:
+                                     parts_str = candidate_str # Use the original candidate string if prefix missing
+                                     
+                                 parts = parts_str.split()
+                                 
+                                 if len(parts) < 8 or parts[6] != 'typ':
+                                     raise ValueError(f"Invalid candidate format: cannot find required fields. Parts: {parts}")
+
+                                 foundation = parts[0]
+                                 component = int(parts[1])
+                                 protocol = parts[2].lower()
+                                 priority = int(parts[3])
+                                 ip = parts[4]
+                                 port = int(parts[5])
+                                 typ = parts[7]
+                                 
+                                 # Construct the object using parsed values and context from the dictionary
+                                 candidate_obj = RTCIceCandidate(
+                                    component=component,
+                                    foundation=foundation,
+                                    ip=ip, 
+                                    port=port,
+                                    priority=priority,
+                                    protocol=protocol,
+                                    type=typ,
+                                    sdpMid=sdp_mid, # From original dict
+                                    sdpMLineIndex=sdp_mline_index # From original dict
+                                 )
+                                 logger.debug(f"Manually parsed candidate: {candidate_obj}")
+                             except Exception as parse_exc:
+                                 logger.error(f"Failed to manually parse candidate string for {client_id}: {parse_exc}\nSDP Line: {full_sdp_line}")
+                                 # As a last resort, try constructing with whatever the dict provided, might still fail
+                                 logger.warning(f"Falling back to potentially incomplete dictionary construction for {client_id}")
+                                 candidate_obj = RTCIceCandidate(
+                                    component=candidate.get("component", 0),
+                                    foundation=candidate.get("foundation", ""),
+                                    ip=candidate.get("ip", ""), # Might be missing/wrong
+                                    port=candidate.get("port", 0),
+                                    priority=candidate.get("priority", 0),
+                                    protocol=candidate.get("protocol", ""),
+                                    type=candidate.get("type", ""),
+                                    sdpMid=sdp_mid,
+                                    sdpMLineIndex=sdp_mline_index
+                                 )
+
                         await pc.addIceCandidate(candidate_obj)
-                        logger.debug(f"Added ICE candidate for client {client_id}")
+                        logger.debug(f"Added ICE candidate for client {client_id} (sdpMid={sdp_mid}, mLineIndex={sdp_mline_index})")
                         return True
-                    except ValueError:
-                        # This is normal for some browsers that send empty candidate strings
-                        logger.debug(f"Invalid ICE candidate values for {client_id}, ignoring")
-                        return True
+                    except Exception as e:
+                        logger.error(f"Error parsing/adding ICE candidate string for {client_id}: {e}\nCandidate Dict: {candidate}\nCandidate Str: {candidate_str}")
+                        traceback.print_exc()
+                        return False # Indicate failure
                 else:
-                    logger.debug(f"Unexpected candidate format for {client_id}: {type(candidate)}")
+                    logger.warning(f"Unexpected candidate format for {client_id}: {type(candidate)}")
                     return False
             else:
                 logger.debug(f"No peer connection found for client {client_id} to add ICE candidate")
@@ -531,13 +641,13 @@ class WebRTCManager:
             traceback.print_exc()
             return False
     
-    async def monitor_connection(self, client_id, pc, max_attempts=5):
+    async def monitor_connection(self, client_id, pc, max_attempts=7): # Increased max_attempts
         """Monitor and attempt to recover disconnected connections"""
         try:
             attempts = 0
             while attempts < max_attempts:
-                # Wait and check connection state
-                await asyncio.sleep(2 * (attempts + 1))  # Increasing backoff: 2s, 4s, 6s, etc.
+                # Wait and check connection state with increased backoff
+                await asyncio.sleep(3 * (attempts + 1))  # Increased base delay: 3s, 6s, 9s, etc.
                 
                 # Check if connection has recovered on its own
                 ice_state = str(pc.iceConnectionState)

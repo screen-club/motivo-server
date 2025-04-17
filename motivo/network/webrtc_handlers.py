@@ -16,14 +16,18 @@ async def handle_webrtc_offer(websocket, data):
     
     if not client_id or not sdp:
         logger.warning("Invalid WebRTC offer: missing client_id or sdp")
-        # Send error response to client
-        await websocket.send(json.dumps({
-            "type": "error",
-            "error": "invalid_offer",
-            "message": "Missing client_id or sdp in offer",
-            "client_id": client_id,
-            "timestamp": datetime.now().isoformat()
-        }))
+        # Send error response to client only if connection is open
+        if not websocket.closed:
+            try:
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "error": "invalid_offer",
+                    "message": "Missing client_id or sdp in offer",
+                    "client_id": client_id,
+                    "timestamp": datetime.now().isoformat()
+                }))
+            except Exception as send_err:
+                logger.warning(f"Could not send invalid_offer error to client {client_id}: {send_err}")
         return
         
     logger.debug(f"Processing WebRTC offer from client {client_id}")
@@ -44,7 +48,11 @@ async def handle_webrtc_offer(websocket, data):
         if not answer:
             raise Exception("Failed to create peer connection")
         
-        # Send the answer back
+        # Send the answer back only if connection is open
+        if websocket.closed:
+            logger.warning(f"WebSocket closed for client {client_id} before sending WebRTC answer.")
+            return
+            
         await websocket.send(json.dumps({
             "type": "webrtc_answer",
             "sdp": answer["sdp"],
@@ -54,7 +62,11 @@ async def handle_webrtc_offer(websocket, data):
         }))
         logger.debug(f"Sent WebRTC answer to client {client_id}")
         
-        # Send connection stats for debugging
+        # Send connection stats for debugging only if connection is open
+        if websocket.closed:
+             logger.warning(f"WebSocket closed for client {client_id} before sending WebRTC stats.")
+             return
+             
         stats = app_state.webrtc_manager.get_connection_stats()
         await websocket.send(json.dumps({
             "type": "webrtc_stats",
@@ -67,14 +79,18 @@ async def handle_webrtc_offer(websocket, data):
         logger.error(f"Error handling WebRTC offer: {str(e)}")
         traceback.print_exc()
         
-        # Send error response to client
-        await websocket.send(json.dumps({
-            "type": "error",
-            "error": "connection_failed",
-            "message": f"Failed to create WebRTC connection: {str(e)}",
-            "client_id": client_id,
-            "timestamp": datetime.now().isoformat()
-        }))
+        # Send error response to client only if connection is open
+        if not websocket.closed:
+            try:
+                await websocket.send(json.dumps({
+                    "type": "error",
+                    "error": "connection_failed",
+                    "message": f"Failed to create WebRTC connection: {str(e)}",
+                    "client_id": client_id,
+                    "timestamp": datetime.now().isoformat()
+                }))
+            except Exception as send_err:
+                 logger.warning(f"Could not send connection_failed error to client {client_id}: {send_err}")
 
 async def handle_ice_candidate(websocket, data):
     """Handle ICE candidate message from client"""

@@ -7,6 +7,8 @@ from datetime import datetime
 from utils.smpl_utils import qpos_to_smpl, SMPL_BONE_ORDER_NAMES
 import zipfile
 import logging
+import asyncio
+import concurrent.futures
 
 logger = logging.getLogger('frame_utils')
 
@@ -280,4 +282,160 @@ class FrameRecorder:
         
         self.recording = False
         self.frames = []
-        return zip_path 
+        return zip_path
+
+class VideoRecorder:
+    """Records frames to a video file using OpenCV asynchronously."""
+    def __init__(self, output_path, fps, width, height):
+        self.output_path = output_path
+        self.fps = float(fps)
+        self.width = int(width)
+        self.height = int(height)
+        self.writer = None
+        self.recording = False
+        self._frame_count = 0
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.loop = asyncio.get_running_loop()
+        self._pending_writes = []
+
+        # Get the directory part of the output path
+        output_dir = os.path.dirname(self.output_path)
+        # Create the directory if it doesn't exist
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        # Define the codec and create VideoWriter object
+        # MP4V is a good choice for .mp4 files
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        try:
+            self.writer = cv2.VideoWriter(self.output_path, fourcc, self.fps, (self.width, self.height))
+            if not self.writer.isOpened():
+                raise IOError(f"Failed to open video writer for path: {self.output_path}")
+            logger.info(f"VideoWriter initialized for {self.output_path} at {self.fps} FPS, {self.width}x{self.height}")
+        except Exception as e:
+            logger.error(f"Failed to initialize VideoWriter: {e}")
+            self.writer = None # Ensure writer is None if initialization fails
+            raise # Re-raise the exception
+
+    def start(self):
+        """Marks the recorder as active."""
+        if self.writer is None:
+            logger.error("Cannot start recording, VideoWriter not initialized.")
+            return
+        self.recording = True
+        self._frame_count = 0
+        logger.info("Video recording started.")
+
+    async def add_frame(self, frame: np.ndarray):
+        """Adds a frame to the video file asynchronously.
+
+        Args:
+            frame: The frame to add (expected in RGB format).
+        """
+        if not self.recording or self.writer is None:
+            return
+
+        try:
+            # --- Operations safe for async context ---
+            # Ensure frame dimensions match
+            if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                # Make a copy before resizing if needed to avoid modifying original
+                frame_copy = frame.copy()
+                frame_to_write = cv2.resize(frame_copy, (self.width, self.height))
+                # logger.warning(f"Resized incoming frame from {frame.shape[1]}x{frame.shape[0]} to {self.width}x{self.height}")
+            else:
+                # Make a copy to ensure the frame data is stable when passed to the thread
+                frame_to_write = frame.copy()
+
+            # Convert RGB frame to BGR for OpenCV
+            bgr_frame = cv2.cvtColor(frame_to_write, cv2.COLOR_RGB2BGR)
+            self._frame_count += 1 # Increment frame count immediately
+            current_frame_num = self._frame_count # Store for logging
+
+            # --- Offload the blocking write operation --- 
+            write_task = self.loop.run_in_executor(
+                self.executor, 
+                self._write_frame_sync, # Call a synchronous wrapper
+                bgr_frame, 
+                current_frame_num
+            )
+            self._pending_writes.append(write_task)
+            
+            # Periodically clean up completed tasks to prevent memory leak
+            if len(self._pending_writes) > self.fps * 2: # Clean up every ~2 seconds
+                 self._pending_writes = [task for task in self._pending_writes if not task.done()]
+
+        except Exception as e:
+            logger.error(f"Error preparing frame {self._frame_count} for video write: {e}")
+            # Optionally stop recording on error?
+            # await self.stop()
+
+    def _write_frame_sync(self, bgr_frame, frame_num):
+        """Synchronous helper function to be run in the executor."""
+        try:
+            if self.writer and self.writer.isOpened():
+                 self.writer.write(bgr_frame)
+            else:
+                 logger.warning(f"Skipped writing frame {frame_num}, writer is closed or None.")
+        except Exception as e:
+            logger.error(f"Error writing frame {frame_num} to video in thread: {e}")
+
+    async def stop(self):
+        """Stops recording, waits for pending writes, and releases the video writer."""
+        if not self.recording:
+            return
+
+        logger.info("Stop recording requested. Waiting for pending writes...")
+        self.recording = False # Signal that no more frames should be added
+
+        # Wait for all submitted write tasks to complete
+        if self._pending_writes:
+            try:
+                await asyncio.gather(*self._pending_writes)
+                logger.info(f"All {len(self._pending_writes)} pending writes completed.")
+            except Exception as e:
+                logger.error(f"Error waiting for pending writes: {e}")
+            finally:
+                 self._pending_writes = [] # Clear the list
+
+        # Shutdown the executor gracefully
+        # Do this *before* releasing the writer to ensure writes are done
+        logger.info("Shutting down video writer executor...")
+        await self.loop.run_in_executor(self.executor.shutdown, wait=True)
+        logger.info("Video writer executor shut down.")
+
+        # Now release the writer
+        if self.writer is not None:
+            try:
+                # This is synchronous, run in executor just in case it blocks
+                await self.loop.run_in_executor(None, self.writer.release)
+                logger.info(f"Video recording stopped. Approximately {self._frame_count} frames saved to {self.output_path}")
+            except Exception as e:
+                 logger.error(f"Error releasing video writer: {e}")
+            finally:
+                self.writer = None
+        else:
+             logger.warning("Stop called but VideoWriter was not initialized or already released.")
+        
+        self._frame_count = 0 # Reset frame count after stopping
+
+    def __del__(self):
+        # Attempt graceful shutdown if stop() wasn't called explicitly
+        # Note: Running async code in __del__ is generally problematic.
+        # Explicitly calling stop() is the preferred way.
+        if self.recording:
+             logger.warning(f"VideoRecorder for {self.output_path} being deleted while still recording. Attempting emergency stop.")
+             # Cannot reliably call async stop here. Rely on writer release.
+             self.recording = False 
+
+        if self.writer is not None and self.writer.isOpened():
+            logger.warning(f"VideoRecorder releasing writer during garbage collection for {self.output_path}")
+            self.writer.release()
+        
+        # Executor shutdown might be problematic here. Best effort.
+        if hasattr(self, 'executor') and self.executor._shutdown == False:
+             logger.warning(f"VideoRecorder shutting down executor during garbage collection for {self.output_path}")
+             try:
+                  self.executor.shutdown(wait=False) # Don't wait in __del__
+             except Exception as e:
+                  logger.error(f"Error shutting down executor in __del__: {e}") 

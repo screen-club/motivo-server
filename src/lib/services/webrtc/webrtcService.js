@@ -20,6 +20,8 @@ import {
 import { websocketService } from "../websocket/index.js";
 
 class WebRTCService {
+  static instance; // Declare static instance property for Singleton
+
   constructor() {
     // Singleton pattern
     if (WebRTCService.instance) {
@@ -305,7 +307,6 @@ class WebRTCService {
             type: event.candidate.type,
             foundation: event.candidate.foundation,
             protocol: event.candidate.protocol,
-            ip: event.candidate.ip,
             port: event.candidate.port,
             priority: event.candidate.priority,
             component: event.candidate.component || 0,
@@ -426,60 +427,54 @@ class WebRTCService {
     this.isConnecting = false;
     hasStream.set(false);
 
-    // Setup an aggressive retry strategy - keep trying indefinitely
-    const maxRetries = 1000; // Very high number of retries
-
     // Only show loading indicator for first few attempts
     if (this.connectionAttempts > 3) {
       isLoading.set(false);
     }
 
-    if (this.connectionAttempts < maxRetries) {
-      // Use a more consistent backoff strategy with shorter times
-      const delay = Math.min(
-        2000 * Math.min(Math.pow(1.2, Math.min(this.connectionAttempts, 5)), 5),
-        10000
-      );
-
-      this.logger.log(
-        `Connection failed, retrying in ${Math.round(delay / 1000)}s (attempt ${
-          this.connectionAttempts
-        }/${maxRetries})`
-      );
-
-      // Clear any existing timeout
-      if (this.reconnectTimeout) {
-        clearTimeout(this.reconnectTimeout);
-      }
-
-      // Schedule reconnection
-      this.reconnectTimeout = setTimeout(() => {
-        // Only reconnect if WebSocket is open
-        if (websocketService.isConnected()) {
-          this.initWebRTC();
-        } else {
-          this.logger.warn("WebSocket closed, waiting for connection...");
-          // Set a shorter timeout to check again soon
-          setTimeout(() => {
-            if (websocketService.isConnected()) {
-              this.initWebRTC();
-            } else {
-              this.logger.warn(
-                "WebSocket still closed, will retry again later"
-              );
-              // Let the next scheduled attempt handle it
-            }
-          }, 5000);
-        }
-      }, delay);
-    } else {
+    // Check if we have exceeded max attempts
+    if (this.connectionAttempts >= CONNECTION_CONFIG.maxAttempts) {
       this.logger.warn(
-        "Maximum reconnection attempts reached, resetting counter"
+        `Maximum reconnection attempts (${CONNECTION_CONFIG.maxAttempts}) reached. Stopping retries.`
       );
-      // Reset counter and keep trying
-      this.connectionAttempts = 0;
-      this.handleConnectionFailure();
+      isLoading.set(false); // Ensure loading is off
+      return; // Stop trying
     }
+
+    // Use configured backoff strategy
+    const delay = calculateBackoff(
+      this.connectionAttempts,
+      CONNECTION_CONFIG.baseDelay,
+      CONNECTION_CONFIG.maxDelay
+    );
+
+    this.logger.log(
+      `Connection failed, retrying in ${Math.round(delay / 1000)}s (attempt ${
+        this.connectionAttempts + 1 // Log next attempt number
+      }/${CONNECTION_CONFIG.maxAttempts})`
+    );
+
+    // Clear any existing timeout
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+    }
+
+    // Schedule reconnection
+    this.reconnectTimeout = setTimeout(() => {
+      // Only reconnect if WebSocket is open
+      if (websocketService.isConnected()) {
+        this.initWebRTC(); // This will increment connectionAttempts
+      } else {
+        this.logger.warn(
+          "WebSocket closed before retry attempt, rescheduling check..."
+        );
+        // Increment attempt count here since initWebRTC won't be called
+        this.connectionAttempts++;
+        // Schedule another failure check relatively soon
+        // This avoids getting stuck if WebSocket remains closed
+        this.handleConnectionFailure();
+      }
+    }, delay);
   }
 
   /**
@@ -489,11 +484,16 @@ class WebRTCService {
     // Clear any existing interval
     if (this.connectionCheckInterval) {
       clearInterval(this.connectionCheckInterval);
+      this.connectionCheckInterval = null; // Ensure it's cleared
     }
+
+    // Track consecutive failures
+    let consecutiveFailures = 0;
+    const failureThreshold = 2; // Require 2 consecutive failed checks
 
     // Set up new interval
     this.connectionCheckInterval = setInterval(() => {
-      if (!this.peerConnection) return;
+      if (!this.peerConnection || this.isConnecting) return; // Skip check if no connection or already connecting
 
       const connectionState = this.peerConnection.connectionState;
       const iceState = this.peerConnection.iceConnectionState;
@@ -505,12 +505,33 @@ class WebRTCService {
         iceState === "disconnected" ||
         iceState === "failed"
       ) {
+        consecutiveFailures++;
         this.logger.warn(
-          `Connection check failed: conn=${connectionState}, ice=${iceState}`
+          `Connection check unstable: conn=${connectionState}, ice=${iceState} (Failure ${consecutiveFailures}/${failureThreshold})`
         );
-        this.handleConnectionFailure();
+
+        // Only trigger failure handling after threshold is met
+        if (consecutiveFailures >= failureThreshold) {
+          this.logger.error(
+            `Connection check failed threshold (${failureThreshold}). Triggering reconnect.`
+          );
+          clearInterval(this.connectionCheckInterval); // Stop checking
+          this.connectionCheckInterval = null;
+          this.handleConnectionFailure();
+        }
+      } else {
+        // Reset counter if connection is stable
+        if (consecutiveFailures > 0) {
+          this.logger.log(
+            `Connection check stable again: conn=${connectionState}, ice=${iceState}`
+          );
+        }
+        consecutiveFailures = 0;
       }
     }, CONNECTION_CONFIG.connectionCheckInterval);
+    this.logger.log(
+      `Started connection health check interval: ${CONNECTION_CONFIG.connectionCheckInterval}ms`
+    );
   }
 
   /**
