@@ -9,11 +9,13 @@ from datetime import datetime
 from scipy.spatial.transform import Rotation as R
 from pathlib import Path
 from lib.api import APIClient
+import requests
 
 # Configuration
 CONFIG = {
-    'WS_URI': 'ws://192.168.1.38:8765',
+    'WS_URI': 'ws://51.159.163.145:8765',
     'API_URL': 'http://192.168.1.38:5002',
+    #'API_URL': 'http://localhost:5002',
     'MAX_RETRIES': 3,
     'RETRY_DELAY': 2,
     'DEFAULT_FPS': 4,  # Default frames per second for websocket streaming
@@ -124,17 +126,22 @@ async def upload_npz_to_db(npz_path, users=None):
             trans=smpl_data['trans']
         )
         
-        # Upload to database
+        # Use APIClient to upload to database
         api_client = APIClient(CONFIG['API_URL'])
-        result = api_client.add_config(
+        result = await asyncio.to_thread(
+            api_client.add_config, # Assuming add_config is synchronous
             title=animation_name,
             data=db_data,
             type="pose",
             users=users
         )
         
-        logger.info(f"Successfully uploaded animation '{animation_name}' to database")
-        return True
+        if result: # Assuming add_config returns something truthy on success
+             logger.info(f"Successfully uploaded animation '{animation_name}' to database")
+             return True
+        else:
+             logger.error(f"Failed to upload animation '{animation_name}' via APIClient")
+             return False
         
     except Exception as e:
         logger.error(f"Error uploading animation to database: {e}")
@@ -399,6 +406,37 @@ async def load_npz_animation_folder(websocket, folder_path, stop_event):
     except Exception as e:
         logger.error(f"Error loading animations: {e}")
 
+async def trigger_webserver_ai_prompt(prompt=None):
+    """Send HTTP POST request to trigger the general AI prompt on the webserver.
+
+    Args:
+        prompt (str, optional): A custom prompt text to send. Defaults to None.
+    """
+    trigger_url = f"{CONFIG['API_URL']}/api/trigger-general-ai-prompt"
+    
+    payload = {}
+    if prompt:
+        payload['prompt'] = prompt
+        logger.info(f"Sending trigger request to: {trigger_url} with custom prompt")
+    else:
+        logger.info(f"Sending trigger request to: {trigger_url} (using default prompt)")
+        
+    try:
+        # Use json=payload to automatically set Content-Type: application/json
+        response = await asyncio.to_thread(requests.post, trigger_url, json=payload, timeout=10)
+        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+        
+        response_data = response.json()
+        if response_data.get('success'):
+            logger.info(f"AI Prompt trigger sent successfully: {response_data}")
+        else:
+            logger.error(f"Webserver reported failure: {response_data.get('error')}")
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"HTTP Request failed: {e}")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred while sending the trigger: {e}")
+
 async def display_menu():
     """Display the main menu and get user choice"""
     print("\n=== Motivo WebSocket Client Menu ===")
@@ -408,14 +446,15 @@ async def display_menu():
     print("4. Convert and send NPZ animation folder")
     print("5. Upload NPZ animation to database")
     print("6. Upload NPZ folder to database")
-    print("7. Exit")
+    print("7. Trigger General AI Prompt (via HTTP)")
+    print("8. Exit")
     
     while True:
         try:
-            choice = input("\nEnter your choice (1-7): ")
-            if choice in ['1', '2', '3', '4', '5', '6', '7']:
+            choice = input("\nEnter your choice (1-8): ")
+            if choice in ['1', '2', '3', '4', '5', '6', '7', '8']:
                 return choice
-            print("Invalid choice. Please enter a number between 1 and 7.")
+            print("Invalid choice. Please enter a number between 1 and 8.")
         except ValueError:
             print("Invalid input. Please enter a number.")
 
@@ -429,16 +468,17 @@ async def establish_connection():
             # Wait for the initial connection message
             response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
             response_data = json.loads(response)
+            print(response_data)
             
             if response_data.get('type') == 'connection_established':
-                logger.info("Connected successfully!")
+                logger.info("Connected successfully to simulation WebSocket!")
                 return websocket
             else:
                 logger.warning(f"Unexpected initial response: {response_data.get('type')}")
                 await websocket.close()
         
         except Exception as e:
-            logger.error(f"Connection attempt {retry+1} failed: {e}")
+            logger.error(f"Simulation WebSocket connection attempt {retry+1} failed: {e}")
             if retry < CONFIG['MAX_RETRIES'] - 1:
                 wait_time = CONFIG['RETRY_DELAY'] * (retry + 1)
                 logger.info(f"Retrying in {wait_time} seconds...")
@@ -452,9 +492,10 @@ async def establish_connection():
 async def interactive_client():
     """Main interactive client with connection management"""
     while True:
+        # Establish connection to the simulation WebSocket server (port 8765)
         websocket = await establish_connection()
         if not websocket:
-            logger.error("Could not establish WebSocket connection. Exiting.")
+            logger.error("Could not establish simulation WebSocket connection. Exiting.")
             return
 
         # Set up connection management 
@@ -463,6 +504,8 @@ async def interactive_client():
         # Start background tasks for connection management
         response_task = asyncio.create_task(response_handler(websocket, stop_event))
         heartbeat_task = asyncio.create_task(heartbeat(websocket, stop_event))
+        
+        # No separate connection needed for the HTTP trigger
         
         while not stop_event.is_set():
             try:
@@ -495,49 +538,64 @@ async def interactive_client():
                     if folder_path:
                         await upload_npz_folder_to_db(folder_path, users)
                 elif choice == '7':
+                    custom_prompt = None
+                    use_custom = input("Use a custom prompt? (y/N): ").strip().lower()
+                    if use_custom == 'y':
+                        custom_prompt = input("Enter custom prompt text: ").strip()
+                        if not custom_prompt:
+                            logger.warning("Empty custom prompt entered, using default.")
+                            custom_prompt = None
+                    await trigger_webserver_ai_prompt(prompt=custom_prompt)
+                elif choice == '8':
                     logger.info("Exiting program...")
                     stop_event.set()
                     break
                 
-                if choice != '7' and not stop_event.is_set():
+                if choice != '8' and not stop_event.is_set():
                     input("\nPress Enter to continue...")
                 
             except Exception as e:
                 logger.error(f"Operation error: {e}")
                 
-                # Check if we need to reconnect
-                if "connection is closed" in str(e) or "code" in str(e):
-                    logger.error("Connection lost during operation. Reconnecting...")
-                    stop_event.set()
-                    break
-        
-        # Clean up tasks
+                # Check if we need to reconnect simulation websocket
+                if websocket and websocket.closed:
+                     logger.error("Simulation WebSocket connection lost during operation. Attempting to reconnect...")
+                     stop_event.set() # Signal background tasks to stop
+                     break # Exit inner loop to trigger reconnection in outer loop
+
+        # Clean up tasks for simulation websocket connection
         for task in [response_task, heartbeat_task]:
-            if not task.done():
+            if task and not task.done():
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
-                    pass
+                    pass # Expected when cancelling
         
-        # Close WebSocket if still open
-        try:
-            await websocket.close()
-        except:
-            pass
+        # Close simulation WebSocket if still open
+        if websocket and not websocket.closed:
+            try:
+                await websocket.close()
+            except Exception as e:
+                logger.warning(f"Error closing simulation websocket: {e}")
         
-        # Exit if user chose to exit
-        if choice == '7':
+        # Exit outer loop if user chose to exit
+        if choice == '8':
             break
         
-        # Otherwise reconnect
-        logger.info("Reconnecting...")
-        await asyncio.sleep(2)
+        # Otherwise reconnect simulation websocket
+        logger.info("Reconnecting simulation WebSocket...")
+        await asyncio.sleep(CONFIG['RETRY_DELAY'])
 
 if __name__ == "__main__":
+    # Ensure APIClient is correctly imported and available
+    # If APIClient is not used for the POST, ensure 'requests' is installed
+    # pip install requests
     try:
         asyncio.run(interactive_client())
     except KeyboardInterrupt:
         logger.info("Program terminated by user")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"Unexpected error in main execution: {e}")
+        import traceback
+        traceback.print_exc()

@@ -1,5 +1,9 @@
 import { io } from "socket.io-client";
-import { writable } from "svelte/store";
+import { writable, get } from "svelte/store";
+import {
+  llmPromptStore,
+  defaultPresetPromptStore,
+} from "../../stores/llmInteractionStore.js";
 
 export const geminiConnected = writable(false);
 export const geminiResponses = writable([]);
@@ -129,6 +133,33 @@ class GeminiSocketService {
 
       this.socket.on("connect_error", (error) => {
         console.error("GeminiSocketService: Connection error", error);
+      });
+
+      this.socket.on("trigger_ai_prompt", (data) => {
+        console.log("⚡ Received trigger_ai_prompt event from server:", data);
+        try {
+          // Check if a non-empty custom prompt was provided
+          if (
+            data &&
+            typeof data.prompt === "string" &&
+            data.prompt.trim() !== ""
+          ) {
+            console.log(
+              `🤖 Using custom prompt from trigger: "${data.prompt}"`
+            );
+            llmPromptStore.set(data.prompt);
+          } else {
+            // Fallback to the default preset prompt
+            const defaultPrompt = get(defaultPresetPromptStore);
+            console.log(`🤖 Using default prompt: "${defaultPrompt}"`);
+            llmPromptStore.set(defaultPrompt);
+          }
+        } catch (error) {
+          console.error("Error handling trigger_ai_prompt event:", error);
+          // Optional: Fallback to default even on error?
+          // const defaultPrompt = get(defaultPresetPromptStore);
+          // llmPromptStore.set(defaultPrompt);
+        }
       });
     } catch (error) {
       console.error("GeminiSocketService: Setup error", error);

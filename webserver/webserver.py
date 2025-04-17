@@ -885,6 +885,36 @@ def ping():
         "timestamp": datetime.now().isoformat()
     })
 
+# New route to trigger AI prompt via HTTP POST
+@app.route('/api/trigger-general-ai-prompt', methods=['POST'])
+def trigger_ai_prompt_http():
+    """Receive trigger via HTTP POST and emit a specific Socket.IO event."""
+    client_ip = request.remote_addr
+    client_logger.info(f"Received HTTP trigger from IP: {client_ip}")
+    
+    # Extract optional prompt from request JSON body
+    custom_prompt = None
+    if request.is_json:
+        data = request.get_json()
+        custom_prompt = data.get('prompt') if isinstance(data, dict) else None
+        if custom_prompt:
+             client_logger.info(f"Received custom prompt: '{custom_prompt[:50]}...'") # Log first 50 chars
+        else:
+             client_logger.info("No custom prompt provided in request.")
+
+    try:
+        # Emit a specific event that the GeminiSocketService will listen for
+        socketio.emit('trigger_ai_prompt', {
+            'message': 'Triggering AI prompt from HTTP request',
+            'prompt': custom_prompt, # Include the custom prompt (or None)
+            'timestamp': time.time()
+        })
+        client_logger.info("Emitted 'trigger_ai_prompt' event via Socket.IO")
+        return jsonify({'success': True, 'prompt_received': bool(custom_prompt)}), 200
+    except Exception as e:
+        client_logger.error(f"Failed to emit 'trigger_ai_prompt' event: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # ============================================================================
 # MAIN ENTRY POINT
 # ============================================================================

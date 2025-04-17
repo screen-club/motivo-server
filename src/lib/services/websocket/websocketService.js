@@ -1,6 +1,11 @@
-import { writable } from "svelte/store";
+import { writable, get } from "svelte/store";
 // Import the parameter store
 import { parameterStore } from "../../stores/parameterStore.js";
+// Import LLM stores
+import {
+  llmPromptStore,
+  defaultPresetPromptStore,
+} from "../../stores/llmInteractionStore.js";
 
 // Create a shared computing status store
 export const computingStatus = writable(false);
@@ -94,6 +99,10 @@ class WebSocketService {
       WS_STATE.socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+
+          if (data.type != "smpl_update") {
+            console.log("🔄 Received message:", data);
+          }
 
           // Skip duplicate messages
           if (

@@ -1,6 +1,3 @@
-import { websocketService, computingStatus } from './websocketService.js';
+import { websocketService, computingStatus } from "./websocketService.js";
 
-export {
-  websocketService,
-  computingStatus
-};
+export { websocketService, computingStatus };

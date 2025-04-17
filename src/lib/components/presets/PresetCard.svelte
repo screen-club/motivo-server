@@ -5,8 +5,9 @@
   import { fade } from 'svelte/transition';
   import { get } from 'svelte/store';
   import { currentlyPlayingPresetId } from "../../stores/playbackStore";
-  import { onDestroy, createEventDispatcher } from 'svelte';
+  import { onDestroy, createEventDispatcher, onMount } from 'svelte';
   import { llmPromptStore, defaultPresetPromptStore } from '../../stores/llmInteractionStore';
+  import { websocketService } from "../../services/websocket/websocketService";
   
   const dispatch = createEventDispatcher();
 
@@ -28,7 +29,22 @@
   let totalFrames = 0;
   let frameUpdateInterval;
   let unsubscribe;
-
+  
+  // Add a websocket message handler to catch 'trigger_ai' events
+  let wsUnsubscribe;
+  
+  onMount(() => {
+    // Subscribe to WebSocket messages to catch trigger_ai events
+    wsUnsubscribe = websocketService.addMessageHandler((data) => {
+      if (data && data.type === "trigger_ai") {
+        console.log("📣 PresetCard received trigger_ai event from WebSocket");
+        handleIAPrompt();
+        return true; // indicate that we handled this message
+      }
+      return false; // we didn't handle this message
+    });
+  });
+  
   // Subscribe to the store to handle animation state changes
   unsubscribe = currentlyPlayingPresetId.subscribe(playingId => {
     if (playingId !== preset.id) {
@@ -126,6 +142,9 @@
     }
     if (unsubscribe) {
       unsubscribe();
+    }
+    if (wsUnsubscribe) {
+      wsUnsubscribe();
     }
   });
 
