@@ -326,6 +326,12 @@ def handle_disconnect():
 
 @socketio.on('gemini_connect')
 def handle_gemini_connect():
+    if GOOGLE_API_KEY is None:
+        emit('gemini_error', {
+            'message': 'Gemini service not available',
+            'timestamp': time.time()
+        })
+        return
     """Handle dedicated Gemini connection"""
     global connection_requests_count
     connection_requests_count += 1

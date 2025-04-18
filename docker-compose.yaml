@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   backend:
+    network_mode: host
     image: yassinsiouda/motivo-server-back:latest
     build: 
       context: .
@@ -24,24 +25,24 @@ services:
               count: 1
               capabilities: [gpu]
 
-  coturn:
-    image: coturn/coturn:latest
-    network_mode: host
-    volumes:
-      - ./coturn/turnserver.conf:/etc/turnserver.conf
-    restart: unless-stopped
-    ports:
-      - "3478:3478/udp"
-      - "3478:3478/tcp"
-      - "5349:5349/udp"
-      - "5349:5349/tcp"
-      - "49152-65535:49152-65535/udp"
-    environment:
-      - TURN_USERNAME=${VITE_TURN_USERNAME:-admin}
-      - TURN_PASSWORD=${VITE_TURN_PASSWORD:-password}
-    command: -c /etc/turnserver.conf
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
+  # coturn:
+  #   image: coturn/coturn:latest
+  #   network_mode: host
+  #   volumes:
+  #     - ./coturn/turnserver.conf:/etc/turnserver.conf
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3478:3478/udp"
+  #     - "3478:3478/tcp"
+  #     - "5349:5349/udp"
+  #     - "5349:5349/tcp"
+  #     - "49152-65535:49152-65535/udp"
+  #   environment:
+  #     - TURN_USERNAME=${VITE_TURN_USERNAME:-admin}
+  #     - TURN_PASSWORD=${VITE_TURN_PASSWORD:-password}
+  #   command: -c /etc/turnserver.conf
+  #   labels:
+  #     - "com.centurylinklabs.watchtower.enable=true"
 
   sqlite-web:
     image: coleifer/sqlite-web
@@ -82,6 +83,7 @@ services:
   #     restart: unless-stopped
 
   frontend:
+    network_mode: host
     image: yassinsiouda/motivo-client-front:latest
     build:
       context: .
