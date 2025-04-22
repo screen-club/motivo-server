@@ -1,22 +1,58 @@
 /**
- * WebRTC configuration constants and utilities
+ * WebRTC configuration
  */
 
-// Quality options for video streaming
+// Video quality options
 export const QUALITY_OPTIONS = [
   {
-    id: "medium",
-    label: "Standard (640×480)",
+    id: "low",
+    label: "Low (640×360)",
     width: 640,
-    height: 480,
+    height: 360,
+    recommended: false,
+  },
+  {
+    id: "medium",
+    label: "Standard (960×540)",
+    width: 960,
+    height: 540,
     recommended: true,
   },
-  { id: "high", label: "High (1280×960)", width: 1280, height: 960 },
+  { 
+    id: "high", 
+    label: "High (1280×720)", 
+    width: 1280, 
+    height: 720,
+    recommended: false,
+  },
+  { 
+    id: "hd", 
+    label: "HD (1920×1080)", 
+    width: 1920, 
+    height: 1080,
+    recommended: false,
+  },
 ];
 
-// Default ICE server configuration
+// Connection configuration
+export const CONNECTION_CONFIG = {
+  maxAttempts: 10,           // Maximum reconnection attempts
+  baseDelay: 2000,           // Base delay in ms between reconnection attempts
+  maxDelay: 15000,           // Maximum delay in ms
+  offerTimeout: 20000,       // Timeout for offer creation in ms
+  connectionCheckInterval: 7500,  // Interval for connection health checks in ms
+};
+
+// Helper for implementing exponential backoff with jitter
+export function calculateBackoff(attempt, baseDelay, maxDelay) {
+  const delay = Math.min(baseDelay * Math.pow(1.5, attempt - 1), maxDelay);
+  // Add jitter to avoid thundering herd problem
+  return delay * (0.8 + Math.random() * 0.4); // 20% jitter
+}
+
+// ICE server configuration
 export const getIceServers = () => {
-  // Check environment variable to determine if ICE servers should be used
+  // Check if ICE servers should be used
   const useIce = import.meta.env.VITE_USE_ICE_SERVER !== "false";
 
   if (!useIce) {
@@ -24,59 +60,65 @@ export const getIceServers = () => {
     return [];
   }
 
-  console.log("Using configured ICE servers");
-  return [
-    // Project-specific TURN server
-    {
+  console.log("Configuring ICE servers for WebRTC");
+  
+  // Build array of ICE servers
+  const iceServers = [];
+  
+  // Add Google STUN servers for NAT traversal (public, reliable)
+  const stunServers = [
+    "stun:stun.l.google.com:19302",
+    "stun:stun1.l.google.com:19302",
+    "stun:stun2.l.google.com:19302"
+  ];
+  
+  // Add custom STUN server if configured
+  if (import.meta.env.VITE_STUN_URL) {
+    stunServers.unshift(import.meta.env.VITE_STUN_URL);
+  }
+  
+  // Add STUN servers
+  iceServers.push({
+    urls: stunServers
+  });
+  
+  // Add TURN server if configured
+  const turnUrl = import.meta.env.VITE_TURN_URL;
+  const turnUsername = import.meta.env.VITE_TURN_USERNAME;
+  const turnPassword = import.meta.env.VITE_TURN_PASSWORD;
+  
+  if (turnUrl && turnUsername && turnPassword) {
+    // UDP TURN server
+    iceServers.push({
+      urls: turnUrl,
+      username: turnUsername,
+      credential: turnPassword
+    });
+    
+    // Add TCP TURN server for restricted networks
+    if (turnUrl.startsWith("turn:")) {
+      iceServers.push({
+        urls: `${turnUrl}?transport=tcp`,
+        username: turnUsername,
+        credential: turnPassword
+      });
+    }
+  } else {
+    // Fallback TURN server if none provided in env
+    console.log("Using fallback TURN server configuration");
+    iceServers.push({
       urls: "turn:51.159.163.145:3478",
       username: "admin",
-      credential: "password",
-    },
-
-    // Project-specific TURN over TCP (helps with strict firewalls)
-    {
+      credential: "password"
+    });
+    
+    // TCP fallback
+    iceServers.push({
       urls: "turn:51.159.163.145:3478?transport=tcp",
       username: "admin",
-      credential: "password",
-    },
-
-    // Environment variable TURN servers if available
-    ...(import.meta.env.VITE_TURN_URL &&
-    import.meta.env.VITE_TURN_USERNAME &&
-    import.meta.env.VITE_TURN_PASSWORD
-      ? [
-          {
-            urls: import.meta.env.VITE_TURN_URL,
-            username: import.meta.env.VITE_TURN_USERNAME,
-            credential: import.meta.env.VITE_TURN_PASSWORD,
-          },
-          {
-            urls: `${import.meta.env.VITE_TURN_URL}?transport=tcp`,
-            username: import.meta.env.VITE_TURN_USERNAME,
-            credential: import.meta.env.VITE_TURN_PASSWORD,
-          },
-        ]
-      : []),
-
-    // Custom STUN server if defined
-    ...(import.meta.env.VITE_STUN_URL
-      ? [{ urls: import.meta.env.VITE_STUN_URL }]
-      : []),
-  ];
+      credential: "password"
+    });
+  }
+  
+  return iceServers;
 };
-
-// Connection retry configuration
-export const CONNECTION_CONFIG = {
-  maxAttempts: 8, // Maximum reconnection attempts (increased)
-  baseDelay: 3000, // Base delay in ms between reconnection attempts (increased)
-  maxDelay: 15000, // Maximum delay in ms (increased)
-  offerTimeout: 20000, // Timeout for offer creation in ms (increased slightly)
-  connectionCheckInterval: 7500, // Interval for connection health checks in ms (increased)
-};
-
-// Helper for implementing exponential backoff
-export function calculateBackoff(attempt, baseDelay, maxDelay) {
-  const delay = Math.min(baseDelay * Math.pow(1.5, attempt), maxDelay);
-  // Add jitter to avoid thundering herd problem
-  return delay * (0.9 + Math.random() * 0.2);
-}

@@ -1,8 +1,7 @@
 /**
  * WebRTC service for video streaming
- *
- * Handles connection establishment, reconnection logic,
- * and quality configuration for WebRTC video streaming.
+ * 
+ * A simplified implementation using standard Web APIs for maximum browser compatibility.
  */
 import { v4 as uuidv4 } from "uuid";
 import {
@@ -11,17 +10,14 @@ import {
   currentQuality,
   ConnectionLogger,
 } from "./connectionState.js";
-import {
-  getIceServers,
+import { 
+  getIceServers, 
   CONNECTION_CONFIG,
-  QUALITY_OPTIONS,
-  calculateBackoff,
+  calculateBackoff
 } from "./config.js";
 import { websocketService } from "../websocket/index.js";
 
 class WebRTCService {
-  static instance; // Declare static instance property for Singleton
-
   constructor() {
     // Singleton pattern
     if (WebRTCService.instance) {
@@ -36,31 +32,36 @@ class WebRTCService {
     this.peerConnection = null;
     this.videoElement = null;
 
-    // Logging
-    this.logger = new ConnectionLogger(100);
-
     // Connection state tracking
+    this.logger = new ConnectionLogger(100);
     this.isConnecting = false;
     this.connectionAttempts = 0;
     this.reconnectTimeout = null;
-    this.connectionCheckInterval = null;
+    this.healthCheckInterval = null;
+    this.stats = {
+      framesReceived: 0,
+      framesDecoded: 0,
+      packetsLost: 0,
+      bytesReceived: 0,
+      lastStatsTime: 0
+    };
 
-    // Initialize WebSocket handler
+    // Subscribe to quality changes
+    currentQuality.subscribe((quality) => {
+      this.quality = quality;
+    });
+
+    // Register WebSocket message handler
     this.messageHandler = this.handleWebSocketMessage.bind(this);
     this.cleanupMessageHandler = websocketService.addMessageHandler(
       this.messageHandler
     );
 
-    // Initialize with default quality
-    currentQuality.subscribe((quality) => {
-      this.quality = quality;
-    });
+    this.logger.log("WebRTC service initialized");
   }
 
-  /* PUBLIC API */
-
   /**
-   * Set the video element to display the WebRTC stream
+   * Set the video element that will display the WebRTC stream
    */
   setVideoElement(element) {
     this.videoElement = element;
@@ -68,83 +69,76 @@ class WebRTCService {
   }
 
   /**
-   * Change the video quality
+   * Change the video stream quality
    */
   setVideoQuality(quality) {
     if (quality === this.quality) return;
 
     this.logger.log(`Changing video quality to ${quality}`);
-
+    
     // Update quality store
     currentQuality.set(quality);
 
-    // Send quality change request
+    // Send quality change request to server
     websocketService.send({
       type: "set_video_quality",
       quality: quality,
       client_id: this.clientId,
     });
 
-    // Restart connection after a short delay
+    // Restart connection to apply new quality
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
     }
 
     this.reconnectTimeout = setTimeout(() => {
-      this.initWebRTC();
+      this.restartConnection();
     }, 1000);
   }
 
   /**
-   * Handle WebSocket state changes
+   * Handle WebSocket connection state changes
    */
   handleWebSocketStateChange(isConnected) {
     if (isConnected) {
-      this.logger.log("WebSocket connected, resetting connection state");
-      // Reset connection state on new WebSocket connection
+      this.logger.log("WebSocket connected, initializing WebRTC");
+      
+      // Reset connection state
       this.connectionAttempts = 0;
       this.isConnecting = false;
 
       // Initialize WebRTC with a short delay
       setTimeout(() => {
-        // Double-check WebSocket is still connected before initializing
         if (websocketService.isConnected()) {
           this.initWebRTC();
-        } else {
-          this.logger.warn(
-            "WebSocket disconnected before WebRTC initialization"
-          );
         }
       }, 500);
     } else {
-      this.logger.warn("WebSocket disconnected, cleaning up WebRTC");
-      isLoading.set(true);
+      this.logger.log("WebSocket disconnected, cleaning up WebRTC");
+      
+      // Update UI state
+      isLoading.set(false);
       hasStream.set(false);
-      this.isConnecting = false;
-
-      // Clean up WebRTC
-      this.closeConnection();
-
-      // Clear scheduled tasks
-      this.clearTimeouts();
+      
+      // Clean up resources
+      this.cleanupConnection();
     }
   }
 
   /**
-   * Manually restart the WebRTC connection
+   * Restart the WebRTC connection
    */
   restartConnection() {
-    this.logger.log("Manually restarting WebRTC connection");
-
-    // Reset connection state
+    this.logger.log("Restarting WebRTC connection");
+    
+    // Reset state
     this.connectionAttempts = 0;
     this.isConnecting = false;
-
-    // Clean up any existing connection
-    this.closeConnection();
-    this.clearTimeouts();
-
-    // Start fresh
+    
+    // Clean up existing connection
+    this.cleanupConnection();
+    
+    // Start new connection
     this.initWebRTC();
   }
 
@@ -153,422 +147,453 @@ class WebRTCService {
    */
   cleanup() {
     this.logger.log("Cleaning up WebRTC service");
-
+    
     // Remove WebSocket handler
     if (this.cleanupMessageHandler) {
       this.cleanupMessageHandler();
+      this.cleanupMessageHandler = null;
     }
-
-    // Close connection
-    this.closeConnection();
-
-    // Clear scheduled tasks
-    this.clearTimeouts();
-
-    this.isConnecting = false;
+    
+    // Clean up connection
+    this.cleanupConnection();
   }
-
-  /**
-   * Get a readable client identifier
-   */
-  getShortClientId() {
-    return this.clientId.substring(0, 8);
-  }
-
-  /* INTERNAL METHODS */
 
   /**
    * Initialize WebRTC connection
    */
   async initWebRTC() {
-    // Guard against multiple simultaneous connection attempts
+    // Prevent multiple simultaneous connection attempts
     if (this.isConnecting) {
-      this.logger.log("Connection already in progress, skipping");
+      this.logger.log("Connection already in progress");
       return;
     }
-
+    
     // Check max reconnection attempts
     if (this.connectionAttempts >= CONNECTION_CONFIG.maxAttempts) {
-      this.logger.warn(
-        `Maximum connection attempts (${CONNECTION_CONFIG.maxAttempts}) reached`
-      );
+      this.logger.log(`Maximum reconnection attempts (${CONNECTION_CONFIG.maxAttempts}) reached`);
       isLoading.set(false);
       return;
     }
-
+    
     // Start connection process
     this.isConnecting = true;
     this.connectionAttempts++;
     isLoading.set(true);
-
-    // Set up timeout in case connection gets stuck
-    const timeoutId = setTimeout(() => {
+    
+    this.logger.log(`Starting WebRTC connection (attempt ${this.connectionAttempts}/${CONNECTION_CONFIG.maxAttempts})`);
+    
+    // Set connection timeout
+    const connectionTimeout = setTimeout(() => {
       if (this.isConnecting) {
-        this.logger.warn("Connection attempt timed out");
+        this.logger.log("Connection attempt timed out");
         this.handleConnectionFailure();
       }
     }, CONNECTION_CONFIG.offerTimeout);
-
+    
     try {
-      this.logger.log(
-        `Starting WebRTC connection (attempt ${this.connectionAttempts}/${CONNECTION_CONFIG.maxAttempts})`
-      );
-
       // Close any existing connection
-      this.closeConnection();
-
-      // Create a new RTCPeerConnection with ICE configuration
-      this.logger.log("Creating peer connection");
+      this.cleanupPeerConnection();
+      
+      // Create new peer connection with ICE servers
       this.peerConnection = new RTCPeerConnection({
         iceServers: getIceServers(),
+        iceCandidatePoolSize: 10,  // Pre-generate ICE candidates
+        bundlePolicy: "max-bundle", // Bundle media streams
+        rtcpMuxPolicy: "require"    // Multiplex RTCP
       });
-
+      
       // Set up event handlers
       this.setupPeerConnectionEvents();
-
+      
       // Create and send offer
       await this.createAndSendOffer();
-
-      // Clear timeout as we've successfully sent the offer
-      clearTimeout(timeoutId);
-
-      // Start connection health check
-      this.startConnectionHealthCheck();
+      
+      // Clear timeout since we've made progress
+      clearTimeout(connectionTimeout);
+      
+      // Start health check
+      this.startHealthCheck();
+      
     } catch (error) {
-      this.logger.error("Error setting up WebRTC", error);
-      clearTimeout(timeoutId);
+      this.logger.log(`Error setting up WebRTC: ${error.message}`);
+      clearTimeout(connectionTimeout);
       this.handleConnectionFailure();
     }
   }
-
+  
   /**
-   * Set up event handlers for the peer connection
+   * Set up event handlers for peer connection
    */
   setupPeerConnectionEvents() {
-    // Handle incoming media tracks
+    // Track event - when remote track is received
     this.peerConnection.ontrack = (event) => {
-      this.logger.log(
-        `Track received with ${event.streams?.length || 0} streams`
-      );
-
-      if (event.streams && event.streams[0]) {
-        if (this.videoElement) {
-          this.logger.log("Setting video source to received stream");
-          this.videoElement.srcObject = event.streams[0];
-
-          // Play video with error handling
-          this.videoElement
-            .play()
-            .catch((e) => this.logger.error("Video play error", e));
-
-          hasStream.set(true);
-          isLoading.set(false);
-          this.isConnecting = false;
-          this.connectionAttempts = 0; // Reset counter on success
+      this.logger.log(`Track received: ${event.track.kind}`);
+      
+      if (event.streams && event.streams[0] && this.videoElement) {
+        this.logger.log("Attaching stream to video element");
+        
+        // Attach stream to video element
+        this.videoElement.srcObject = event.streams[0];
+        
+        // Play video when ready
+        const playVideo = () => {
+          this.videoElement.play()
+            .then(() => {
+              this.logger.log("Video playback started");
+              hasStream.set(true);
+              isLoading.set(false);
+              this.isConnecting = false;
+              this.connectionAttempts = 0; // Reset on success
+            })
+            .catch(e => {
+              // Auto-play might be blocked
+              if (e.name === "NotAllowedError") {
+                this.logger.log("Autoplay blocked, trying with muted");
+                this.videoElement.muted = true;
+                return this.videoElement.play();
+              }
+              throw e;
+            })
+            .catch(e => {
+              this.logger.log(`Video playback failed: ${e.message}`);
+              this.isConnecting = false;
+            });
+        };
+        
+        if (this.videoElement.readyState >= 2) { // HAVE_CURRENT_DATA or higher
+          playVideo();
         } else {
-          this.logger.warn("Video element not available");
-          this.isConnecting = false;
+          this.videoElement.addEventListener('loadeddata', playVideo, { once: true });
         }
+      } else {
+        this.logger.log("Video element not available");
+        this.isConnecting = false;
       }
     };
-
-    // Handle ICE connection state changes
+    
+    // ICE connection state changes
     this.peerConnection.oniceconnectionstatechange = () => {
       const state = this.peerConnection?.iceConnectionState;
       this.logger.log(`ICE connection state: ${state}`);
-
+      
       if (state === "connected" || state === "completed") {
-        this.logger.log("WebRTC connection established successfully");
+        // Connection successful
+        this.logger.log("WebRTC connection established");
         hasStream.set(true);
         isLoading.set(false);
         this.isConnecting = false;
-        this.connectionAttempts = 0; // Reset counter on success
-      } else if (
-        state === "disconnected" ||
-        state === "failed" ||
-        state === "closed"
-      ) {
-        this.logger.warn(`ICE connection ${state}`);
+        this.connectionAttempts = 0;
+      } else if (state === "failed") {
+        // Connection failed
+        this.logger.log("ICE connection failed");
         hasStream.set(false);
         this.handleConnectionFailure();
+      } else if (state === "disconnected") {
+        // Temporary disconnection - wait before handling as failure
+        this.logger.log("ICE connection disconnected, waiting to see if it recovers");
+        setTimeout(() => {
+          if (this.peerConnection && this.peerConnection.iceConnectionState === "disconnected") {
+            this.logger.log("ICE connection still disconnected, handling as failure");
+            hasStream.set(false);
+            this.handleConnectionFailure();
+          }
+        }, 5000);
       }
     };
-
-    // ICE candidate handling - send candidates to the server
+    
+    // ICE candidate events
     this.peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
-        // Send ICE candidate to server
+        // Send candidate to server
         websocketService.send({
           type: "webrtc_ice",
           candidate: {
             sdpMid: event.candidate.sdpMid,
             sdpMLineIndex: event.candidate.sdpMLineIndex,
-            candidate: event.candidate.candidate,
-            type: event.candidate.type,
-            foundation: event.candidate.foundation,
-            protocol: event.candidate.protocol,
-            port: event.candidate.port,
-            priority: event.candidate.priority,
-            component: event.candidate.component || 0,
+            candidate: event.candidate.candidate
           },
-          client_id: this.clientId,
+          client_id: this.clientId
         });
-        this.logger.log("Sent ICE candidate to server");
+        
+        this.logger.log("ICE candidate sent to server");
+      } else {
+        this.logger.log("End of ICE candidates");
       }
     };
-
-    // Connection state monitoring
+    
+    // Connection state changes
     this.peerConnection.onconnectionstatechange = () => {
       const state = this.peerConnection?.connectionState;
       this.logger.log(`Connection state: ${state}`);
-
-      if (state === "failed" || state === "closed") {
-        this.logger.warn(`Connection state ${state}`);
+      
+      if (state === "connected") {
+        this.logger.log("WebRTC connected");
+        hasStream.set(true);
+        isLoading.set(false);
+        this.isConnecting = false;
+        this.connectionAttempts = 0;
+      } else if (state === "failed" || state === "closed") {
+        this.logger.log(`Connection state ${state}, handling as failure`);
         hasStream.set(false);
         this.handleConnectionFailure();
       }
     };
   }
-
+  
   /**
    * Create and send WebRTC offer to server
    */
   async createAndSendOffer() {
-    // Add a short delay to give the connection time to initialize
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    // Create offer with video only
     this.logger.log("Creating WebRTC offer");
-    const offer = await this.peerConnection.createOffer({
-      offerToReceiveVideo: true,
-      offerToReceiveAudio: false,
-    });
-
-    // Set local description
-    this.logger.log("Setting local description");
-    await this.peerConnection.setLocalDescription(offer);
-
-    // Send offer to server
-    this.logger.log("Sending offer to server");
-    websocketService.send({
-      type: "webrtc_offer",
-      sdp: offer.sdp,
-      client_id: this.clientId,
-    });
+    
+    try {
+      // Create offer with video only
+      const offer = await this.peerConnection.createOffer({
+        offerToReceiveVideo: true,
+        offerToReceiveAudio: false
+      });
+      
+      // Set as local description
+      this.logger.log("Setting local description");
+      await this.peerConnection.setLocalDescription(offer);
+      
+      // Send offer to server
+      this.logger.log("Sending offer to server");
+      websocketService.send({
+        type: "webrtc_offer",
+        sdp: offer.sdp,
+        client_id: this.clientId
+      });
+      
+      return true;
+    } catch (error) {
+      this.logger.log(`Error creating offer: ${error.message}`);
+      return false;
+    }
   }
-
+  
   /**
-   * Handle incoming WebRTC answer from server
+   * Handle WebRTC answer from server
    */
   async handleWebRTCAnswer(answer) {
     try {
       this.logger.log("Received WebRTC answer from server");
-
+      
       if (!this.peerConnection) {
-        this.logger.warn("No peer connection available");
+        this.logger.log("No peer connection available");
         return;
       }
-
+      
       // Create RTCSessionDescription from answer
       const rtcAnswer = new RTCSessionDescription({
         type: answer.sdpType,
-        sdp: answer.sdp,
+        sdp: answer.sdp
       });
-
+      
       // Set remote description
       this.logger.log("Setting remote description");
       await this.peerConnection.setRemoteDescription(rtcAnswer);
       this.logger.log("Remote description set successfully");
+      
     } catch (error) {
-      this.logger.error("Error handling WebRTC answer", error);
+      this.logger.log(`Error handling WebRTC answer: ${error.message}`);
       this.isConnecting = false;
       this.handleConnectionFailure();
     }
   }
-
+  
   /**
-   * Process messages from WebSocket
+   * Process WebSocket messages
    */
   handleWebSocketMessage(data) {
-    // Only process messages intended for this client
+    // Only process messages for this client
     if (data.client_id && data.client_id !== this.clientId) {
       return;
     }
-
-    // Handle WebRTC answer
+    
+    // Handle different message types
     if (data.type === "webrtc_answer" && data.client_id === this.clientId) {
       this.handleWebRTCAnswer(data);
-    }
-
-    // Handle quality change response
-    if (
-      data.type === "video_quality_changed" &&
-      data.client_id === this.clientId
-    ) {
-      this.logger.log(
-        `Quality change to ${data.quality}: ${
-          data.success ? "successful" : "failed"
-        }`
-      );
-    }
-
-    // Handle server errors
-    if (data.type === "error" && data.client_id === this.clientId) {
-      this.logger.error(`Server error: ${data.message}`);
+    } else if (data.type === "video_quality_changed" && data.client_id === this.clientId) {
+      this.logger.log(`Quality change to ${data.quality}: ${data.success ? "successful" : "failed"}`);
+    } else if (data.type === "error" && data.client_id === this.clientId) {
+      this.logger.log(`Server error: ${data.message}`);
       this.isConnecting = false;
     }
   }
-
+  
   /**
-   * Handle connection failure with persistent reconnection
+   * Handle connection failure with reconnection logic
    */
   handleConnectionFailure() {
     // Mark connection as failed
     this.isConnecting = false;
     hasStream.set(false);
-
-    // Only show loading indicator for first few attempts
+    
+    // Only show loading for initial attempts
     if (this.connectionAttempts > 3) {
       isLoading.set(false);
     }
-
-    // Check if we have exceeded max attempts
+    
+    // Check if max attempts reached
     if (this.connectionAttempts >= CONNECTION_CONFIG.maxAttempts) {
-      this.logger.warn(
-        `Maximum reconnection attempts (${CONNECTION_CONFIG.maxAttempts}) reached. Stopping retries.`
-      );
-      isLoading.set(false); // Ensure loading is off
-      return; // Stop trying
+      this.logger.log(`Max reconnection attempts (${CONNECTION_CONFIG.maxAttempts}) reached`);
+      isLoading.set(false);
+      return;
     }
-
-    // Use configured backoff strategy
+    
+    // Calculate backoff delay with jitter
     const delay = calculateBackoff(
       this.connectionAttempts,
       CONNECTION_CONFIG.baseDelay,
       CONNECTION_CONFIG.maxDelay
     );
-
-    this.logger.log(
-      `Connection failed, retrying in ${Math.round(delay / 1000)}s (attempt ${
-        this.connectionAttempts + 1 // Log next attempt number
-      }/${CONNECTION_CONFIG.maxAttempts})`
-    );
-
+    
+    this.logger.log(`Connection failed, retrying in ${Math.round(delay / 1000)}s (attempt ${this.connectionAttempts + 1}/${CONNECTION_CONFIG.maxAttempts})`);
+    
     // Clear any existing timeout
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
     }
-
+    
     // Schedule reconnection
     this.reconnectTimeout = setTimeout(() => {
-      // Only reconnect if WebSocket is open
       if (websocketService.isConnected()) {
-        this.initWebRTC(); // This will increment connectionAttempts
+        this.initWebRTC();
       } else {
-        this.logger.warn(
-          "WebSocket closed before retry attempt, rescheduling check..."
-        );
-        // Increment attempt count here since initWebRTC won't be called
+        this.logger.log("WebSocket not connected, skipping reconnection");
         this.connectionAttempts++;
-        // Schedule another failure check relatively soon
-        // This avoids getting stuck if WebSocket remains closed
         this.handleConnectionFailure();
       }
     }, delay);
   }
-
+  
   /**
-   * Start periodic connection health check
+   * Start periodic health check
    */
-  startConnectionHealthCheck() {
+  startHealthCheck() {
     // Clear any existing interval
-    if (this.connectionCheckInterval) {
-      clearInterval(this.connectionCheckInterval);
-      this.connectionCheckInterval = null; // Ensure it's cleared
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
     }
-
-    // Track consecutive failures
-    let consecutiveFailures = 0;
-    const failureThreshold = 2; // Require 2 consecutive failed checks
-
+    
+    this.stats.lastStatsTime = Date.now();
+    
     // Set up new interval
-    this.connectionCheckInterval = setInterval(() => {
-      if (!this.peerConnection || this.isConnecting) return; // Skip check if no connection or already connecting
-
-      const connectionState = this.peerConnection.connectionState;
-      const iceState = this.peerConnection.iceConnectionState;
-
-      // Check for problematic states
-      if (
-        connectionState === "disconnected" ||
-        connectionState === "failed" ||
-        iceState === "disconnected" ||
-        iceState === "failed"
-      ) {
-        consecutiveFailures++;
-        this.logger.warn(
-          `Connection check unstable: conn=${connectionState}, ice=${iceState} (Failure ${consecutiveFailures}/${failureThreshold})`
-        );
-
-        // Only trigger failure handling after threshold is met
-        if (consecutiveFailures >= failureThreshold) {
-          this.logger.error(
-            `Connection check failed threshold (${failureThreshold}). Triggering reconnect.`
-          );
-          clearInterval(this.connectionCheckInterval); // Stop checking
-          this.connectionCheckInterval = null;
+    this.healthCheckInterval = setInterval(async () => {
+      if (!this.peerConnection || this.isConnecting) {
+        return;
+      }
+      
+      try {
+        // Get RTCStats
+        const stats = await this.peerConnection.getStats();
+        const now = Date.now();
+        
+        // Process video stats
+        let receivedFrames = 0;
+        let decodedFrames = 0;
+        let packetsLost = 0;
+        let bytesReceived = 0;
+        
+        stats.forEach(stat => {
+          if (stat.type === 'inbound-rtp' && stat.kind === 'video') {
+            receivedFrames = stat.framesReceived || 0;
+            decodedFrames = stat.framesDecoded || 0;
+            packetsLost = stat.packetsLost || 0;
+            bytesReceived = stat.bytesReceived || 0;
+            
+            // Check for stalled stream
+            const timeDelta = (now - this.stats.lastStatsTime) / 1000;
+            const frameRate = (decodedFrames - this.stats.framesDecoded) / timeDelta;
+            
+            // Log stats periodically
+            if (now % 10000 < 1000) { // Log roughly every 10 seconds
+              this.logger.log(`Stats: ${Math.round(frameRate)} fps, bitrate: ${Math.round((bytesReceived - this.stats.bytesReceived) * 8 / timeDelta / 1000)} kbps`);
+            }
+            
+            // Detect stalled video stream (0 fps for 5+ seconds)
+            if (this.stats.framesDecoded > 0 && decodedFrames === this.stats.framesDecoded && timeDelta > 5) {
+              this.logger.log("Stream appears stalled (no new frames), restarting connection");
+              this.restartConnection();
+            }
+            
+            // Update stored stats
+            this.stats.framesReceived = receivedFrames;
+            this.stats.framesDecoded = decodedFrames;
+            this.stats.packetsLost = packetsLost;
+            this.stats.bytesReceived = bytesReceived;
+            this.stats.lastStatsTime = now;
+          }
+        });
+        
+        // Check connection states
+        const connState = this.peerConnection.connectionState;
+        const iceState = this.peerConnection.iceConnectionState;
+        
+        // React to problematic states
+        if (connState === 'disconnected' || connState === 'failed' || 
+            iceState === 'disconnected' || iceState === 'failed') {
+          this.logger.log(`Problematic connection state detected: conn=${connState}, ice=${iceState}`);
           this.handleConnectionFailure();
         }
-      } else {
-        // Reset counter if connection is stable
-        if (consecutiveFailures > 0) {
-          this.logger.log(
-            `Connection check stable again: conn=${connectionState}, ice=${iceState}`
-          );
-        }
-        consecutiveFailures = 0;
+        
+      } catch (error) {
+        this.logger.log(`Error in health check: ${error.message}`);
       }
     }, CONNECTION_CONFIG.connectionCheckInterval);
-    this.logger.log(
-      `Started connection health check interval: ${CONNECTION_CONFIG.connectionCheckInterval}ms`
-    );
+    
+    this.logger.log(`Started health check interval (${CONNECTION_CONFIG.connectionCheckInterval}ms)`);
   }
-
+  
   /**
-   * Close WebRTC connection
+   * Clean up peer connection
    */
-  closeConnection() {
+  cleanupPeerConnection() {
     if (this.peerConnection) {
       this.logger.log("Closing peer connection");
+      
+      // Close connection
       this.peerConnection.close();
       this.peerConnection = null;
     }
-
-    if (this.videoElement) {
-      // Stop tracks on video stream
-      const stream = this.videoElement.srcObject;
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-        this.videoElement.srcObject = null;
-      }
+    
+    // Stop video tracks
+    if (this.videoElement && this.videoElement.srcObject) {
+      this.videoElement.srcObject.getTracks().forEach(track => track.stop());
+      this.videoElement.srcObject = null;
     }
   }
-
+  
   /**
-   * Clear all timeouts and intervals
+   * Clean up all connection resources
    */
-  clearTimeouts() {
+  cleanupConnection() {
+    // Clean up peer connection
+    this.cleanupPeerConnection();
+    
+    // Clear timeouts and intervals
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
     }
-
-    if (this.connectionCheckInterval) {
-      clearInterval(this.connectionCheckInterval);
-      this.connectionCheckInterval = null;
+    
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
     }
+    
+    // Reset state
+    this.isConnecting = false;
+  }
+  
+  /**
+   * Get a shortened client ID for logging
+   */
+  getShortClientId() {
+    return this.clientId.substring(0, 8);
   }
 }
 
-// Create and export a singleton instance
+// Export singleton instance
 export const webrtcService = new WebRTCService();
