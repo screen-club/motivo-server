@@ -90,9 +90,12 @@ async def run_simulation_loop():
             # Step the environment with the numpy action
             observation, _, terminated, truncated, _ = app_state.env.step(action_for_env)
             
-            # These operations remain async
-            await broadcast_pose_update(q_percentage, frame_count)
-            await render_and_process_frame(frame_count, q_percentage, last_frame_save_time)
+            # Prioritize WebRTC frame generation, which is the most time-sensitive
+            render_task = asyncio.create_task(render_and_process_frame(frame_count, q_percentage, last_frame_save_time))
+            
+            # Run pose update in parallel (less time sensitive)
+            pose_task = asyncio.create_task(broadcast_pose_update(q_percentage, frame_count))
+            
             frame_count += 1
             
             if terminated:
@@ -103,12 +106,63 @@ async def run_simulation_loop():
             iter_duration = iter_end_time - iter_start_time
             sleep_duration = target_frame_duration - iter_duration
 
-            # Log timing info periodically (e.g., every 60 frames)
+            # Wait for the tasks to complete
+            tasks_timeout = min(sleep_duration if sleep_duration > 0 else 0.01, 0.05)  # Max 50ms
+            try:
+                # Prioritize render task as it's more important for video flow
+                # Wait for tasks with a short timeout
+                await asyncio.wait_for(render_task, timeout=tasks_timeout)
+                
+                # If we still have time, wait for pose update task
+                remaining_time = target_frame_duration - (time.monotonic() - iter_start_time)
+                if remaining_time > 0:
+                    await asyncio.wait_for(pose_task, timeout=min(remaining_time, 0.01))
+                    
+            except asyncio.TimeoutError:
+                # Tasks taking too long - create a dedicated task to monitor them
+                async def monitor_pending_tasks(pending_tasks):
+                    for task in pending_tasks:
+                        if not task.done():
+                            try:
+                                await task
+                            except Exception as e:
+                                logger.error(f"Error in background task: {e}")
+                
+                pending_tasks = []
+                if not render_task.done():
+                    pending_tasks.append(render_task)
+                if not pose_task.done():
+                    pending_tasks.append(pose_task)
+                    
+                if pending_tasks:
+                    asyncio.create_task(monitor_pending_tasks(pending_tasks))
+                    logger.debug(f"Tasks taking longer than expected, moved {len(pending_tasks)} to background")
+
+            # Log timing info periodically
             if frame_count % 60 == 0:
-                logger.debug(f"Frame {frame_count}: Iter Duration={iter_duration:.4f}s, Sleep Duration={sleep_duration:.4f}s (Target={target_frame_duration:.4f}s)")
+                # Calculate actual frame rate to check if we're keeping up with target FPS
+                actual_fps = 60 / max(0.001, time.monotonic() - getattr(app_state, 'last_fps_check_time', iter_start_time - 60/config.fps))
+                app_state.last_fps_check_time = time.monotonic()
+                
+                logger.debug(f"Frame {frame_count}: Duration={iter_duration:.4f}s, Sleep={sleep_duration:.4f}s, Actual FPS={actual_fps:.1f} (Target={config.fps})")
+                
+                # Track if we're consistently behind schedule
+                if not hasattr(app_state, 'behind_schedule_count'):
+                    app_state.behind_schedule_count = 0
+                    
+                if sleep_duration < 0:
+                    app_state.behind_schedule_count += 1
+                else:
+                    app_state.behind_schedule_count = max(0, app_state.behind_schedule_count - 1)
+                    
+                # If consistently behind, log a warning
+                if app_state.behind_schedule_count > 5:
+                    logger.warning(f"Consistently behind schedule ({app_state.behind_schedule_count} frames). " +
+                                   f"Target: {1/target_frame_duration:.1f} FPS, Actual: {actual_fps:.1f} FPS")
 
             # Sleep for the remaining time, OR sleep for 0 to yield control if behind schedule
-            await asyncio.sleep(max(0, sleep_duration))
+            # Use a small minimum sleep to ensure other tasks can run
+            await asyncio.sleep(max(0.001, sleep_duration))
             # else: # Optional: Log if we are falling behind
             #     # This case is now handled by sleeping for 0
             #     # logger.warning(f"Frame {frame_count}: Loop took longer ({iter_duration:.4f}s) than target ({target_frame_duration:.4f}s). No sleep.")
@@ -219,8 +273,10 @@ async def cleanup_stale_connections():
     logger.info(f"Removed {len(stale_connections)} stale connections, {len(app_state.ws_manager.connected_clients)} remaining")
 
 async def render_and_process_frame(frame_count, q_percentage, last_frame_save_time):
-    """Render current frame and process it for display and streaming"""
+    """Render current frame and process it for display and streaming with optimized priority"""
     try:
+        frame_start_time = time.monotonic()
+        
         # IMPORTANT: DON'T use threads for rendering! We need this on the main thread
         # for OpenGL/GPU context reasons
         
@@ -245,64 +301,63 @@ async def render_and_process_frame(frame_count, q_percentage, last_frame_save_ti
             is_computing=app_state.message_handler.is_computing_reward
         )
         
-        # --- REMOVE RED DOT DRAWING AFTER DISPLAY ---
-        # if app_state.message_handler.video_recorder and app_state.message_handler.video_recorder.recording:
-            # ... (old drawing code removed) ...
-
         # Make a copy for WebRTC to avoid any potential memory issues
-        # This copy now includes the red dot if recording
         frame_copy = frame_with_overlays.copy()
         
-        # Update WebRTC stream with proper task management - async operations
-        try:
-            # Create a task with a timeout to prevent stalled tasks
-            webrtc_task = asyncio.create_task(
-                asyncio.wait_for(
-                    app_state.webrtc_manager.broadcast_frame(frame_copy),
-                    timeout=0.5  # Back to 500ms timeout
-                )
-            )
-            
-            # Task management - ensure we have a place to track pending tasks
-            if not hasattr(app_state, 'pending_webrtc_tasks'):
-                app_state.pending_webrtc_tasks = set()
-            
-            app_state.pending_webrtc_tasks.add(webrtc_task)
-            
-            # Set up cleanup callback
-            def task_done(task):
-                try:
-                    app_state.pending_webrtc_tasks.discard(task)
-                except:
-                    pass
-            
-            webrtc_task.add_done_callback(task_done)
-                        # Periodically clean up completed tasks (every 100 frames)
-            if frame_count % 100 == 0 and hasattr(app_state, 'pending_webrtc_tasks'):
-                done_tasks = {task for task in app_state.pending_webrtc_tasks if task.done()}
-                for task in done_tasks:
-                    app_state.pending_webrtc_tasks.discard(task)
-                logger.debug(f"Cleaned up {len(done_tasks)} completed WebRTC tasks, {len(app_state.pending_webrtc_tasks)} pending")
-
-            
-        except Exception as e:
-            logger.error(f"Error setting up WebRTC broadcast: {e}")
+        # PRIORITY 1: Update WebRTC stream ASAP - this is the most time-sensitive task
+        webrtc_updated = False
+        webrtc_connections = 0
         
-        # Add frame to video recorder if active
+        try:
+            # First check if we have any WebRTC connections to avoid unnecessary work
+            if hasattr(app_state.webrtc_manager, 'tracks') and app_state.webrtc_manager.tracks:
+                webrtc_connections = len(app_state.webrtc_manager.tracks)
+                
+                if webrtc_connections > 0:
+                    # Don't use a timeout here to ensure the frame gets through
+                    result = await app_state.webrtc_manager.broadcast_frame(frame_copy)
+                    webrtc_updated = result > 0
+                    
+                    # Measure and log WebRTC frame processing time periodically
+                    webrtc_time = time.monotonic() - frame_start_time
+                    if frame_count % 300 == 0:
+                        logger.debug(f"WebRTC frame processing time: {webrtc_time*1000:.1f}ms for {result} connections")
+        except Exception as e:
+            logger.error(f"Error in WebRTC broadcast: {e}")
+        
+        # PRIORITY 2: Add frame to video recorder if active (background task is fine)
+        recorder_task = None
         if app_state.message_handler.video_recorder and app_state.message_handler.video_recorder.recording:
             try:
-                # Use the frame with the potential red dot overlay (now frame_with_overlays)
-                asyncio.create_task(app_state.message_handler.video_recorder.add_frame(frame_with_overlays))
+                # Schedule recording in background task
+                recorder_task = asyncio.create_task(app_state.message_handler.video_recorder.add_frame(frame_with_overlays))
             except Exception as video_err:
-                # Log error if task creation fails (unlikely for add_frame setup)
                 logger.error(f"Error scheduling frame for video recorder: {video_err}")
 
-        # Check for key presses (quit/save) - KEEP THIS ON MAIN THREAD TOO
+        # PRIORITY 3: Check for key presses (quit/save) - keep on main thread
         should_quit, should_save = app_state.display_manager.check_key()
         if should_quit:
             app_state.is_running = False
         elif should_save:
             save_current_frame(frame)
+            
+        # Periodically check for completed tasks and clean up
+        if frame_count % 100 == 0:
+            # Only track stats for active connections
+            if webrtc_connections > 0:
+                # Store rolling average of frame times
+                if not hasattr(app_state, 'frame_time_history'):
+                    app_state.frame_time_history = []
+                
+                frame_time = time.monotonic() - frame_start_time
+                app_state.frame_time_history.append(frame_time)
+                
+                # Keep only last 100 samples
+                if len(app_state.frame_time_history) > 100:
+                    app_state.frame_time_history = app_state.frame_time_history[-100:]
+                
+                avg_frame_time = sum(app_state.frame_time_history) / len(app_state.frame_time_history)
+                logger.debug(f"Avg frame processing time: {avg_frame_time*1000:.1f}ms, WebRTC connections: {webrtc_connections}")
     
     except Exception as e:
         logger.error(f"Error in render_and_process_frame: {str(e)}")

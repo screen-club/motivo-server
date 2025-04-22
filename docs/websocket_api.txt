@@ -14,6 +14,75 @@ All messages must be valid JSON with a "type" field specifying the operation.
 AVAILABLE ENDPOINTS
 -----------------
 
+0. WEBRTC VIDEO STREAMING
+   Type: "webrtc_offer", "webrtc_ice", "set_video_quality"
+   Description: High-performance, low-latency video streaming using WebRTC
+   
+   WebRTC Offer Request:
+   {
+     "type": "webrtc_offer",
+     "client_id": "unique-client-identifier",
+     "sdp": "SDP_OFFER_STRING"
+   }
+   
+   WebRTC Offer Response:
+   {
+     "type": "webrtc_answer",
+     "client_id": "unique-client-identifier",
+     "sdp": "SDP_ANSWER_STRING",
+     "sdpType": "answer",
+     "timestamp": "2023-09-01T12:34:56.789Z"
+   }
+   
+   WebRTC ICE Candidate:
+   {
+     "type": "webrtc_ice",
+     "client_id": "unique-client-identifier",
+     "candidate": {
+       "candidate": "candidate:... ICE candidate string",
+       "sdpMid": "0",
+       "sdpMLineIndex": 0
+     }
+   }
+   
+   Set Video Quality:
+   {
+     "type": "set_video_quality",
+     "client_id": "unique-client-identifier",
+     "quality": "medium"  // "low", "medium", "high", or "hd"
+   }
+   
+   Video Quality Changed Response:
+   {
+     "type": "video_quality_changed",
+     "client_id": "unique-client-identifier",
+     "quality": "medium",
+     "success": true,
+     "available_qualities": ["low", "medium", "high", "hd"],
+     "timestamp": "2023-09-01T12:34:56.789Z"
+   }
+   
+   WebRTC Stats Response:
+   {
+     "type": "webrtc_stats",
+     "client_id": "unique-client-identifier",
+     "stats": {
+       "connections": 1,
+       "created_total": 10,
+       "closed_total": 9,
+       "states": {
+         "connected": 1
+       },
+       "video_config": {
+         "width": 960,
+         "height": 540,
+         "fps": 30
+       },
+       "timestamp": 1693571696.789
+     },
+     "timestamp": "2023-09-01T12:34:56.789Z"
+   }
+
 1. REQUEST REWARD CONTEXT
    Type: "request_reward"
    Description: Sets new reward behavior for the humanoid
@@ -174,6 +243,20 @@ SUPPORTED REWARD TYPES
     Parameters:
     - distance (float, default: 1.5)
 
+11. ping: Connection health check
+    Description: Simple ping to check if server is responsive
+    
+    Request Format:
+    {
+      "type": "ping"
+    }
+    
+    Response:
+    {
+      "type": "pong",
+      "timestamp": "timestamp"
+    }
+
 CUSTOM BODY PART CONTROLS
 ------------------------
 Hand Controls:
@@ -211,7 +294,11 @@ ERROR HANDLING
 -------------
 On error, the server responds with:
 {
-  "error": "error_message"
+  "type": "error",
+  "error": "error_code",
+  "message": "error_message",
+  "client_id": "unique-client-identifier", // If applicable
+  "timestamp": "timestamp"
 }
 
 Common errors:
@@ -220,6 +307,11 @@ Common errors:
 - Invalid parameters
 - Connection closed unexpectedly
 
+WebRTC specific errors:
+- "invalid_offer": WebRTC offer was invalid
+- "connection_failed": WebRTC connection failed
+- "invalid_quality": Requested video quality not supported
+
 NOTES
 -----
 - All numerical parameters accept float values
@@ -227,4 +319,8 @@ NOTES
 - Default standing behavior is automatically applied on connection
 - The simulation runs at 60 FPS
 - Q-values are displayed in real-time overlay
-- Computing status is shown during reward context calculations 
+- Computing status is shown during reward context calculations
+- WebRTC video streaming provides high-quality, low-latency video feeds
+- Video quality can be adjusted on the fly without reconnection
+- ICE servers (STUN/TURN) can be configured via environment variables
+- Connection health checks are available with ping/pong messages

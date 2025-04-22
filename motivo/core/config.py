@@ -35,7 +35,10 @@ class Config:
         # Runtime config
         self.debug = os.getenv("MOTIVO_DEBUG", "0") == "1"
         self.in_container = os.path.exists('/.dockerenv') or os.environ.get('ENVIRONMENT') == 'production'
-        self.fps = 60
+        
+        # Set target FPS - use environment variable if provided, otherwise default to 30
+        # Using 30 FPS as default for better stability - system appears to struggle with 60 FPS
+        self.fps = int(os.getenv("MOTIVO_FPS", "30"))
         
         # Default reward configuration
         self.default_reward_config = {
@@ -45,8 +48,8 @@ class Config:
             'weights': [1.0]
         }
         
-        # Video settings
-        self.default_video_quality = "medium"
+        # Video settings - default to "low" for stability
+        self.default_video_quality = os.getenv("MOTIVO_VIDEO_QUALITY", "low")
         self.video_qualities = ["low", "medium", "high", "hd"]
         
     @property

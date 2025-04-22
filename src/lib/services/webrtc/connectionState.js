@@ -24,7 +24,6 @@ export class ConnectionLogger {
    * @param {string} level - Log level (info, warning, error)
    */
   log(message, level = "info") {
-    return;
     const timestamp = new Date().toLocaleTimeString();
     const entry = { timestamp, message, level };
 

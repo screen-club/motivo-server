@@ -423,14 +423,14 @@ class WebRTCService {
   }
   
   /**
-   * Handle connection failure with reconnection logic
+   * Handle connection failure with improved reconnection logic
    */
   handleConnectionFailure() {
     // Mark connection as failed
     this.isConnecting = false;
     hasStream.set(false);
     
-    // Only show loading for initial attempts
+    // Only show loading for initial attempts to reduce UI flashing
     if (this.connectionAttempts > 3) {
       isLoading.set(false);
     }
@@ -439,6 +439,21 @@ class WebRTCService {
     if (this.connectionAttempts >= CONNECTION_CONFIG.maxAttempts) {
       this.logger.log(`Max reconnection attempts (${CONNECTION_CONFIG.maxAttempts}) reached`);
       isLoading.set(false);
+      
+      // After reaching max attempts, set up a slower retry cycle
+      // This ensures we eventually reconnect even after many failures
+      if (this.reconnectTimeout) {
+        clearTimeout(this.reconnectTimeout);
+      }
+      
+      this.reconnectTimeout = setTimeout(() => {
+        this.logger.log("Resetting connection retry counter and attempting reconnection");
+        this.connectionAttempts = 0;
+        if (websocketService.isConnected()) {
+          this.initWebRTC();
+        }
+      }, 30000); // 30 second reset timer
+      
       return;
     }
     
@@ -459,6 +474,9 @@ class WebRTCService {
     // Schedule reconnection
     this.reconnectTimeout = setTimeout(() => {
       if (websocketService.isConnected()) {
+        // Force clean up of any existing connection first
+        this.cleanupConnection();
+        // Then initialize a new connection
         this.initWebRTC();
       } else {
         this.logger.log("WebSocket not connected, skipping reconnection");
@@ -469,7 +487,7 @@ class WebRTCService {
   }
   
   /**
-   * Start periodic health check
+   * Start enhanced periodic health check
    */
   startHealthCheck() {
     // Clear any existing interval
@@ -478,8 +496,10 @@ class WebRTCService {
     }
     
     this.stats.lastStatsTime = Date.now();
+    this.stats.lastGoodFrameTime = Date.now();
+    this.stats.consecutiveLowFrameRates = 0;
     
-    // Set up new interval
+    // Set up new interval with shorter check time
     this.healthCheckInterval = setInterval(async () => {
       if (!this.peerConnection || this.isConnecting) {
         return;
@@ -495,6 +515,9 @@ class WebRTCService {
         let decodedFrames = 0;
         let packetsLost = 0;
         let bytesReceived = 0;
+        let framesDropped = 0;
+        let jitter = 0;
+        let streamHealth = "good";
         
         stats.forEach(stat => {
           if (stat.type === 'inbound-rtp' && stat.kind === 'video') {
@@ -502,20 +525,52 @@ class WebRTCService {
             decodedFrames = stat.framesDecoded || 0;
             packetsLost = stat.packetsLost || 0;
             bytesReceived = stat.bytesReceived || 0;
+            framesDropped = stat.framesDropped || 0;
+            jitter = stat.jitter || 0;
             
-            // Check for stalled stream
+            // Check for stalled or degraded stream
             const timeDelta = (now - this.stats.lastStatsTime) / 1000;
             const frameRate = (decodedFrames - this.stats.framesDecoded) / timeDelta;
+            const packetLossRate = packetsLost > this.stats.packetsLost ? 
+                                  (packetsLost - this.stats.packetsLost) / 
+                                  ((bytesReceived - this.stats.bytesReceived) / 1500) : 0;
             
-            // Log stats periodically
-            if (now % 10000 < 1000) { // Log roughly every 10 seconds
-              this.logger.log(`Stats: ${Math.round(frameRate)} fps, bitrate: ${Math.round((bytesReceived - this.stats.bytesReceived) * 8 / timeDelta / 1000)} kbps`);
+            // Evaluate stream health
+            if (frameRate < 1 && timeDelta > 2) {
+              streamHealth = "stalled";
+              this.stats.consecutiveLowFrameRates++;
+            } else if (frameRate < 10 || packetLossRate > 0.05 || jitter > 0.1) {
+              streamHealth = "degraded";
+              this.stats.consecutiveLowFrameRates++;
+            } else {
+              streamHealth = "good";
+              this.stats.consecutiveLowFrameRates = 0;
+              this.stats.lastGoodFrameTime = now;
             }
             
-            // Detect stalled video stream (0 fps for 5+ seconds)
-            if (this.stats.framesDecoded > 0 && decodedFrames === this.stats.framesDecoded && timeDelta > 5) {
-              this.logger.log("Stream appears stalled (no new frames), restarting connection");
+            // Log stats periodically or on health change
+            if (now % 5000 < 1000 || this.stats.lastStreamHealth !== streamHealth) { 
+              this.logger.log(
+                `Stream health: ${streamHealth}, ${Math.round(frameRate)} fps, ` +
+                `bitrate: ${Math.round((bytesReceived - this.stats.bytesReceived) * 8 / timeDelta / 1000)} kbps, ` +
+                `packet loss: ${(packetLossRate * 100).toFixed(1)}%, jitter: ${jitter.toFixed(3)}`
+              );
+              this.stats.lastStreamHealth = streamHealth;
+            }
+            
+            // Take action based on stream health
+            if (streamHealth === "stalled") {
+              const stalledTime = (now - this.stats.lastGoodFrameTime) / 1000;
+              if (stalledTime > 3) { // Stalled for 3+ seconds
+                this.logger.log(`Stream stalled for ${stalledTime.toFixed(1)}s, restarting connection`);
+                this.restartConnection();
+                return;
+              }
+            } else if (streamHealth === "degraded" && this.stats.consecutiveLowFrameRates >= 4) {
+              // Multiple consecutive degraded checks - restart connection
+              this.logger.log("Stream consistently degraded, restarting connection");
               this.restartConnection();
+              return;
             }
             
             // Update stored stats
@@ -538,12 +593,30 @@ class WebRTCService {
           this.handleConnectionFailure();
         }
         
+        // Periodic ICE restart - helps refresh connections that are technically 
+        // connected but performing poorly
+        const connectionAge = (now - this.stats.lastGoodRestartTime) / 1000;
+        if (connState === 'connected' && connectionAge > 300) { // 5 minutes
+          this.logger.log("Performing preventive ICE restart");
+          try {
+            if (this.peerConnection && this.peerConnection.restartIce) {
+              this.peerConnection.restartIce();
+              this.stats.lastGoodRestartTime = now;
+            }
+          } catch (e) {
+            this.logger.log(`Error during preventive ICE restart: ${e.message}`);
+          }
+        }
+        
       } catch (error) {
         this.logger.log(`Error in health check: ${error.message}`);
       }
-    }, CONNECTION_CONFIG.connectionCheckInterval);
+    }, 2500); // Check every 2.5 seconds for faster response to problems
     
-    this.logger.log(`Started health check interval (${CONNECTION_CONFIG.connectionCheckInterval}ms)`);
+    // Initialize restart time
+    this.stats.lastGoodRestartTime = Date.now();
+    
+    this.logger.log("Started enhanced health check");
   }
   
   /**

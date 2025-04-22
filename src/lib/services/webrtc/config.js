@@ -2,7 +2,7 @@
  * WebRTC configuration
  */
 
-// Video quality options
+// Video quality options - optimized for performance
 export const QUALITY_OPTIONS = [
   {
     id: "low",
@@ -13,9 +13,9 @@ export const QUALITY_OPTIONS = [
   },
   {
     id: "medium",
-    label: "Standard (960×540)",
-    width: 960,
-    height: 540,
+    label: "Standard (854×480)",
+    width: 854,
+    height: 480,
     recommended: true,
   },
   { 

@@ -14,79 +14,148 @@ from aiortc.mediastreams import VideoStreamTrack
 
 logger = logging.getLogger('webrtc_manager')
 
-# Video quality configurations
+# Video quality configurations optimized for performance
 VIDEO_CONFIGS = {
     "low": {"width": 640, "height": 360, "fps": 15},
-    "medium": {"width": 960, "height": 540, "fps": 30},
-    "high": {"width": 1280, "height": 720, "fps": 30},
-    "hd": {"width": 1920, "height": 1080, "fps": 30}
+    "medium": {"width": 854, "height": 480, "fps": 24},  # Reduced resolution, reliable framerate
+    "high": {"width": 1280, "height": 720, "fps": 24},   # Reduced framerate for stability
+    "hd": {"width": 1920, "height": 1080, "fps": 20}     # Further reduced framerate for high-res
 }
 
 class FrameTransformer:
     """
-    Transform frames before sending them over WebRTC.
-    Uses OpenCV for efficient image processing and maintains aspect ratio.
+    Transform frames before sending over WebRTC.
+    Optimized with caching and faster processing for better performance.
     """
     def __init__(self, width=640, height=480):
         self.width = width
         self.height = height
         self.last_frame = None
         
+        # Cache for optimization
+        self._last_input_shape = None
+        self._last_src_aspect = None
+        self._cached_canvas = None
+        self._y_offset = 0
+        self._x_offset = 0
+        self._new_height = 0
+        self._new_width = 0
+        self._resize_method = None  # 'width', 'height', or 'direct'
+        
+        # Performance tracking
+        self._transform_count = 0
+        self._cached_transforms = 0
+        self._start_time = time.time()
+        
     def transform(self, frame):
-        """Process a frame for sending over WebRTC with aspect ratio preservation"""
+        """Optimized frame processing for WebRTC with aspect ratio preservation"""
         try:
-            # Make a copy to avoid modifying original
-            result = frame.copy()
+            # Skip unnecessary copying if possible
+            if frame is None:
+                if self.last_frame is not None:
+                    return self.last_frame
+                else:
+                    return np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                    
+            # Performance tracking
+            self._transform_count += 1
             
             # Check dimensions
-            if result.shape[1] != self.width or result.shape[0] != self.height:
-                # Calculate aspect ratio
-                src_aspect = result.shape[1] / result.shape[0]  # width / height
-                dst_aspect = self.width / self.height
-                
-                # Resize differently based on aspect ratio
-                if src_aspect != dst_aspect:
-                    logger.debug(f"Input frame has different aspect ratio: {src_aspect:.2f} vs target {dst_aspect:.2f}")
-                    
-                    # Create a black canvas of target size
-                    canvas = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-                    
-                    if src_aspect > dst_aspect:
-                        # Source is wider, scale to target width and center vertically
-                        new_height = int(self.width / src_aspect)
-                        scaled = cv2.resize(
-                            result, 
-                            (self.width, new_height),
-                            interpolation=cv2.INTER_AREA
-                        )
-                        # Calculate vertical offset to center
-                        y_offset = (self.height - new_height) // 2
-                        # Place on canvas
-                        canvas[y_offset:y_offset+new_height, 0:self.width] = scaled
-                    else:
-                        # Source is taller, scale to target height and center horizontally
-                        new_width = int(self.height * src_aspect)
-                        scaled = cv2.resize(
-                            result, 
-                            (new_width, self.height),
-                            interpolation=cv2.INTER_AREA
-                        )
-                        # Calculate horizontal offset to center
-                        x_offset = (self.width - new_width) // 2
-                        # Place on canvas
-                        canvas[0:self.height, x_offset:x_offset+new_width] = scaled
-                    
-                    result = canvas
+            input_shape = frame.shape
+            src_width, src_height = input_shape[1], input_shape[0]
+            
+            # Fast path: dimensions already match, just convert color
+            if src_width == self.width and src_height == self.height:
+                # Color conversion is still needed
+                if input_shape[2] == 3:  # Only convert if 3-channel
+                    result = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 else:
-                    # Aspect ratios match, do a simple resize
-                    result = cv2.resize(
-                        result, 
-                        (self.width, self.height),
-                        interpolation=cv2.INTER_AREA
-                    )
+                    result = frame  # Use as-is
+                    
+                self.last_frame = result
+                return result
+                
+            # Check if frame dimensions match our cached calculations
+            cache_hit = (input_shape == self._last_input_shape)
+            
+            if not cache_hit:
+                # Need to recalculate transformations
+                src_aspect = src_width / src_height
+                dst_aspect = self.width / self.height
+                self._last_input_shape = input_shape
+                self._last_src_aspect = src_aspect
+                
+                # Determine resize method
+                if abs(src_aspect - dst_aspect) < 0.01:
+                    # Aspect ratios close enough, use direct resize
+                    self._resize_method = 'direct'
+                elif src_aspect > dst_aspect:
+                    # Source is wider, scale to target width and center vertically
+                    self._resize_method = 'width'
+                    self._new_height = int(self.width / src_aspect)
+                    self._y_offset = (self.height - self._new_height) // 2
+                    # Pre-create canvas
+                    self._cached_canvas = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                else:
+                    # Source is taller, scale to target height and center horizontally
+                    self._resize_method = 'height'
+                    self._new_width = int(self.height * src_aspect)
+                    self._x_offset = (self.width - self._new_width) // 2
+                    # Pre-create canvas
+                    self._cached_canvas = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+            else:
+                self._cached_transforms += 1
+                
+            # Convert color first - PyAV's VideoFrame.from_ndarray expects RGB
+            if input_shape[2] == 3:  # Only convert if 3-channel
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            else:
+                rgb_frame = frame  # Use as-is
+                
+            # Apply the appropriate transformation
+            if self._resize_method == 'direct':
+                # Simple resize - aspect ratios match
+                result = cv2.resize(
+                    rgb_frame, 
+                    (self.width, self.height),
+                    interpolation=cv2.INTER_AREA
+                )
+            elif self._resize_method == 'width':
+                # Scale to width and center vertically
+                scaled = cv2.resize(
+                    rgb_frame, 
+                    (self.width, self._new_height),
+                    interpolation=cv2.INTER_AREA
+                )
+                # Create fresh canvas (avoid using cached one to prevent artifacts)
+                canvas = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                # Place on canvas
+                canvas[self._y_offset:self._y_offset+self._new_height, 0:self.width] = scaled
+                result = canvas
+            else:  # self._resize_method == 'height'
+                # Scale to height and center horizontally
+                scaled = cv2.resize(
+                    rgb_frame, 
+                    (self._new_width, self.height),
+                    interpolation=cv2.INTER_AREA
+                )
+                # Create fresh canvas
+                canvas = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                # Place on canvas
+                canvas[0:self.height, self._x_offset:self._x_offset+self._new_width] = scaled
+                result = canvas
                 
             # Store last successfully processed frame
             self.last_frame = result
+            
+            # Log performance stats periodically
+            elapsed = time.time() - self._start_time
+            if self._transform_count % 300 == 0 and elapsed > 0:
+                transforms_per_sec = self._transform_count / elapsed
+                cache_ratio = (self._cached_transforms / max(1, self._transform_count)) * 100
+                logger.debug(f"FrameTransformer stats: {transforms_per_sec:.1f} transforms/sec, " +
+                             f"cache hit ratio: {cache_ratio:.1f}%")
+                
             return result
             
         except Exception as e:
@@ -100,71 +169,182 @@ class FrameTransformer:
 
 class FrameVideoStreamTrack(VideoStreamTrack):
     """
-    A simplified video stream track that sends frames from the simulation.
-    Uses aiortc's built-in VideoStreamTrack.
+    A video stream track that sends frames from the simulation with enhanced reliability.
+    Uses aiortc's VideoStreamTrack with improvements for smoother playback.
     """
     def __init__(self, width=640, height=480, fps=30):
         super().__init__()
         self.width = width
         self.height = height
         self.fps = fps
+        
+        # Target frame duration in seconds
+        self.frame_duration = 1.0 / fps
+        
+        # Frame transformer for processing frames
         self.frame_transformer = FrameTransformer(width, height)
-        self.frame_queue = asyncio.Queue(maxsize=1)
+        
+        # Use a larger queue to buffer frames during unstable periods
+        # This helps prevent stream interruptions during short network issues
+        self.frame_queue = asyncio.Queue(maxsize=3)
+        
+        # Tracking for stats and debug
         self.counter = 0
+        self.frames_processed = 0
+        self.dropped_frames = 0
         self.start_time = time.time()
+        self.last_frame_time = time.time()
+        
         # Use fractions for time_base (standard in aiortc)
         self.time_base = fractions.Fraction(1, 90000)
         
+        # Error tracking
+        self.consecutive_errors = 0
+        
+        # Last successfully processed frame (for fallback)
+        self.last_frame = None
+        
+        # Frame timestamp tracking for smooth delivery
+        self.last_pts = 0
+        self.frame_interval = int(90000 / fps)  # in pts units
+        
+        logger.info(f"FrameVideoStreamTrack initialized: {width}x{height}@{fps}fps")
+        
     def update_frame(self, frame):
-        """Update the frame to be sent to connected peers"""
+        """Update the frame to be sent to connected peers with improved handling"""
         try:
+            # Reset error counter on successful calls
+            self.consecutive_errors = 0
+            
             # Transform the frame
             processed_frame = self.frame_transformer.transform(frame)
             
-            # Add to queue, replacing older frame if necessary
+            # Track successful frame processing
+            self.frames_processed += 1
+            current_time = time.time()
+            frame_time_delta = current_time - self.last_frame_time
+            self.last_frame_time = current_time
+            
+            # Add to queue with backpressure handling
             try:
+                # Try to add to queue without waiting
                 self.frame_queue.put_nowait(processed_frame)
             except asyncio.QueueFull:
-                # Empty the queue and add new frame
+                # Queue is full - we need to drop a frame
+                
+                # During normal operation, drop the oldest frame
+                # During high load, drop all frames and just keep the newest
+                if frame_time_delta > 2 * self.frame_duration:
+                    # We're getting frames too slowly - clear queue and add newest
+                    while not self.frame_queue.empty():
+                        try:
+                            _ = self.frame_queue.get_nowait()
+                            self.dropped_frames += 1
+                        except Exception:
+                            pass
+                else:
+                    # Normal operation - just drop oldest frame
+                    try:
+                        _ = self.frame_queue.get_nowait()
+                        self.dropped_frames += 1
+                    except Exception:
+                        pass
+                
+                # Now add our current frame
                 try:
-                    _ = self.frame_queue.get_nowait()
                     self.frame_queue.put_nowait(processed_frame)
-                except Exception:
-                    pass
+                except asyncio.QueueFull:
+                    logger.warning("Queue still full after cleanup - frame dropped")
+                    self.dropped_frames += 1
                     
+            # Periodically log stats
+            if self.frames_processed % 300 == 0:
+                drop_percent = (self.dropped_frames / max(1, self.frames_processed)) * 100
+                logger.debug(f"Frame stats: processed={self.frames_processed}, dropped={self.dropped_frames} ({drop_percent:.1f}%)")
+                
+            # Save last successful frame for fallback
+            self.last_frame = processed_frame
+            
         except Exception as e:
-            logger.error(f"Error updating frame: {e}")
+            self.consecutive_errors += 1
+            if self.consecutive_errors < 5:
+                logger.error(f"Error updating frame: {e}")
+            else:
+                # Only log occasionally after many errors to avoid flooding logs
+                if self.consecutive_errors % 100 == 0:
+                    logger.error(f"Still encountering frame update errors after {self.consecutive_errors} attempts: {e}")
             
     async def recv(self):
-        """Get the next frame to send"""
+        """Get the next frame to send with improved timing and reliability"""
         try:
-            # Get frame with timeout
+            # Calculate target PTS based on smooth timing
+            target_pts = 0
+            if self.last_pts > 0:
+                # Aim for smooth frame delivery by incrementing previous PTS
+                target_pts = self.last_pts + self.frame_interval
+            else:
+                # First frame - base on wall clock
+                target_pts = int((time.time() - self.start_time) * 90000)
+            
+            # Try to get a frame with timeout
+            frame = None
             try:
-                frame = await asyncio.wait_for(self.frame_queue.get(), timeout=1.0)
+                # Shorter timeout for more responsive frame delivery
+                frame = await asyncio.wait_for(self.frame_queue.get(), timeout=0.5)
+                
+                # Reset error counter on successful frame fetch
+                self.consecutive_errors = 0
+                
             except (asyncio.TimeoutError, asyncio.QueueEmpty):
-                # Use last transformed frame or create blank frame
-                frame = self.frame_transformer.last_frame
+                # Use last transformed frame as fallback
+                frame = self.last_frame
+                
                 if frame is None:
+                    # Create blank RGB frame as last resort fallback
                     frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-                    
-            # Convert to VideoFrame
-            pts = int((time.time() - self.start_time) * 90000)
+                    logger.debug("Using blank frame fallback")
+                else:
+                    logger.debug("Using last cached frame due to queue timeout")
+            
+            # Convert to VideoFrame - frame should already be in RGB format
             video_frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
-            video_frame.pts = pts
-            # Use self.time_base instead of av.Rational
+            
+            # Use calculated PTS for smoother playback
+            video_frame.pts = target_pts
             video_frame.time_base = self.time_base
+            
+            # Save for next frame calculation
+            self.last_pts = target_pts
             
             self.counter += 1
             return video_frame
             
         except Exception as e:
-            logger.error(f"Error in recv: {e}")
-            # Create blank frame as fallback
-            pts = int((time.time() - self.start_time) * 90000)
+            self.consecutive_errors += 1
+            if self.consecutive_errors < 5:
+                logger.error(f"Error in recv: {e}")
+            else:
+                # Only log occasionally after many errors
+                if self.consecutive_errors % 100 == 0:
+                    logger.error(f"Still encountering recv errors after {self.consecutive_errors} attempts: {e}")
+                
+            # Create blank frame as ultimate fallback
             blank_frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+            
+            # Try to maintain proper timing even in error case
+            target_pts = 0
+            if self.last_pts > 0:
+                target_pts = self.last_pts + self.frame_interval
+            else:
+                target_pts = int((time.time() - self.start_time) * 90000)
+                
             video_frame = av.VideoFrame.from_ndarray(blank_frame, format="rgb24")
-            video_frame.pts = pts
+            video_frame.pts = target_pts
             video_frame.time_base = self.time_base
+            
+            # Save for next frame
+            self.last_pts = target_pts
+            
             return video_frame
 
 class WebRTCManager:
@@ -358,7 +538,7 @@ class WebRTCManager:
             return False
             
     async def broadcast_frame(self, frame):
-        """Send a frame to all connected peers"""
+        """Send a frame to all connected peers with enhanced reliability"""
         if not self.tracks:
             return 0
             
@@ -366,9 +546,50 @@ class WebRTCManager:
             if frame is None:
                 # Skip empty frames
                 return 0
+            
+            # Frame buffer management - only update frame if it's different
+            # This reduces processing load when frames haven't changed
+            frame_hash = hash(frame.tobytes()) if hasattr(frame, 'tobytes') else None
+            if frame_hash == getattr(self, '_last_frame_hash', None):
+                # Frame identical to previous one - might be a duplicate
+                # Still count as updated but skip processing
+                return len(self.tracks)
+            
+            # Store hash for next comparison        
+            self._last_frame_hash = frame_hash
+                
+            # Rate limiting for busy periods - if more than 10 frames
+            # are waiting to be processed, we might be backlogged
+            # In that case, temporarily reduce processing load
+            current_time = time.time()
+            if not hasattr(self, '_last_broadcast_time'):
+                self._last_broadcast_time = current_time
+                self._broadcast_backlog = 0
+            else:
+                time_delta = current_time - self._last_broadcast_time
+                self._last_broadcast_time = current_time
+                
+                # If frames are arriving too quickly, increment backlog
+                if time_delta < 0.01:  # Less than 10ms between frames
+                    self._broadcast_backlog += 1
+                else:
+                    # Otherwise, gradually reduce backlog
+                    self._broadcast_backlog = max(0, self._broadcast_backlog - 1)
+                
+                # If we have significant backlog, process only every Nth frame
+                if self._broadcast_backlog > 10:
+                    # Skip this frame if it's not a multiple of throttle factor
+                    throttle_factor = min(5, self._broadcast_backlog // 10 + 1)
+                    if getattr(self, '_frame_counter', 0) % throttle_factor != 0:
+                        self._frame_counter = getattr(self, '_frame_counter', 0) + 1
+                        return 0
+                        
+            self._frame_counter = getattr(self, '_frame_counter', 0) + 1
                 
             # Update all tracks
             updated = 0
+            closed_connections = []
+            
             for client_id, track in list(self.tracks.items()):
                 try:
                     # Verify connection is still active
@@ -377,8 +598,28 @@ class WebRTCManager:
                         if pc.connectionState != "closed" and pc.connectionState != "failed":
                             track.update_frame(frame)
                             updated += 1
+                        else:
+                            # Mark for cleanup
+                            closed_connections.append(client_id)
+                    else:
+                        # Track exists but connection doesn't - clean up
+                        closed_connections.append(client_id)
                 except Exception as e:
                     logger.error(f"Error updating track for {client_id}: {e}")
+                    # If error occurs multiple times, mark for cleanup
+                    if not hasattr(track, '_error_count'):
+                        track._error_count = 1
+                    else:
+                        track._error_count += 1
+                        
+                    if track._error_count > 5:
+                        closed_connections.append(client_id)
+            
+            # Clean up closed connections
+            for client_id in closed_connections:
+                logger.info(f"Scheduling cleanup for connection {client_id}")
+                # Schedule cleanup to avoid blocking
+                asyncio.create_task(self.close_connection(client_id))
                     
             return updated
             
