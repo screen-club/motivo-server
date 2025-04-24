@@ -3,6 +3,8 @@ import { io } from "socket.io-client";
 import { extractStructuredResponse, processRewards } from "./utils.js";
 import { v4 as uuidv4 } from "uuid";
 import { parameterStore } from "../../stores/parameterStore.js";
+import { get } from "svelte/store"; // Import get to read store value
+import { mixWeightStore } from "../../stores/controlUISettingsStore.js"; // Import the mix weight store
 
 // Global counter for unique request IDs to prevent duplication
 let frameRequestCounter = 0;
@@ -245,22 +247,24 @@ export function createGeminiClient(
           const mixStrategy =
             structuredResponse.result?.mix_strategy ?? "mlp_fusion"; // Default strategy
 
+          // --- Get mix weight from the store ---
+          const currentMixWeight = get(mixWeightStore);
+
           websocketService.send({
             type: "mix_pose_reward",
             reward: {
-              // The reward part of the mix
               rewards,
               weights,
               combinationType,
             },
             use_current_pose: true, // Use the character's current pose
-            mix_weight: mixWeight,
+            mix_weight: currentMixWeight, // Use value from store
             mix_strategy: mixStrategy,
             timestamp: new Date().toISOString(),
             message_id: requestId,
           });
           console.log(
-            `GeminiClient: Sent mix_pose_reward with ${rewards.length} rewards, weight ${mixWeight}, strategy ${mixStrategy}`
+            `GeminiClient: Sent mix_pose_reward with ${rewards.length} rewards, weight ${currentMixWeight}, strategy ${mixStrategy}`
           );
         } else {
           // Send standard request_reward message

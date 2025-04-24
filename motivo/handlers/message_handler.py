@@ -157,17 +157,21 @@ class MessageHandler:
             logger.error(f"Error creating computation start status: {str(e)}")
         
         # Start background task to compute actual context
-        asyncio.create_task(self._compute_reward_context_background(reward_config, fallback_context))
+        # asyncio.create_task(self._compute_reward_context_background(reward_config, fallback_context))
         
         # Return the CURRENT context (or fallback if current is None), so we don't disrupt the experience
         # while computing the new context in the background
-        if self.current_z is None:
-            return fallback_context
-        else:
-            return self.current_z
+        # if self.current_z is None:
+        #     return fallback_context
+        # else:
+        #     return self.current_z
+        # Instead of returning current_z, the caller will now await the background task
+        # which will return the computed z directly.
+        pass # Remove the old return logic
     
     async def _compute_reward_context_background(self, reward_config, fallback_context):
-        """Background task to compute reward context and update state when done"""
+        """Background task to compute reward context and RETURN the result."""
+        computed_z = None # Initialize computed_z
         try:
             # Run the actual computation in a thread to avoid blocking asyncio loop
             loop = asyncio.get_running_loop()
@@ -183,13 +187,11 @@ class MessageHandler:
             # If computation failed, use the fallback
             if z is None:
                 logger.warning("Computation returned None, using fallback context")
-                z = fallback_context
-                
-            # Update the current_z with real computed value
-            self.current_z = z
+                computed_z = fallback_context
+            else:
+                computed_z = z # Store the successfully computed z
             
-            # Instead of broadcasting to all clients, use the same message ID prefix from start
-            # This avoids creating a feedback loop
+            # Status update logic (moved slightly, still uses self.computation_status)
             try:
                 # Create a completion message ID correlated with the start message
                 message_id = getattr(self, 'last_computation_id', None)
@@ -216,9 +218,7 @@ class MessageHandler:
             logger.error(f"Error in background computation: {str(e)}")
             # On error, we DON'T change the current context - keep whatever was there
             # But if current_z is None for some reason, use the fallback
-            if self.current_z is None:
-                logger.warning("Current context is None after error, using fallback")
-                self.current_z = fallback_context
+            computed_z = fallback_context
             
             # Broadcast error status
             try:
@@ -232,9 +232,9 @@ class MessageHandler:
                 })
             except Exception as broadcast_error:
                 logger.error(f"Error broadcasting computation error: {str(broadcast_error)}")
-        finally:
-            # Always reset computing flag when done
-            self.is_computing_reward = False
+        
+        # Return the computed z (or fallback if error occurred)
+        return computed_z
 
     async def handle_message(self, websocket, message: str) -> None:
         """Main message handler that routes to specific command handlers"""
@@ -534,14 +534,20 @@ class MessageHandler:
 
     async def handle_mix_pose_reward(self, websocket, data: Dict[str, Any]) -> None:
         """Mix dynamic hold-pose reward context with input reward context."""
+        self.is_computing_reward = True # Set computing flag
+        self.last_websocket = websocket # Store for status updates if needed
+        hold_task = None
+        input_task = None
+        fallback_context = self._get_fallback_context() # Helper to get fallback
+        
         try:
-            # --- 1. Get Target Pose, Input Reward Config & Mix Params ---
+            # --- 1. Get Target Pose, Input Reward Config & Mix Params --- 
             use_current_pose = data.get("use_current_pose", False)
             reward_config_input = data.get("reward", {}) # Input reward config
             mix_weight = data.get("mix_weight", 0.5) # Weight for the INPUT reward context
-            mix_strategy = data.get("mix_strategy", "linear")
+            mix_strategy = data.get("mix_strategy", "slerp")
 
-            # mix_weight = 0 # REMOVED HARDCODING - Use value from input data
+            mix_strategy = "slerp"
             
             logger.info(f"Mixing dynamic hold reward and input reward.")
             logger.info(f"  Strategy: {mix_strategy}, Weight (for input reward): {mix_weight:.2f}")
@@ -568,47 +574,79 @@ class MessageHandler:
                 self.env.unwrapped.set_physics(qpos=current_qpos, qvel=current_qvel)
             if not target_positions: raise RuntimeError("Failed to extract target positions for hold reward.")
 
-            # --- 3. Calculate Hold Pose Reward Context (hold_pose_reward_z) ---
+            # --- 3. Calculate Hold Pose Reward Context (hold_pose_reward_z) --- 
             hold_pose_rewards_list = []
             for part_name, pos in target_positions.items():
                 target_spec = {"body": part_name, "x": pos[0], "y": pos[1], "z": pos[2], "weight": 10.0, "margin": 0.01, "sigmoid": "linear"}
                 hold_pose_rewards_list.append({"name": "position", "targets": [target_spec], "upright_weight": 0.0, "control_weight": 0.0})
             reward_config_hold = {"rewards": hold_pose_rewards_list, "weights": [1.0]*len(hold_pose_rewards_list), "combinationType": "geometric", "name": "DynamicHoldPose"}
             
-            logger.info("Initiating hold-pose reward context computation...")
-            # Use the standard async-initiating method
-            hold_pose_reward_z = self.get_reward_context(reward_config_hold)
-            # Note: hold_pose_reward_z now holds the *current* z, not the newly computed one yet
-            logger.info("Hold-pose reward context computation initiated.")
+            logger.info("Creating hold-pose reward context computation task...")
+            hold_task = asyncio.create_task(
+                self._compute_reward_context_background(reward_config_hold, fallback_context)
+            )
 
-            # --- 4. Calculate Input Reward Context (input_reward_z) ---
-            input_reward_z = None
+            # --- 4. Calculate Input Reward Context (input_reward_z) --- 
             if reward_config_input and reward_config_input.get('rewards'):
-                logger.info("Initiating input reward context computation...")
-                # Use the standard async-initiating method
-                input_reward_z = self.get_reward_context(reward_config_input)
-                # Note: input_reward_z now holds the *current* z (same as above), not the new one yet
-                logger.info("Input reward context computation initiated.")
+                logger.info("Creating input reward context computation task...")
+                input_task = asyncio.create_task(
+                    self._compute_reward_context_background(reward_config_input, fallback_context)
+                )
             else:
-                logger.info("Input reward config is empty, using current context for mixing.")
-                # If no input, use the current context (same as hold_pose_reward_z)
-                input_reward_z = hold_pose_reward_z 
-            
-            # Handle case where the initial context was None
-            if hold_pose_reward_z is None:
-                logger.warning("Initial context (hold_pose_reward_z) is None, using default z for mixing.")
-                default_z_val = self.default_z if hasattr(self, 'default_z') and self.default_z is not None else torch.zeros((1, 256), device=self.model.cfg.device) # Assuming latent dim 256
-                hold_pose_reward_z = default_z_val
-            if input_reward_z is None: 
-                 logger.warning("Initial context (input_reward_z) is None, using default z for mixing.")
-                 input_reward_z = hold_pose_reward_z # Use the same default
+                 logger.info("Input reward config is empty, using current context for mixing.")
+                 # If no input reward, the input_task remains None.
+                 # We'll handle this after awaiting the hold_task.
 
-            # --- 5. Mix Reward Contexts (using potentially stale initial values) ---
+            # --- 5. Await Computations & Get Results --- 
+            tasks_to_await = [task for task in [hold_task, input_task] if task is not None]
+            if not tasks_to_await:
+                raise RuntimeError("No computation tasks were created.")
+            
+            logger.info(f"Awaiting {len(tasks_to_await)} computation task(s)...")
+            results = await asyncio.gather(*tasks_to_await, return_exceptions=True)
+            logger.info("Computation task(s) finished.")
+            
+            # Process results and handle exceptions
+            hold_pose_reward_z = None
+            input_reward_z = None
+            
+            result_index = 0
+            if hold_task:
+                hold_result = results[result_index]
+                if isinstance(hold_result, Exception):
+                    logger.error(f"Error computing hold pose context: {hold_result}")
+                    hold_pose_reward_z = fallback_context # Use fallback on error
+                else:
+                    hold_pose_reward_z = hold_result
+                result_index += 1
+            else:
+                # Should not happen if tasks_to_await logic is correct, but handle defensively
+                hold_pose_reward_z = fallback_context 
+                
+            if input_task:
+                input_result = results[result_index]
+                if isinstance(input_result, Exception):
+                    logger.error(f"Error computing input reward context: {input_result}")
+                    input_reward_z = fallback_context # Use fallback on error
+                else:
+                    input_reward_z = input_result
+            else:
+                # If there was no input task, use the computed hold pose context as input
+                logger.info("No input reward task, using hold pose context for mixing.")
+                input_reward_z = hold_pose_reward_z 
+
+            # Ensure tensors are not None before proceeding
+            if hold_pose_reward_z is None or input_reward_z is None:
+                 logger.error("One or both computed contexts are None after awaiting, using fallback.")
+                 hold_pose_reward_z = hold_pose_reward_z or fallback_context
+                 input_reward_z = input_reward_z or fallback_context
+
+            # --- 6. Mix Final Reward Contexts --- 
             device = self.model.cfg.device
             hold_pose_reward_z = hold_pose_reward_z.to(device)
             input_reward_z = input_reward_z.to(device)
-            
-            logger.info(f"Mixing hold and input reward contexts (initial values) using strategy: {mix_strategy}, weight (input): {mix_weight}")
+
+            logger.info(f"Mixing final computed contexts using strategy: {mix_strategy}, weight (input): {mix_weight}")
             w_input = mix_weight
             w_hold = 1.0 - mix_weight
             
@@ -640,53 +678,73 @@ class MessageHandler:
             
             if result_z is None: raise RuntimeError(f"Mixing failed for strategy: {mix_strategy}")
 
-            # --- 6. Set Active Context --- 
+            # --- 7. Set Final Active Context --- 
             # Set based on the mix of initial values. Background tasks will update later.
             self.current_z = result_z
-            logger.info("Initial mixed context set. Background computations initiated.")
+            logger.info("Final mixed context computed and set.")
 
-            # --- 7. Update State --- 
+            # --- 8. Update State --- 
             # Represent the state based on the initiated computations
             if reward_config_input and reward_config_input.get('rewards'):
                 self.active_rewards = reward_config_input # Show the input config as primary
                 self.current_reward_config = reward_config_input
+                logger.info("Input reward empty, setting active_rewards to dynamic hold config.")
             else:
                  self.active_rewards = reward_config_hold # Show the hold config if no input
                  self.current_reward_config = reward_config_hold
                  logger.info("Input reward empty, setting active_rewards to dynamic hold config.")
 
             self.active_poses = {
-                "type": "MixedReward_HoldVsInput_Async",
-                "name": "RewardMixState_Async",
+                "type": "MixedReward_HoldVsInput_Sync",
+                "name": "RewardMixState_Sync",
                 "target_qpos_for_hold": pose_target_qpos.tolist(),
                 "mix_weight_input": mix_weight,
                 "mix_strategy": mix_strategy
             }
             
-            # --- 8. Send Response --- 
+            # --- 9. Send Response --- 
             response = {
                 "type": "mix_reward_only_updated", # Keep same type
                 "status": "success",
-                "message": "Initiated mix of dynamic hold reward and input reward context.",
+                "message": "Successfully computed and mixed hold pose and input reward contexts.",
                 "mix_strategy": mix_strategy,
                 "mix_weight_input": mix_weight,
                 "active_rewards": self.active_rewards,
                 "active_poses": self.active_poses,
                 "timestamp": datetime.now().isoformat()
             }
-            await websocket.send(json.dumps(response))
+            # Send response outside the try block in finally
 
         except Exception as e:
             error_msg = f"Error mixing reward contexts: {str(e)}"
             logger.error(error_msg)
             traceback.print_exc()
+            self.current_z = fallback_context # Ensure context is fallback on error
             response = {
                 "type": "mix_reward_only_updated",
                 "status": "error",
                 "error": error_msg,
                 "timestamp": datetime.now().isoformat()
             }
+            # Send error response immediately
             await websocket.send(json.dumps(response))
+        finally:
+            self.is_computing_reward = False # Reset flag regardless of success/error
+            # Send success response here if no error occurred
+            if 'error' not in response:
+                await websocket.send(json.dumps(response)) 
+
+    def _get_fallback_context(self):
+        """Helper method to get a fallback context tensor."""
+        if hasattr(self.model, 'get_default_z'):
+            return self.model.get_default_z()
+        elif hasattr(self, 'default_z') and self.default_z is not None:
+            return self.default_z
+        else:
+            # Create a fallback tensor of appropriate shape
+            latent_dim = 256  # default latent dimension
+            device = next(self.model.parameters()).device if hasattr(self.model, 'parameters') else torch.device("cpu")
+            return torch.zeros((1, latent_dim), device=device)
 
     async def handle_debug_model_info(self, websocket, data: Dict[str, Any]) -> None:
         """Send debug information about model state"""

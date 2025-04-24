@@ -15,6 +15,7 @@
     import { chatStore } from '../stores/chatStore';
     import PresetsList from '../components/presets/PresetsList.svelte';
     import { defaultPresetPromptStore } from '../stores/llmInteractionStore';
+    import { mixWeightStore } from '../stores/controlUISettingsStore.js';
     
     let isSocketReady = $state(false);
     let cleanupListener;
@@ -35,6 +36,9 @@
     // State for default preset prompt
     let isEditingDefaultPrompt = $state(false);
     let defaultPromptValue = $state('');
+    
+    // State for mix weight slider - Now uses the store
+    // let mixWeight = $state(0.5); // Remove local state
     
     // Subscribe to defaultPresetPromptStore
     $effect(() => {
@@ -262,6 +266,27 @@
                         {/if}
                     </div>
                     
+                    <!-- Mix Weight Slider -->
+                    <div class="mb-4 p-3 bg-white rounded-lg shadow-sm">
+                        <label for="mixWeight" class="block font-medium text-gray-800 mb-2">
+                            Reward Mix Weight (Input Reward: {$mixWeightStore.toFixed(2)})
+                        </label>
+                        <div class="flex items-center gap-2">
+                            <span class="text-sm text-gray-600">Hold</span>
+                            <input 
+                                type="range" 
+                                id="mixWeight" 
+                                bind:value={$mixWeightStore}
+                                min="0" 
+                                max="1" 
+                                step="0.01" 
+                                class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                            />
+                            <span class="text-sm text-gray-600">Input</span>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1">Controls the blend between holding the current/target pose and applying the input reward. 0 = Pure Hold, 1 = Pure Input.</p>
+                    </div>
+
                     <LLM />
                 </div>
             {/if}

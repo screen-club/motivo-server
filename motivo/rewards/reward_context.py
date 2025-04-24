@@ -506,26 +506,34 @@ def create_reward_function(reward_type, weight):
     
     # Handle behaviour rewards
     elif name == 'standing':
-        return (StandingReward(
-            target_height=reward_type.get('target_height', 1.4),
-            margin=reward_type.get('margin', 0.2)
-        ), weight)
+        return (StandingReward(target_height=reward_type.get('target_height', 0.95), tolerance=reward_type.get('tolerance', 0.05)), weight)
     elif name == 'upright':
-        return (UprightReward(
-            min_upright=reward_type.get('min_upright', 0.9),
-            margin=reward_type.get('margin', 1.9)
-        ), weight)
-    elif name == 'movement-control':
-        return (MovementControlReward(
-            margin=reward_type.get('margin', 0.5)
-        ), weight)
+        return (UprightReward(target_angle=reward_type.get('target_angle', 0.0), tolerance=reward_type.get('tolerance', 0.1)), weight)
+    elif name == 'movement_control':
+        return (MovementControlReward(max_velocity=reward_type.get('max_velocity', 1.0), max_acceleration=reward_type.get('max_acceleration', 5.0)), weight)
     elif name == 'small-control':
-        return (SmallControlReward(
-            margin=reward_type.get('margin', 1.0),
-            weight=reward_type.get('control_weight', 0.8)
-        ), weight)
-    elif name == 'position':
-        # Adapt to match the WebSocket API format
+        return (SmallControlReward(margin=reward_type.get('margin', 1.0)), weight)
+    elif name == 'balance':
+        return (BalanceReward(max_com_velocity=reward_type.get('max_com_velocity', 0.1)), weight)
+    elif name == 'symmetry':
+        return (SymmetryReward(tolerance=reward_type.get('tolerance', 0.05)), weight)
+    elif name == 'energy_efficiency':
+        return (EnergyEfficiencyReward(max_control_cost=reward_type.get('max_control_cost', 1.0)), weight)
+    elif name == 'natural_motion':
+        return (NaturalMotionReward(max_jerk=reward_type.get('max_jerk', 10.0)), weight)
+    elif name == 'gaze_direction':
+        target_direction = reward_type.get('target_direction', [1, 0, 0])
+        return (GazeDirectionReward(target_direction=target_direction, tolerance=reward_type.get('tolerance', 0.1)), weight)
+    elif name == 'ground_contact':
+        target_contacts = reward_type.get('target_contacts', ['L_Toe', 'R_Toe'])
+        return (GroundContactReward(target_contacts=target_contacts, min_force=reward_type.get('min_force', 10.0)), weight)
+    elif name == 'stable_standing':
+        return (StableStandingReward(max_com_velocity=reward_type.get('max_com_velocity', 0.05), max_base_movement=reward_type.get('max_base_movement', 0.02)), weight)
+    elif name == 'natural_walking':
+        return (NaturalWalkingReward(target_speed=reward_type.get('target_speed', 1.2), max_step_variation=reward_type.get('max_step_variation', 0.1)), weight)
+    
+    # Handle position reward separately due to complex target structure
+    if name == 'position':
         targets = {}
         for target in reward_type.get('targets', []):
             body_name = target['body']
@@ -542,49 +550,6 @@ def create_reward_function(reward_type, weight):
             targets=targets,
             upright_weight=reward_type.get('upright_weight', 0.3),
             control_weight=reward_type.get('control_weight', 0.2)
-        ), weight)
-    elif name == 'balance':
-        return (BalanceReward(
-            margin=reward_type.get('margin', 0.2)
-        ), weight)
-    elif name == 'symmetry':
-        return (SymmetryReward(
-            weight_hands=reward_type.get('weight_hands', 0.5),
-            weight_feet=reward_type.get('weight_feet', 0.5),
-            margin=reward_type.get('margin', 0.2)
-        ), weight)
-    elif name == 'energy-efficiency':
-        return (EnergyEfficiencyReward(
-            vel_margin=reward_type.get('vel_margin', 1.0),
-            ctrl_margin=reward_type.get('ctrl_margin', 0.5)
-        ), weight)
-    elif name == 'natural-motion':
-        return (NaturalMotionReward(
-            smoothness_weight=reward_type.get('smoothness_weight', 0.5),
-            coordination_weight=reward_type.get('coordination_weight', 0.5)
-        ), weight)
-    elif name == 'gaze-direction':
-        return (GazeDirectionReward(
-            target_point=np.array(reward_type.get('target_point', [1.0, 0.0, 1.7])),
-            angle_margin=reward_type.get('angle_margin', 0.5)
-        ), weight)
-    elif name == 'ground-contact':
-        return (GroundContactReward(
-            desired_contacts=reward_type.get('desired_contacts', ['L_Toe', 'R_Toe'])
-        ), weight)
-    elif name == 'stable-standing':
-        return (StableStandingReward(
-            standing_weight=reward_type.get('standing_weight', 0.3),
-            upright_weight=reward_type.get('upright_weight', 0.3),
-            balance_weight=reward_type.get('balance_weight', 0.2),
-            control_weight=reward_type.get('control_weight', 0.2)
-        ), weight)
-    elif name == 'natural-walking':
-        return (NaturalWalkingReward(
-            balance_weight=reward_type.get('balance_weight', 0.3),
-            energy_weight=reward_type.get('energy_weight', 0.2),
-            symmetry_weight=reward_type.get('symmetry_weight', 0.2),
-            natural_motion_weight=reward_type.get('natural_motion_weight', 0.3)
         ), weight)
     else:
         raise ValueError(f"Unknown reward type: {name}")
