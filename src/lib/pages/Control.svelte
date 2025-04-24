@@ -18,6 +18,12 @@
     
     let isSocketReady = $state(false);
     let cleanupListener;
+    let videoIntersectionTriggerRef; // Ref for the placeholder element
+    let videoWrapperRef;   // Ref for the actual video wrapper
+    let isPiPMode = $state(false);
+    let observer;
+    let isLargePiP = $state(false); // State for large PiP mode
+    let videoContainerRef; // Ref for the outer container
     
     // Get valid panel from localStorage or default to 'rewards'
     const storedPanel = localStorage.getItem('controlActivePanel');
@@ -87,22 +93,73 @@
         });
         
         isSocketReady = websocketService.getSocket()?.readyState === WebSocket.OPEN;
+
+        // --- Intersection Observer for PiP trigger ---
+        const options = { root: null, rootMargin: '0px', threshold: 0 }; 
+        observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                isPiPMode = !entry.isIntersecting;
+                if (entry.isIntersecting) {
+                    isLargePiP = false;
+                }
+            });
+        }, options);
+
+        if (videoIntersectionTriggerRef) { // Use the new trigger ref
+            observer.observe(videoIntersectionTriggerRef);
+        }
+
+        // Cleanup observers on destroy
+        onDestroy(() => {
+            if (observer && videoIntersectionTriggerRef) { // Use the new trigger ref
+                observer.unobserve(videoIntersectionTriggerRef);
+            }
+            if (cleanupListener) cleanupListener();
+            rewardStore.stopTesting();
+        });
     });
-    
-    onDestroy(() => {
-        if (cleanupListener) cleanupListener();
-        rewardStore.stopTesting(); // Ensure we clean up testing on component destroy
+
+    // Add/remove class to outer container based on PiP state
+    $effect(() => {
+        const pipActive = isPiPMode || isLargePiP;
+        if (videoContainerRef) {
+            videoContainerRef.classList.toggle('has-pip-active', pipActive);
+        }
     });
+
+    // Button handler only toggles the large state
+    function handleTogglePip() {
+        isLargePiP = !isLargePiP;
+    }
 </script>
   
 <div class="bg-gray-50 p-4">
     <div class="flex gap-8">
-        <!-- Always visible LiveFeed section - fixed width -->
-        <div class="w-[420px] flex flex-col gap-8 bg-blue-100/50 p-4 rounded-xl">
-            <div class="top-5 sticky">
-                <LiveFeed />
+        <!-- Left column -->
+        <div class="w-[420px] flex flex-col gap-8">
+            <!-- Outer container that stays in flow -->
+            <div class="video-container relative" bind:this={videoContainerRef}> 
+                <!-- Element for Intersection Observer trigger -->
+                <div bind:this={videoIntersectionTriggerRef} class="absolute top-0 h-1 w-full"></div>
+
+                <!-- Inner Wrapper for the Video Feed (this is what moves/resizes) -->
+                <div 
+                  class:pip-mode={isPiPMode || isLargePiP} 
+                  class:pip-large={isLargePiP}
+                  class="video-wrapper"
+                >
+                    <LiveFeed {isPiPMode} {isLargePiP} on:togglePip={handleTogglePip} />
+                    
+                    <!-- Scaled Parameter Panel for PiP -->
+                    <ParameterPanel 
+                      class="pip-params {!(isPiPMode || isLargePiP) ? 'hidden' : ''}"
+                      isCompact={true}
+                    />
+                </div>
             </div>
-            <ParameterPanel class="flex-1 min-w-[400px]" />
+
+            <!-- Original Parameter Panel (Hidden during PiP) -->
+            <ParameterPanel class="original-params flex-1 min-w-[400px] {(isPiPMode || isLargePiP) ? 'invisible' : ''}" />
             
             {#if isTestingAll}
                 <div class="bg-white/50 p-4 rounded-lg space-y-2">
@@ -216,6 +273,56 @@
     <PresetsList />
 </div>
 <style>
+    .video-container {
+        position: relative; /* Needed for the ::before pseudo-element */
+    }
+
+    /* Add padding to the container when inner video is PiP */
+    .video-container.has-pip-active {
+        padding-top: 240px; /* Approximate height of the video feed */
+        /* Adjust height if necessary */
+    }
+
+    .video-wrapper {
+        transition: all 0.3s ease-in-out;
+        position: relative; /* Needed for absolute positioning of pip-params */
+        overflow: hidden; /* Hide scaled content overflow */
+    }
+
+    .video-wrapper.pip-mode {
+        position: fixed;
+        top: 1rem;
+        left: 1rem;
+        width: 420px; /* Default PiP width (matches original container) */
+        height: auto;
+        z-index: 50;
+        border-radius: 0.5rem;
+        overflow: hidden; /* Ensure overflow hidden */
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        transition: all 0.3s ease-in-out;
+    }
+
+    .video-wrapper.pip-large {
+        width: 800px; /* Override for large PiP with fixed width */
+        overflow: hidden; /* Ensure overflow hidden */
+        /* Other styles are inherited from pip-mode */
+    }
+
+    .pip-params {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        transform: scale(0.35); /* Adjust scale factor as needed */
+        transform-origin: bottom left;
+        background: rgba(255, 255, 255, 0.9);
+        padding: 0.5rem; /* Add some padding */
+        border-top: 1px solid rgba(0,0,0,0.1);
+        pointer-events: none; /* Disable interaction */
+        transition: opacity 0.3s ease-in-out;
+        opacity: 1;
+    }
+
     /* Custom grid layout for auto-fitting columns */
     .grid-auto-fit {
         display: grid;

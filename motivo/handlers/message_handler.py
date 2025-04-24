@@ -1340,13 +1340,19 @@ class MessageHandler:
             return
 
         try:
-            # Ensure videos directory exists using storage_dir
-            videos_dir = os.path.join(config.storage_dir, "videos")
+            # Ensure we save to a path that will be accessible to the web server
+            videos_dir = os.path.abspath("storage/videos")
             os.makedirs(videos_dir, exist_ok=True)
+            logger.info(f"Using videos directory for recording: {videos_dir}")
 
+            # Create a unique filename with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             video_filename = f"recording_{timestamp}.mp4"
+            
+            # Save the video to storage/videos for direct web access
             video_path = os.path.join(videos_dir, video_filename)
+            
+            logger.info(f"Will save video recording to: {video_path}")
 
             # Get frame dimensions (might need adjustment based on actual rendering)
             # Using a common default, but ideally get from env or renderer
@@ -1423,20 +1429,72 @@ class MessageHandler:
                 self.stop_recording_timer.cancel()
                 self.stop_recording_timer = None
 
-            video_path = self.video_recorder.output_path
-            self.video_recorder.stop() # Finalize the video file
-
+            # Get the initial path (for reference)
+            initial_path = self.video_recorder.output_path
+            
+            # Stop recording and get final video path (may be different after optimization)
+            final_path = await self.video_recorder.stop() # Finalize the video file
+            
+            # Use the final path for the rest of the code
+            video_path = final_path if final_path else initial_path
+            
             logger.info(f"Stopped video recording. Saved to: {video_path}")
 
-            # Create download URL (optional, requires webserver setup for /outputs/videos)
-            # relative_path = os.path.relpath(video_path, config.outputs_dir)
-            # download_url = f"http://{self.backend_domain}:{self.webserver_port}/outputs/{relative_path}" # Example URL structure
+            # Create download URL for the video file
+            # Extract filename from path
+            video_filename = os.path.basename(video_path)
+            
+            # Create a URL for the videos directory in storage
+            videos_dir_relative = os.path.join('storage', 'videos')
+            download_url = f"http://{self.backend_domain}:{self.webserver_port}/{videos_dir_relative}/{video_filename}"
+            
+            # Copy the video to public directory for web access 
+            public_videos_dir = os.path.abspath(os.path.join("public", "storage", "videos"))
+            os.makedirs(public_videos_dir, exist_ok=True)
+            public_path = os.path.join(public_videos_dir, video_filename)
+            
+            # Log file info before copying
+            try:
+                file_size = os.path.getsize(video_path)
+                logger.info(f"Video file stats - Path: {video_path}, Size: {file_size} bytes, Exists: {os.path.exists(video_path)}")
+            except Exception as stat_err:
+                logger.warning(f"Could not get file stats for {video_path}: {str(stat_err)}")
+            
+            # Copy the file to the public directory with proper logging
+            try:
+                import shutil
+                shutil.copy2(video_path, public_path)
+                logger.info(f"Copied video to public directory: {public_path}")
+                
+                # Also log where we're accessing the file from for debugging
+                logger.info(f"Videos should be accessible from: http://{self.backend_domain}:{self.webserver_port}/storage/videos/{video_filename}")
+                
+                # Also create symlinks in storage/videos if possible to ensure files are accessible
+                # This handles potential path confusion in Docker environments
+                try:
+                    for extra_dir in ["motivo/storage/videos", "webserver/storage/videos"]:
+                        try:
+                            os.makedirs(extra_dir, exist_ok=True)
+                            extra_path = os.path.join(extra_dir, video_filename)
+                            if not os.path.exists(extra_path):
+                                import shutil
+                                shutil.copy2(video_path, extra_path)
+                                logger.info(f"Created extra copy at {extra_path}")
+                        except Exception as extra_err:
+                            logger.warning(f"Failed to create extra copy in {extra_dir}: {str(extra_err)}")
+                except Exception as copy_err:
+                    logger.warning(f"Failed to create extra copies: {str(copy_err)}")
+                
+            except Exception as copy_err:
+                logger.warning(f"Failed to copy video to public directory: {str(copy_err)}")
+                # If copy failed, we still have the original file
 
             response = {
                 "type": "video_recording_status",
                 "status": "stopped",
                 "path": video_path,
-                # "downloadUrl": download_url, # Uncomment if serving the file
+                "downloadUrl": download_url,
+                "filename": video_filename,
                 "timestamp": datetime.now().isoformat(),
                 "auto_stopped": data.get("auto_stopped", False)
             }

@@ -21,16 +21,20 @@ class Config:
         # Derived paths
         self.cache_dir = os.path.join(self.storage_dir, 'model')
         self.public_dir = os.path.join(os.path.dirname(os.getcwd()), 'public')
-        self.shared_frames_dir = os.path.join(  self.public_dir, 'public', 'shared_frames')
+        self.shared_frames_dir = os.path.join(self.public_dir, 'public', 'shared_frames')
         self.gemini_frame_path = os.path.join(self.shared_frames_dir, 'latest_frame.jpg')
         self.captured_frames_dir = os.path.join(self.storage_dir, 'captured_frames')
         self.downloads_dir = os.path.join(self.public_dir, 'downloads')
+        self.videos_dir = os.path.join(self.storage_dir, 'videos')
+        self.public_videos_dir = os.path.join(self.public_dir, 'storage', 'videos')
         
         # Create all necessary directories
         os.makedirs(self.shared_frames_dir, exist_ok=True)
         os.makedirs(self.cache_dir, exist_ok=True)
         os.makedirs(self.captured_frames_dir, exist_ok=True)
         os.makedirs(self.downloads_dir, exist_ok=True)
+        os.makedirs(self.videos_dir, exist_ok=True)
+        os.makedirs(self.public_videos_dir, exist_ok=True)
         
         # Runtime config
         self.debug = os.getenv("MOTIVO_DEBUG", "0") == "1"

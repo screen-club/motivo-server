@@ -9,6 +9,7 @@ import zipfile
 import logging
 import asyncio
 import concurrent.futures
+import subprocess
 
 logger = logging.getLogger('frame_utils')
 
@@ -305,17 +306,40 @@ class VideoRecorder:
             os.makedirs(output_dir, exist_ok=True)
 
         # Define the codec and create VideoWriter object
-        # MP4V is a good choice for .mp4 files
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        try:
-            self.writer = cv2.VideoWriter(self.output_path, fourcc, self.fps, (self.width, self.height))
-            if not self.writer.isOpened():
-                raise IOError(f"Failed to open video writer for path: {self.output_path}")
-            logger.info(f"VideoWriter initialized for {self.output_path} at {self.fps} FPS, {self.width}x{self.height}")
-        except Exception as e:
-            logger.error(f"Failed to initialize VideoWriter: {e}")
-            self.writer = None # Ensure writer is None if initialization fails
-            raise # Re-raise the exception
+        # H264 is the most web-compatible codec for MP4 files
+        # Try multiple codecs in order of preference and compatibility
+        codecs_to_try = [
+            ('avc1', 'H.264 (AVC1) - Most widely supported web format'),
+            ('h264', 'H.264 - Widely supported on the web'),
+            ('mp4v', 'MPEG-4 - Fallback option')
+        ]
+        
+        # Try each codec in order until one works
+        for codec, codec_name in codecs_to_try:
+            try:
+                logger.info(f"Trying video codec: {codec} ({codec_name})")
+                fourcc = cv2.VideoWriter_fourcc(*codec)
+                self.writer = cv2.VideoWriter(
+                    self.output_path, 
+                    fourcc, 
+                    self.fps, 
+                    (self.width, self.height)
+                )
+                
+                if self.writer.isOpened():
+                    logger.info(f"VideoWriter initialized with codec {codec} for {self.output_path} at {self.fps} FPS, {self.width}x{self.height}")
+                    break
+                else:
+                    logger.warning(f"Codec {codec} failed to open writer, trying next option")
+                    self.writer = None
+            except Exception as e:
+                logger.warning(f"Failed to initialize VideoWriter with codec {codec}: {e}")
+                self.writer = None
+        
+        if self.writer is None:
+            error_msg = f"Failed to initialize VideoWriter with any codec for path: {self.output_path}"
+            logger.error(error_msg)
+            raise IOError(error_msg)
 
     def start(self):
         """Marks the recorder as active."""
@@ -370,13 +394,15 @@ class VideoRecorder:
             # Optionally stop recording on error?
             # await self.stop()
 
-    def _write_frame_sync(self, bgr_frame, frame_num):
+    def _write_frame_sync(self, frame, frame_num):
         """Synchronous helper function to be run in the executor."""
         try:
             if self.writer and self.writer.isOpened():
-                 self.writer.write(bgr_frame)
+                # Input frame is RGB but OpenCV requires BGR for video writing
+                bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                self.writer.write(bgr_frame)
             else:
-                 logger.warning(f"Skipped writing frame {frame_num}, writer is closed or None.")
+                logger.warning(f"Skipped writing frame {frame_num}, writer is closed or None.")
         except Exception as e:
             logger.error(f"Error writing frame {frame_num} to video in thread: {e}")
 
@@ -387,6 +413,7 @@ class VideoRecorder:
 
         logger.info("Stop recording requested. Waiting for pending writes...")
         self.recording = False # Signal that no more frames should be added
+        original_path = self.output_path
 
         # Wait for all submitted write tasks to complete
         if self._pending_writes:
@@ -401,8 +428,19 @@ class VideoRecorder:
         # Shutdown the executor gracefully
         # Do this *before* releasing the writer to ensure writes are done
         logger.info("Shutting down video writer executor...")
-        await self.loop.run_in_executor(self.executor.shutdown, wait=True)
-        logger.info("Video writer executor shut down.")
+        try:
+            # Create a callable that will shutdown the executor with wait=True
+            def shutdown_executor():
+                self.executor.shutdown(wait=True)
+                return True
+                
+            # Execute the callable in the default executor
+            await self.loop.run_in_executor(None, shutdown_executor)
+            logger.info("Video writer executor shut down.")
+        except Exception as e:
+            logger.error(f"Error shutting down executor: {e}")
+            # Try direct shutdown as fallback
+            self.executor.shutdown(wait=False)
 
         # Now release the writer
         if self.writer is not None:
@@ -410,6 +448,14 @@ class VideoRecorder:
                 # This is synchronous, run in executor just in case it blocks
                 await self.loop.run_in_executor(None, self.writer.release)
                 logger.info(f"Video recording stopped. Approximately {self._frame_count} frames saved to {self.output_path}")
+                
+                # Post-process the video to ensure web compatibility
+                web_compatible = await self._ensure_web_compatible_format()
+                
+                if web_compatible:
+                    logger.info(f"Video successfully processed for web compatibility: {self.output_path}")
+                else:
+                    logger.warning(f"Could not optimize video for web compatibility. Using original format: {self.output_path}")
             except Exception as e:
                  logger.error(f"Error releasing video writer: {e}")
             finally:
@@ -418,6 +464,84 @@ class VideoRecorder:
              logger.warning("Stop called but VideoWriter was not initialized or already released.")
         
         self._frame_count = 0 # Reset frame count after stopping
+        
+        # Return the final path (which may be different after optimization)
+        return self.output_path
+    
+    async def _ensure_web_compatible_format(self):
+        """Attempts to ensure the video is in a web-compatible format using FFmpeg if available."""
+        try:
+            # Check if ffmpeg is available (with different commands for different OS)
+            if os.name == 'nt':  # Windows
+                check_cmd = ["where", "ffmpeg"]
+            else:  # Unix/Linux/Mac
+                check_cmd = ["which", "ffmpeg"]
+                
+            result = await self.loop.run_in_executor(None, lambda: subprocess.run(
+                check_cmd, 
+                capture_output=True, 
+                text=True
+            ))
+            
+            # If FFmpeg is not available, try to continue with OpenCV output
+            if result.returncode != 0:
+                logger.info("FFmpeg not found, skipping web compatibility optimization")
+                return False
+                
+            # FFmpeg is available, create a temporary output path
+            original_path = self.output_path
+            output_path_parts = os.path.splitext(original_path)
+            temp_path = f"{output_path_parts[0]}_web{output_path_parts[1]}"
+            
+            # Use FFmpeg to convert the video to a web-compatible format
+            logger.info(f"Using FFmpeg to optimize video for web compatibility: {original_path} -> {temp_path}")
+            
+            # Run FFmpeg with settings for web compatibility
+            # -movflags faststart moves metadata to the beginning of the file for faster web playback
+            # -c:v libx264 uses the h264 codec
+            # -profile:v baseline is the most compatible h264 profile
+            # -level 3.0 is widely supported
+            # -pix_fmt yuv420p ensures pixel format compatibility
+            cmd = [
+                "ffmpeg", "-y", "-i", original_path,
+                "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0",
+                "-pix_fmt", "yuv420p", "-crf", "23", 
+                "-movflags", "+faststart", 
+                temp_path
+            ]
+            
+            # Run FFmpeg and capture output for debugging
+            try:
+                process = await self.loop.run_in_executor(None, lambda: subprocess.run(
+                    cmd, 
+                    capture_output=True, 
+                    text=True,
+                    check=False  # Don't raise exception on non-zero exit
+                ))
+                
+                if process.returncode == 0:
+                    logger.info("FFmpeg conversion successful")
+                    
+                    # Check that output file exists and has size > 0
+                    if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                        # Replace original file with web-optimized version
+                        await self.loop.run_in_executor(None, lambda: os.rename(temp_path, original_path))
+                        logger.info(f"Successfully replaced original with web-compatible version")
+                        return True
+                    else:
+                        logger.warning(f"FFmpeg output file missing or empty: {temp_path}")
+                        return False
+                else:
+                    logger.warning(f"FFmpeg conversion failed with code {process.returncode}: {process.stderr}")
+                    # Keep the original file
+                    return False
+            except Exception as ffmpeg_err:
+                logger.error(f"FFmpeg process error: {ffmpeg_err}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error ensuring web compatibility: {e}")
+            return False
 
     def __del__(self):
         # Attempt graceful shutdown if stop() wasn't called explicitly

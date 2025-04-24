@@ -1,13 +1,18 @@
 <script>
-  import { onMount } from 'svelte';
-  import { isLoading } from '../../services/webrtc';
+  import { onMount, createEventDispatcher } from 'svelte';
+  import { isLoading, hasStream } from '../../services/webrtc';
   import { websocketService, computingStatus } from '../../services/websocket';
   import VideoStream from './VideoStream.svelte';
-  import StatusBar from '../StatusBar.svelte';
+  
+  let { isPiPMode = false, isLargePiP = false } = $props(); // Accept individual states
+  const dispatch = createEventDispatcher(); // Create dispatcher instance
   
   let troubleshootMode = $state(false);
   let isConnected = $state(false);
   
+  function forwardTogglePip() {
+    dispatch('togglePip'); // Re-dispatch the event
+  }
 
   onMount(() => {
     // Check initial connection state
@@ -24,14 +29,26 @@
 
 <div class="w-full">
   <!-- Video Stream -->
-  <VideoStream />
+  <VideoStream {isPiPMode} {isLargePiP} on:togglePip={forwardTogglePip} />
   
-  <!-- Status Bar -->
-  <StatusBar 
-    isLoading={$isLoading}
-    {isConnected}
-  />
-  
- 
-  
+  <!-- Compact Status Indicators -->
+  <div class="flex items-center gap-4 px-2 py-1 text-xs text-gray-600 border-t border-gray-200 bg-gray-50 rounded-b-xl">
+    <div class="flex items-center gap-1.5">
+      <span 
+        class="w-2 h-2 rounded-full"
+        class:bg-green-500={isConnected}
+        class:bg-red-500={!isConnected}
+      ></span>
+      WebSocket
+    </div>
+    <div class="flex items-center gap-1.5">
+      <span 
+        class="w-2 h-2 rounded-full"
+        class:bg-green-500={$hasStream}
+        class:bg-yellow-400={!$hasStream && $isLoading}
+        class:bg-red-500={!$hasStream && !$isLoading}
+      ></span>
+      Video
+    </div>
+  </div>
 </div>

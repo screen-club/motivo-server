@@ -274,10 +274,45 @@ class WebSocketService {
 
   /**
    * Register a message handler
+   * @returns {function|string} A function to remove the handler or a unique ID
    */
   addMessageHandler(handler) {
+    // If it's a function, use the old behavior (backward compatibility)
+    if (typeof handler === 'function') {
+      this.messageHandlers.add(handler);
+      return () => this.messageHandlers.delete(handler);
+    }
+    
+    // Generate a unique ID for this handler
+    const id = Date.now() + "-" + Math.random().toString(36).substring(2, 10);
     this.messageHandlers.add(handler);
-    return () => this.messageHandlers.delete(handler);
+    
+    // Store the ID-handler mapping for later removal
+    this._handlerIds = this._handlerIds || new Map();
+    this._handlerIds.set(id, handler);
+    
+    return id;
+  }
+  
+  /**
+   * Remove a message handler by ID or function reference
+   * @param {string|function} handlerOrId The handler or ID to remove
+   * @returns {boolean} True if the handler was removed
+   */
+  removeMessageHandler(handlerOrId) {
+    // If it's a function, remove directly
+    if (typeof handlerOrId === 'function') {
+      return this.messageHandlers.delete(handlerOrId);
+    }
+    
+    // If it's an ID, look up the handler
+    if (this._handlerIds && this._handlerIds.has(handlerOrId)) {
+      const handler = this._handlerIds.get(handlerOrId);
+      this._handlerIds.delete(handlerOrId);
+      return this.messageHandlers.delete(handler);
+    }
+    
+    return false;
   }
 
   /**

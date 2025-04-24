@@ -6,8 +6,10 @@
   // Remove envelope button for simplification
   //import ParameterEnvelopeButton from './ParameterEnvelopeButton.svelte';
 
+  let { class: className = '', isCompact = false } = $props();
+
   // Subscribe to the store values
-  $: parameters = $parameterStore;
+  let parameters = $derived($parameterStore);
 
   function handleParameterChange(event) {
     const { name, value } = event.detail;
@@ -22,13 +24,18 @@
   }
 </script>
 
-<div class="w-full py-2">
-  <div class="bg-white rounded-lg shadow-sm p-4">
-    <h2 class="text-lg font-semibold mb-4">Environment Parameters</h2>
+<div class="w-full {className}" class:py-2={!isCompact}>
+  <div class="bg-white rounded-lg shadow-sm" class:p-4={!isCompact} class:p-1={isCompact}>
+    <h2 
+      class="font-semibold" 
+      class:text-lg={!isCompact} class:mb-4={!isCompact}
+      class:text-xs={isCompact} class:mb-1={isCompact}
+      class:hidden={isCompact}
+    >Environment Parameters</h2>
     
-    <div class="space-y-4">
+    <div class="" class:space-y-4={!isCompact} class:space-y-1={isCompact}>
       <!-- Basic Parameters -->
-      <ParameterGroup columns={2}>
+      <ParameterGroup columns={2} {isCompact}>
         <ParameterControl
           name="gravity"
           label="Gravity"
@@ -39,6 +46,7 @@
           value={parameters.gravity}
           defaultValue={-9.81}
           on:change={handleParameterChange}
+          {isCompact}
         />
 
         <ParameterControl
@@ -51,11 +59,12 @@
           value={parameters.density}
           defaultValue={1.0}
           on:change={handleParameterChange}
+          {isCompact}
         />
       </ParameterGroup>
 
       <!-- Wind Controls -->
-      <ParameterGroup title="Wind Controls" columns={3}>
+      <ParameterGroup title="Wind Controls" columns={3} {isCompact}>
         {#each ['x', 'y', 'z'] as axis}
           <ParameterControl
             name={`wind_${axis}`}
@@ -67,12 +76,13 @@
             value={parameters[`wind_${axis}`]}
             defaultValue={0}
             on:change={handleParameterChange}
+            {isCompact}
           />
         {/each}
       </ParameterGroup>
 
       <!-- Additional Parameters -->
-      <ParameterGroup columns={2}>
+      <ParameterGroup columns={2} {isCompact}>
         <ParameterControl
           name="viscosity"
           label="Viscosity"
@@ -83,6 +93,7 @@
           value={parameters.viscosity}
           defaultValue={0.1}
           on:change={handleParameterChange}
+          {isCompact}
         />
         <ParameterControl
           name="timestep"
@@ -94,18 +105,23 @@
           value={Number(parameters.timestep).toFixed(4)}
           defaultValue={0.0005}
           on:change={handleParameterChange}
+          {isCompact}
         />
       </ParameterGroup>
 
-      <div class="flex gap-2 mt-6">
+      <div class="flex gap-2" class:mt-6={!isCompact} class:mt-1={isCompact}>
         <button 
           on:click={() => parameterStore.reset()}
-          class="flex-1 bg-gray-600 text-white px-3 py-2 text-sm rounded hover:bg-gray-700 transition-colors"
+          class="flex-1 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
+          class:px-3={!isCompact} class:py-2={!isCompact} class:text-sm={!isCompact}
+          class:px-1={isCompact} class:py-0.5={isCompact} class:text-[10px]={isCompact}
         >
           Reset Parameters
         </button>
         <button
-          class="flex-1 bg-blue-500 text-white px-3 py-2 text-sm rounded hover:bg-blue-600 disabled:opacity-50"
+          class="flex-1 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+          class:px-3={!isCompact} class:py-2={!isCompact} class:text-sm={!isCompact}
+          class:px-1={isCompact} class:py-0.5={isCompact} class:text-[10px]={isCompact}
           on:click={resetSimulation}
         >
           Reset Simulation
