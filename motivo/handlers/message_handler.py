@@ -516,14 +516,13 @@ class MessageHandler:
                 # Update the specific reward's parameters
                 self.active_rewards['rewards'][reward_index].update(new_parameters)
                 self.current_reward_config = self.active_rewards  # Update current reward config
-                
-                logger.info("Recomputing context...")
-                # get_reward_context is now synchronous
-                z = self.get_reward_context(self.active_rewards)
-                
-                # Set the current_z with the tensor (get_reward_context guarantees a tensor)
-                self.current_z = z
-                
+
+                logger.info("Recomputing context after update...")
+                # Launch background computation and set flag
+                self.is_computing_reward = True # Set flag before starting task
+                fallback_context = self._get_fallback_context() # Get fallback for the task
+                asyncio.create_task(self._compute_reward_context_background(self.active_rewards, fallback_context))
+
                 response = {
                     "type": "reward_updated",
                     "status": "success",
