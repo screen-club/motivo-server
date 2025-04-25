@@ -99,7 +99,7 @@ async def handle_ice_candidate(websocket, data):
         return
     
     logger.debug(f"Received ICE candidate for client {client_id}")
-    
+
     try:
         # Add candidate to WebRTC manager
         result = await app_state.webrtc_manager.add_ice_candidate(client_id, candidate_dict)

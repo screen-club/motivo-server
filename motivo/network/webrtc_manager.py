@@ -11,6 +11,7 @@ import fractions
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer, RTCIceCandidate
 from aiortc.contrib.media import MediaStreamTrack, MediaRelay, MediaPlayer, MediaRecorder
 from aiortc.mediastreams import VideoStreamTrack
+import re # Need re for parsing
 
 logger = logging.getLogger('webrtc_manager')
 
@@ -505,36 +506,126 @@ class WebRTCManager:
             return None
             
     async def add_ice_candidate(self, client_id, candidate_dict):
-        """Add an ICE candidate to a peer connection"""
+        """Add an ICE candidate - parsing the string to match the runtime's expected signature."""
         try:
-            # Check for valid inputs
             if not candidate_dict or client_id not in self.peer_connections:
+                logger.warning(f"Cannot add ICE candidate for non-existent client {client_id}")
                 return False
-                
+
             pc = self.peer_connections[client_id]
             
-            # Extract candidate info
-            candidate = candidate_dict.get("candidate", "")
+            # Extract core info
             sdpMid = candidate_dict.get("sdpMid")
             sdpMLineIndex = candidate_dict.get("sdpMLineIndex")
-            
-            if not candidate:
-                # Empty candidate - normal for end-of-candidates
+            candidate_string = candidate_dict.get("candidate", "")
+
+            if not candidate_string:
+                # Empty candidate string signals end-of-candidates
+                logger.debug(f"Received end-of-candidates signal for {client_id}")
+                # aiortc's addIceCandidate expects None for end-of-candidates
+                # However, the underlying aioice might expect an empty candidate object?
+                # Let's try passing None first, as per aiortc docs for addIceCandidate
+                # If pc.addIceCandidate is the modern one, it should handle None correctly.
+                await pc.addIceCandidate(None) 
                 return True
+
+            # --- Parse the candidate string ---
+            # Example: "candidate:foundation 1 component protocol priority ip port typ type [raddr ip] [rport port] ..."
+            parts = candidate_string.split()
+
+            if not parts or not parts[0].startswith("candidate:"):
+                 logger.error(f"Invalid candidate string format for {client_id}: {candidate_string}")
+                 return False
+                 
+            foundation = parts[0].split(":")[1]
+            component_id = int(parts[1]) # 1 for RTP, 2 for RTCP
+            protocol = parts[2].lower()
+            priority = int(parts[3])
+            ip = parts[4]
+            port = int(parts[5])
+            
+            # Find 'typ' and the actual type value
+            try:
+                 typ_index = parts.index("typ")
+                 candidate_type = parts[typ_index + 1]
+            except (ValueError, IndexError):
+                 logger.error(f"Could not find 'typ' in candidate string for {client_id}: {candidate_string}")
+                 return False
+            
+            # Extract optional related address and port
+            related_address = None
+            related_port = None
+            try:
+                raddr_index = parts.index("raddr")
+                related_address = parts[raddr_index + 1]
+            except ValueError:
+                pass # Optional
+            try:
+                rport_index = parts.index("rport")
+                related_port = int(parts[rport_index + 1])
+            except ValueError:
+                pass # Optional
                 
-            # Create candidate object
-            ice_candidate = RTCIceCandidate(
-                candidate=candidate,
-                sdpMid=sdpMid,
-                sdpMLineIndex=sdpMLineIndex
-            )
+            # Extract optional tcp type
+            tcp_type = None
+            try:
+                 tcptype_index = parts.index("tcptype")
+                 tcp_type = parts[tcptype_index + 1]
+            except ValueError:
+                pass # Optional
+
+            ice_candidate = None # Initialize variable
             
-            # Add to peer connection
+            # --- Attempt 1: Use the older-style positional constructor (currently working) ---
+            try:
+                 logger.debug(f"Attempting RTCIceCandidate with positional args for {client_id}")
+                 ice_candidate = RTCIceCandidate(
+                     component=component_id, foundation=foundation, ip=ip, port=port,
+                     priority=priority, protocol=protocol, type=candidate_type,
+                     relatedAddress=related_address, relatedPort=related_port,
+                     sdpMid=sdpMid, sdpMLineIndex=sdpMLineIndex, tcpType=tcp_type
+                 )
+                 logger.info(f"Successfully created RTCIceCandidate using positional args for {client_id}")
+            except TypeError as te_pos:
+                 logger.warning(f"Positional RTCIceCandidate constructor failed ({type(te_pos).__name__}: {te_pos}). Will attempt keyword constructor.")
+                 # --- Attempt 2: Fallback to modern keyword constructor (sdp=) ---
+                 try:
+                     logger.debug(f"Attempting RTCIceCandidate with keyword args for {client_id}")
+                     ice_candidate = RTCIceCandidate(
+                         sdp=candidate_string,
+                         sdpMid=sdpMid,
+                         sdpMLineIndex=sdpMLineIndex
+                         # Optional: usernameFragment=... if needed
+                     )
+                     logger.info(f"Successfully created RTCIceCandidate using keyword args (fallback) for {client_id}")
+                 except TypeError as te_kw:
+                     logger.error(f"Keyword RTCIceCandidate constructor also failed ({type(te_kw).__name__}: {te_kw}). Cannot create candidate.")
+                     # Log details from both attempts if keyword fails
+                     logger.error(f"Positional attempt error: {te_pos}")
+                     logger.error(f"Keyword attempt error: {te_kw}")
+                     return False
+                 except Exception as create_err_kw:
+                     logger.error(f"Unexpected error creating RTCIceCandidate with keyword args: {create_err_kw}")
+                     return False
+            except Exception as create_err_pos:
+                 logger.error(f"Unexpected error creating RTCIceCandidate with positional args: {create_err_pos}")
+                 return False
+            
+            # If we successfully created an ice_candidate object via either method:
+            if ice_candidate is None:
+                 logger.error("RTCIceCandidate object is None after attempting both methods. This should not happen.")
+                 return False
+                 
+            # Add the created candidate to the peer connection
             await pc.addIceCandidate(ice_candidate)
+            logger.debug(f"Passed candidate object to pc.addIceCandidate for {client_id}")
             return True
-            
+
         except Exception as e:
-            logger.error(f"Error adding ICE candidate: {e}")
+            # Log the specific exception type and message
+            logger.error(f"Error processing ICE candidate string for {client_id} ({type(e).__name__}): {e}")
+            import traceback
+            logger.error(traceback.format_exc()) # Log full traceback for parsing errors
             return False
             
     async def broadcast_frame(self, frame):

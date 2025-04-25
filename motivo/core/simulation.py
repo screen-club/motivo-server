@@ -177,7 +177,7 @@ async def run_simulation_loop():
     logger.info(f"Simulation loop ended. Ran for {total_duration:.2f}s, {frame_count} frames. Actual avg FPS: {actual_avg_fps:.2f}")
 
 async def broadcast_pose_update(q_percentage, frame_count: int):
-    """Get current pose data and broadcast to clients"""
+    """Get current pose data and broadcast to clients asynchronously"""
     try:
         # Get pose data from environment
         qpos = app_state.env.unwrapped.data.qpos
@@ -201,7 +201,7 @@ async def broadcast_pose_update(q_percentage, frame_count: int):
             "cache_file": str(cache_file) if cache_file else None
         }
 
-        # Log payload size before sending
+        # Serialize ONCE before the loop
         try:
              payload_json = json.dumps(pose_data)
              payload_size = len(payload_json)
@@ -209,8 +209,8 @@ async def broadcast_pose_update(q_percentage, frame_count: int):
              if frame_count % 60 == 0: # Log every 60 frames (use passed frame_count)
                   logger.debug(f"Broadcasting pose_data payload size: {payload_size} bytes")
         except Exception as e:
-             logger.error(f"Error serializing pose_data for size check: {e}")
-             payload_json = "{}" # Use empty dict string on error
+             logger.error(f"Error serializing pose_data for broadcast: {e}")
+             return # Don't proceed if serialization fails
 
         # Check if websocket manager is properly initialized
         if not hasattr(app_state, 'ws_manager') or app_state.ws_manager is None:
@@ -218,59 +218,95 @@ async def broadcast_pose_update(q_percentage, frame_count: int):
             return
             
         # Check if there are any clients to broadcast to
-        if not app_state.ws_manager.connected_clients:
-            return
-        
-        # Broadcast with timeout protection
-        try:
-            await asyncio.wait_for(
-                app_state.ws_manager.broadcast(pose_data), # Pass the dict, manager handles serialization
-                timeout=1.5  # Increased timeout from 0.5s to 1.5s
-            )
-        except asyncio.TimeoutError:
-            logger.warning("Broadcast operation timed out after 1.5 seconds")
-            # Handle stale connections
-            await cleanup_stale_connections()
-        except Exception as broadcast_error:
-            logger.error(f"Error during broadcast: {broadcast_error}")
-            # Try to cleanup connections on any broadcast error
-            await cleanup_stale_connections()
+        connected_clients = getattr(app_state.ws_manager, 'connected_clients', set())
+        if not connected_clients:
+            return # No clients, nothing to do
+
+        # Define the sending task coroutine function
+        async def send_to_client(ws, data_json):
+            import websockets # Ensure websockets is available in this scope
+            try:
+                await ws.send(data_json)
+            except websockets.exceptions.ConnectionClosedOK:
+                logger.debug(f"Client {ws.remote_address} disconnected normally during send.")
+                # Optionally remove client here if manager doesn't handle it automatically
+                # app_state.ws_manager.connected_clients.discard(ws)
+            except websockets.exceptions.ConnectionClosedError as e:
+                logger.warning(f"Client {ws.remote_address} connection closed unexpectedly during send: {e}")
+                # Optionally remove client here
+                # app_state.ws_manager.connected_clients.discard(ws)
+            except Exception as send_error:
+                # Log other send errors without crashing the simulation
+                logger.error(f"Error sending pose update to client {getattr(ws, 'remote_address', 'unknown')}: {send_error}")
+
+        # Create a send task for each client without awaiting
+        tasks = []
+        for ws in list(connected_clients): # Iterate over a copy in case the set is modified
+             tasks.append(asyncio.create_task(send_to_client(ws, payload_json)))
+
+        # Optionally, gather tasks with a very short timeout if you need minimal waiting,
+        # but the primary goal is to not block the main loop.
+        # For true fire-and-forget, just creating the tasks is enough.
+        # If gathering, handle potential exceptions from the tasks.
+        # Example (optional):
+        # done, pending = await asyncio.wait(tasks, timeout=0.01) # Very short timeout
+        # for task in pending:
+        #     task.cancel() # Cancel tasks that didn't complete quickly
+        # for task in done:
+        #     if task.exception():
+        #         logger.error(f"Error in broadcast send task: {task.exception()}")
+
     except Exception as e:
-        logger.error(f"Error broadcasting pose data: {str(e)}")
+        # Catch errors in pose data preparation or client iteration
+        logger.error(f"Error preparing or initiating pose broadcast: {str(e)}")
 
 async def cleanup_stale_connections():
     """Remove any stale WebSocket connections"""
     import websockets
     
     stale_connections = set()
-    for ws in app_state.ws_manager.connected_clients:
+    # Use getattr to safely access connected_clients
+    connected_clients = getattr(app_state.ws_manager, 'connected_clients', set())
+
+    # Iterate over a copy of the set as we might modify it
+    for ws in list(connected_clients):
         try:
-            if hasattr(ws, 'closed') and ws.closed:
+            # Primary check: Use the connection's state property
+            if ws.closed:
                 stale_connections.add(ws)
-                logger.warning("Found closed connection that wasn't properly removed")
-            # Check for connection state in case 'closed' attribute isn't available
-            elif not hasattr(ws, 'closed'):
-                # Try to ping the connection to check if it's still alive
-                try:
-                    pong_waiter = await ws.ping()
-                    await asyncio.wait_for(pong_waiter, timeout=0.5)
-                except (asyncio.TimeoutError, websockets.exceptions.ConnectionClosed, Exception):
-                    # Connection is not responding, mark as stale
-                    stale_connections.add(ws)
-                    logger.warning("Found stale connection without 'closed' attribute")
-        except AttributeError:
-            logger.warning("Connection missing expected attributes, marking as stale")
+                logger.debug(f"Found closed connection {ws.remote_address} (state: {ws.state.name})")
+                continue # No need for further checks if already closed
+
+            # Secondary check: Ping for unresponsive clients (use sparingly)
+            # Only ping if the state appears open but might be unresponsive
+            # if ws.open: # Check if state is OPEN
+            #     try:
+            #         pong_waiter = await ws.ping()
+            #         await asyncio.wait_for(pong_waiter, timeout=0.5) # Short timeout for ping
+            #     except (asyncio.TimeoutError, websockets.exceptions.ConnectionClosed, Exception) as ping_err:
+            #         # Connection is not responding or closed during ping
+            #         stale_connections.add(ws)
+            #         logger.warning(f"Connection {ws.remote_address} unresponsive or closed during ping: {ping_err}")
+
+        except AttributeError as ae:
+            logger.warning(f"Connection object missing expected attributes (likely already removed): {ae}")
+            # Assume it's stale if attributes are missing
             stale_connections.add(ws)
         except Exception as e:
-            logger.error(f"Error checking connection state: {e}")
-            # If we can't determine connection state, safer to mark as stale
+            logger.error(f"Error checking connection state for {getattr(ws, 'remote_address', 'unknown')}: {e}")
+            # Mark as stale if state check fails unexpectedly
             stale_connections.add(ws)
-    
+
     # Remove stale connections
-    for ws in stale_connections:
-        app_state.ws_manager.connected_clients.discard(ws)
-        
-    logger.info(f"Removed {len(stale_connections)} stale connections, {len(app_state.ws_manager.connected_clients)} remaining")
+    removed_count = 0
+    if stale_connections:
+        if hasattr(app_state.ws_manager, 'connected_clients'):
+            for ws in stale_connections:
+                app_state.ws_manager.connected_clients.discard(ws)
+                removed_count += 1
+            logger.info(f"Removed {removed_count} stale connections, {len(app_state.ws_manager.connected_clients)} remaining")
+        else:
+            logger.warning("Cannot remove stale connections: ws_manager or connected_clients not found.")
 
 async def render_and_process_frame(frame_count, q_percentage, last_frame_save_time):
     """Render current frame and process it for display and streaming with optimized priority"""
