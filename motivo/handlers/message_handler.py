@@ -170,19 +170,21 @@ class MessageHandler:
         pass # Remove the old return logic
     
     async def _compute_reward_context_background(self, reward_config, fallback_context):
-        """Background task to compute reward context and RETURN the result."""
+        """Background task to compute reward context, update self.current_z, and reset flag."""
         computed_z = None # Initialize computed_z
         try:
             # Run the actual computation in a thread to avoid blocking asyncio loop
             loop = asyncio.get_running_loop()
+            logger.info(f"Starting reward computation in executor for config: {reward_config.get('name', 'Unnamed')}")
             z = await loop.run_in_executor(
                 None,  # Use default executor
-                compute_reward_context,
+                compute_reward_context, # Assuming this uses the global instance from reward_context.py
                 reward_config,
                 self.env,
                 self.model,
                 self.buffer_data
             )
+            logger.info(f"Reward computation finished for config: {reward_config.get('name', 'Unnamed')}")
             
             # If computation failed, use the fallback
             if z is None:
@@ -190,6 +192,11 @@ class MessageHandler:
                 computed_z = fallback_context
             else:
                 computed_z = z # Store the successfully computed z
+            
+            # --- Update the main context --- 
+            self.current_z = computed_z
+            logger.info("Updated self.current_z with computed context.")
+            # --- End Update --- 
             
             # Status update logic (moved slightly, still uses self.computation_status)
             try:
@@ -234,7 +241,14 @@ class MessageHandler:
                 logger.error(f"Error broadcasting computation error: {str(broadcast_error)}")
         
         # Return the computed z (or fallback if error occurred)
-        return computed_z
+        # Note: This return value is only used by handle_mix_pose_reward currently
+        # The main context update happens via self.current_z = computed_z above
+        # return computed_z # We don't need to return it anymore as we update self.current_z
+        finally:
+             # --- Reset the computing flag --- 
+             self.is_computing_reward = False
+             logger.info("Reset is_computing_reward flag to False.")
+             # --- End Reset --- 
 
     async def handle_message(self, websocket, message: str) -> None:
         """Main message handler that routes to specific command handlers"""
@@ -845,13 +859,13 @@ class MessageHandler:
             # Create a standard cache key
             standard_key = self.context_cache.get_cache_key(self.active_rewards)
             
-            # Start the computation and get the immediate result (current context)
-            # This returns immediately but updates self.current_z when done in background
-            z = self.get_reward_context(self.active_rewards)
+            # Start the computation but don't await it - run in background
+            logger.info("Creating background task for reward computation...")
+            self.is_computing_reward = True # Set flag before starting task
+            fallback_context = self._get_fallback_context() # Get fallback for the task
+            asyncio.create_task(self._compute_reward_context_background(self.active_rewards, fallback_context))
             
-            # Note: we don't need to set self.current_z - it will be updated by
-            # the background task when computation is complete
-            
+            # Send response immediately, computation happens in background
             response = {
                 "type": "reward",
                 "value": 1.0,
