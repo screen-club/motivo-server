@@ -1107,14 +1107,27 @@ def create_config():
         # Fetch the newly created preset data
         new_preset_obj = Content.get_by_id(config_id)
         if new_preset_obj:
-            # Convert the Content object to a dictionary
-            new_preset_dict = new_preset_obj.to_dict() if hasattr(new_preset_obj, 'to_dict') else None
-            if new_preset_dict:
+            # Manually construct the dictionary from object attributes
+            try:
+                new_preset_dict = {
+                    'id': new_preset_obj.id,
+                    'title': getattr(new_preset_obj, 'title', 'Untitled'),
+                    'type': getattr(new_preset_obj, 'type', 'unknown'),
+                    'data': getattr(new_preset_obj, 'data', {}),
+                    'thumbnail': getattr(new_preset_obj, 'thumbnail', ''),
+                    'cache_file_path': getattr(new_preset_obj, 'cache_file_path', None),
+                    'tags': getattr(new_preset_obj, 'tags', []),
+                    'users': getattr(new_preset_obj, 'users', [])
+                }
                 # Emit the dictionary representation
                 socketio.emit('preset_added', {'type': 'preset_added', 'payload': new_preset_dict})
                 logging.info(f"Emitted 'preset_added' event for ID: {config_id}")
-            else:
-                logging.error(f"Failed to serialize newly created preset object with ID: {config_id}")
+            except AttributeError as e:
+                 logging.error(f"Failed to access attribute on preset object with ID: {config_id} - {e}")
+                 new_preset_dict = None # Ensure it's None if construction fails
+            except Exception as e:
+                 logging.error(f"Failed to manually serialize preset object with ID: {config_id} - {e}")
+                 new_preset_dict = None # Ensure it's None if construction fails
         else:
             logging.warning(f"Could not fetch newly created preset with ID: {config_id}")
 
@@ -1174,14 +1187,27 @@ def create_preset():
         # Fetch the newly created preset data
         new_preset_obj = Content.get_by_id(preset_id)
         if new_preset_obj:
-            # Convert the Content object to a dictionary
-            new_preset_dict = new_preset_obj.to_dict() if hasattr(new_preset_obj, 'to_dict') else None
-            if new_preset_dict:
-                # Emit the dictionary representation
+            # Manually construct the dictionary from object attributes
+            try:
+                new_preset_dict = {
+                    'id': new_preset_obj.id,
+                    'title': getattr(new_preset_obj, 'title', 'Untitled'),
+                    'type': getattr(new_preset_obj, 'type', 'unknown'),
+                    'data': getattr(new_preset_obj, 'data', {}),
+                    'thumbnail': getattr(new_preset_obj, 'thumbnail', ''),
+                    'cache_file_path': getattr(new_preset_obj, 'cache_file_path', None),
+                    'tags': getattr(new_preset_obj, 'tags', []),
+                    'users': getattr(new_preset_obj, 'users', [])
+                }
+                 # Emit the dictionary representation
                 socketio.emit('preset_added', {'type': 'preset_added', 'payload': new_preset_dict})
                 logging.info(f"Emitted 'preset_added' event for ID: {preset_id}")
-            else:
-                logging.error(f"Failed to serialize newly created preset object with ID: {preset_id}")
+            except AttributeError as e:
+                 logging.error(f"Failed to access attribute on preset object with ID: {preset_id} - {e}")
+                 new_preset_dict = None
+            except Exception as e:
+                 logging.error(f"Failed to manually serialize preset object with ID: {preset_id} - {e}")
+                 new_preset_dict = None
         else:
             logging.warning(f"Could not fetch newly created preset with ID: {preset_id}")
 
