@@ -3,6 +3,7 @@
   import { fade } from 'svelte/transition';
   import { DbService } from '../../services/db';
   import { websocketService } from '../../services/websocket';
+  import geminiSocketService from '../../services/gemini/geminiSocketService.js';
   import { parameterStore } from '../../stores/parameterStore';
   import { PoseService } from '../../services/poses';
   import { selectedUser } from '../../stores/userStore';
@@ -49,6 +50,8 @@
   
   // Function to cleanup WebSocket listener
   let cleanupPresetListener = null;
+  // Function to cleanup context listener
+  let cleanupContextListener = null; 
   
   async function loadPresets() {
     try {
@@ -318,7 +321,9 @@
       let modelInfo = null;
       let contextInfo = null;
       
-      const cleanup = websocketService.addMessageHandler((data) => {
+      // Use websocketService for general context, geminiSocketService for preset events
+      // Assign the cleanup function
+      cleanupContextListener = websocketService.addMessageHandler((data) => {
         if (data.type === 'debug_model_info') {
           modelInfo = data;
         } else if (data.type === 'current_context' && data.status === 'success') {
@@ -326,7 +331,7 @@
         }
         
         if (modelInfo && contextInfo) {
-          if (typeof cleanup === 'function') cleanup();
+          if (typeof cleanupContextListener === 'function') cleanupContextListener();
           resolve({ modelInfo, contextInfo });
         }
       });
@@ -335,7 +340,7 @@
       websocketService.send({ type: "get_current_context" });
 
       setTimeout(() => {
-        if (typeof cleanup === 'function') cleanup();
+        if (typeof cleanupContextListener === 'function') cleanupContextListener(); // Cleanup context listener
         reject(new Error('Timeout waiting for context data'));
       }, 5000);
     });
@@ -411,14 +416,14 @@
       videoBuffer = new VideoBuffer();
       await videoBuffer.initializeBuffer();
       
-      // --- Add WebSocket listener for new presets ---
-      // Assign the cleanup function returned by addMessageHandler
-      cleanupPresetListener = websocketService.addMessageHandler((data) => {
-        // Log the raw incoming data
-        console.log('[WebSocket Received]', data);
+      // --- Add WebSocket listener FOR PRESETS using geminiSocketService ---
+      cleanupPresetListener = geminiSocketService.addMessageHandler((data) => {
+        // Log the raw incoming data from Gemini service
+        console.log('[Gemini Socket Received]', data);
         
+        // Check for the preset_added type
         if (data.type === 'preset_added' && data.payload) { 
-          console.log('Preset added via WebSocket:', data.payload);
+          console.log('Preset added via Gemini Socket:', data.payload);
           // Prepend the new preset to the list
           presets = [data.payload, ...presets];
           // Automatically load/play the newly added preset
@@ -462,9 +467,12 @@
     if (videoBuffer) {
       videoBuffer.cleanup();
     }
-    // --- Clean up WebSocket listener ---
-    if (typeof cleanupPresetListener === 'function') {
+    // --- Clean up BOTH WebSocket listeners ---
+    if (typeof cleanupPresetListener === 'function') { 
       cleanupPresetListener();
+    }
+    if (typeof cleanupContextListener === 'function') { 
+      cleanupContextListener(); // Make sure context listener is also cleaned up
     }
     // --------------------------------
   });

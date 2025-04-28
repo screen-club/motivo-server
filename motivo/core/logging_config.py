@@ -37,6 +37,7 @@ def setup_logging(debug=False):
     logging.getLogger('aioice.ice').setLevel(logging.WARNING)  # Suppress ICE candidate logs
     logging.getLogger('aioice').setLevel(logging.WARNING)
     logging.getLogger('aiortc').setLevel(logging.WARNING)
+    logging.getLogger('webrtc_manager').setLevel(logging.WARNING) # Suppress WebRTC manager INFO logs
     
     return logger
 

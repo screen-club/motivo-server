@@ -1122,6 +1122,8 @@ def create_config():
                 # Emit the dictionary representation
                 socketio.emit('preset_added', {'type': 'preset_added', 'payload': new_preset_dict})
                 logging.info(f"Emitted 'preset_added' event for ID: {config_id}")
+                # Log the emitted data structure for verification
+                logging.debug(f"[Emit Data] Emitting: {{'type': 'preset_added', 'payload': {new_preset_dict}}}")
             except AttributeError as e:
                  logging.error(f"Failed to access attribute on preset object with ID: {config_id} - {e}")
                  new_preset_dict = None # Ensure it's None if construction fails
@@ -1202,6 +1204,8 @@ def create_preset():
                  # Emit the dictionary representation
                 socketio.emit('preset_added', {'type': 'preset_added', 'payload': new_preset_dict})
                 logging.info(f"Emitted 'preset_added' event for ID: {preset_id}")
+                # Log the emitted data structure for verification
+                logging.debug(f"[Emit Data] Emitting: {{'type': 'preset_added', 'payload': {new_preset_dict}}}")
             except AttributeError as e:
                  logging.error(f"Failed to access attribute on preset object with ID: {preset_id} - {e}")
                  new_preset_dict = None
