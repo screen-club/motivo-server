@@ -565,7 +565,7 @@
   {:else}
     <!-- Toggle states are defined in the script section -->
     
-    <div class="flex flex-wrap gap-4 max-h-[600px] overflow-y-auto pb-4">
+    <div class="flex flex-wrap gap-4 overflow-y-auto pb-4 max-h-[calc(100vh-20rem)]">
       <!-- Display timelines first -->
       {#if filterPresets(presets).some(p => p.type === 'timeline')}
         <div class="w-full mb-2">

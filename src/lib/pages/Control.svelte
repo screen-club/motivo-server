@@ -26,7 +26,6 @@
     let isLargePiP = $state(false); // State for large PiP mode
     let videoContainerRef; // Ref for the outer container
     let videoWidth = $state(null); // State to store the video width
-    let videoHeight = $state(null); // State to store the video height
     
     // Get valid panel from localStorage or default to 'rewards'
     const storedPanel = localStorage.getItem('controlActivePanel');
@@ -129,7 +128,14 @@
     $effect(() => {
         if (videoWrapperRef && !isPiPMode && !isLargePiP) {
             videoWidth = videoWrapperRef.offsetWidth;
-            videoHeight = videoWrapperRef.offsetHeight; // Capture height too
+        }
+    });
+
+    // Add/remove class to outer container based on PiP state
+    $effect(() => {
+        const pipActive = isPiPMode || isLargePiP;
+        if (videoContainerRef) {
+            videoContainerRef.classList.toggle('has-pip-active', pipActive);
         }
     });
 
@@ -142,9 +148,7 @@
 <div class="bg-gray-50 p-4">
     <div class="flex gap-8">
         <!-- Left column -->
-        <div 
-            class="flex-[0_1_35%] flex flex-col gap-8" 
-        >
+        <div class="flex-[0_1_35%] flex flex-col gap-8">
             <!-- Moved Panel selection buttons here -->
             <div class="flex gap-4">
                 <button 
@@ -161,12 +165,8 @@
                 </button>
             </div>
 
-            <!-- Outer container that stays in flow - Apply height here -->
-            <div 
-                class="video-container relative"
-                bind:this={videoContainerRef}
-                style="height: {videoHeight ? videoHeight + 'px' : 'auto'}"
-            > 
+            <!-- Outer container that stays in flow -->
+            <div class="video-container relative" bind:this={videoContainerRef}> 
                 <!-- Element for Intersection Observer trigger -->
                 <div bind:this={videoIntersectionTriggerRef} class="absolute top-0 h-1 w-full"></div>
 
@@ -312,10 +312,10 @@
     }
 
     /* Add padding to the container when inner video is PiP */
-    /* .video-container.has-pip-active {
-        
-        
-    }*/
+    .video-container.has-pip-active {
+        padding-top: 240px; /* Approximate height of the video feed */
+        /* Adjust height if necessary */
+    }
 
     .video-wrapper {
         transition: all 0.3s ease-in-out;
