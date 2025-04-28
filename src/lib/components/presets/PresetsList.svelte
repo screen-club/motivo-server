@@ -30,7 +30,7 @@
   let showTagSuggestions = false;
   
   // Toggle state for collapsible sections
-  let showTimelines = true;
+  let showTimelines = false;
   let showPoses = true;
   
   // Filter tag suggestions based on input
