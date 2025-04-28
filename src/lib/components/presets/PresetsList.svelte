@@ -47,6 +47,9 @@
 
   let initialLoadComplete = false;
   
+  // Function to cleanup WebSocket listener
+  let cleanupPresetListener = null;
+  
   async function loadPresets() {
     try {
       presets = await DbService.getAllConfigs();
@@ -408,6 +411,20 @@
       videoBuffer = new VideoBuffer();
       await videoBuffer.initializeBuffer();
       
+      // --- Add WebSocket listener for new presets ---
+      // Assign the cleanup function returned by addMessageHandler
+      cleanupPresetListener = websocketService.addMessageHandler((data) => {
+        // Log the raw incoming data
+        console.log('[WebSocket Received]', data);
+        
+        if (data.type === 'preset_added' && data.payload) { 
+          console.log('Preset added via WebSocket:', data.payload);
+          // Prepend the new preset to the list
+          presets = [data.payload, ...presets];
+        }
+      });
+      // ---------------------------------------------
+      
       // Set video source once webrtcService's videoElement is available
       const checkVideoElement = () => {
         const videoElement = webrtcService.videoElement;
@@ -439,6 +456,11 @@
     if (videoBuffer) {
       videoBuffer.cleanup();
     }
+    // --- Clean up WebSocket listener ---
+    if (typeof cleanupPresetListener === 'function') {
+      cleanupPresetListener();
+    }
+    // --------------------------------
   });
 
   function filterPresets(presets) {

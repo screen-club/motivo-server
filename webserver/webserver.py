@@ -1103,8 +1103,20 @@ def create_config():
         print(f"Created config with id: {config_id}")
         print(f"Config data: {data}")
         print(f"Config type: {data['type']}")
+
+        # Fetch the newly created preset data
+        new_preset = Content.get_by_id(config_id)
+        if new_preset:
+            # Emit event to all clients
+            socketio.emit('preset_added', new_preset)
+            logging.info(f"Emitted 'preset_added' event for ID: {config_id}")
+        else:
+            logging.warning(f"Could not fetch newly created preset with ID: {config_id}")
+
         return jsonify({'id': config_id}), 201
     except Exception as e:
+        logging.error(f"Error creating config: {str(e)}")
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/conf/<int:config_id>', methods=['PUT'])
@@ -1152,9 +1164,21 @@ def create_preset():
             tags=data.get('tags', []),
             users=data.get('users', [])
         )
+        logging.info(f"Created preset with id: {preset_id}")
+
+        # Fetch the newly created preset data
+        new_preset = Content.get_by_id(preset_id)
+        if new_preset:
+            # Emit event to all clients
+            socketio.emit('preset_added', new_preset)
+            logging.info(f"Emitted 'preset_added' event for ID: {preset_id}")
+        else:
+            logging.warning(f"Could not fetch newly created preset with ID: {preset_id}")
+
         return jsonify({'id': preset_id}), 201
     except Exception as e:
         logging.error(f"Error creating preset: {str(e)}")
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/presets/<int:preset_id>', methods=['PUT'])
