@@ -421,6 +421,9 @@
           console.log('Preset added via WebSocket:', data.payload);
           // Prepend the new preset to the list
           presets = [data.payload, ...presets];
+          // Automatically load/play the newly added preset
+          loadPresetConfig(data.payload);
+          console.log(`[Auto Load] Triggered loading for new preset: ${data.payload.title} (ID: ${data.payload.id})`);
         }
       });
       // ---------------------------------------------
