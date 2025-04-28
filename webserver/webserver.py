@@ -1100,6 +1100,9 @@ def create_config():
             tags=data.get('tags', []),
             users=data.get('users', [])
         )
+        print(f"Created config with id: {config_id}")
+        print(f"Config data: {data}")
+        print(f"Config type: {data['type']}")
         return jsonify({'id': config_id}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
