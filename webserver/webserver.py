@@ -1227,7 +1227,16 @@ def update_preset(preset_id):
         data = request.json
         update_data = {k: v for k, v in data.items() if v is not None}
         Content.update_content(preset_id, **update_data)
-        return jsonify({"success": True})
+        
+        # Fetch the updated preset data to return
+        updated_preset = Content.get_by_id(preset_id)
+        if updated_preset:
+            return jsonify(updated_preset)
+        else:
+            # Should ideally not happen if update succeeded, but handle defensively
+            logging.error(f"Preset {preset_id} updated but could not be fetched afterwards.")
+            return jsonify({"success": True, "warning": "Could not fetch updated preset"}), 200
+
     except Exception as e:
         logging.error(f"Error updating preset: {str(e)}")
         return jsonify({'error': str(e)}), 500
