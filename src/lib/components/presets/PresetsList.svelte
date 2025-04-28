@@ -262,10 +262,17 @@
             const videoBlob = await videoBuffer.getBuffer();
             const base64Thumbnail = await blobToBase64(videoBlob);
             
-            // Update the preset with the new thumbnail
-            await DbService.updateConfig(preset.id, {
+            // Update the preset and get the updated data
+            const updatedPresetData = await DbService.updateConfig(preset.id, {
               thumbnail: base64Thumbnail
             });
+            
+            // Find and update the preset in the local array
+            const index = presets.findIndex(p => p.id === preset.id);
+            if (index !== -1 && updatedPresetData) {
+              presets[index] = updatedPresetData;
+              presets = [...presets]; // Trigger reactivity
+            }
             
             // Stop the animation
             stopCurrentAnimation();
@@ -285,14 +292,21 @@
         const videoBlob = await videoBuffer.getBuffer();
         const base64Thumbnail = await blobToBase64(videoBlob);
 
-        // Update the preset with the new thumbnail
-        await DbService.updateConfig(preset.id, {
+        // Update the preset and get the updated data
+        const updatedPresetData = await DbService.updateConfig(preset.id, {
           thumbnail: base64Thumbnail
         });
+
+        // Find and update the preset in the local array
+        const index = presets.findIndex(p => p.id === preset.id);
+        if (index !== -1 && updatedPresetData) {
+          presets[index] = updatedPresetData;
+          presets = [...presets]; // Trigger reactivity
+        }
       }
 
       // Refresh presets list
-      await loadPresets();
+      // await loadPresets();
       
     } catch (error) {
       console.error('Failed to regenerate thumbnail:', error);

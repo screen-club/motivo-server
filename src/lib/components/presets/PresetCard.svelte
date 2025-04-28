@@ -25,7 +25,7 @@
     initialLoading = false
   } = $props();
 
-  // State for async thumbnail loading
+  // RE-ADD State for async thumbnail loading
   let thumbnailData = $state(null);
   let isThumbnailLoading = $state(false);
 
@@ -44,6 +44,7 @@
   // Add a websocket message handler to catch 'trigger_ai' events
   let wsUnsubscribe;
   
+  // RE-ADD fetchThumbnail function
   async function fetchThumbnail() {
     if (!preset || !preset.id || thumbnailData) return;
     isThumbnailLoading = true;
@@ -51,10 +52,18 @@
       const apiUrl = getApiUrl();
       const response = await fetch(`${apiUrl}/api/presets/${preset.id}/thumbnail`);
       if (!response.ok) {
-        throw new Error(`Failed to fetch thumbnail: ${response.statusText}`);
+        // Log the 404 specifically, don't throw an error for it
+        if (response.status === 404) {
+          console.log(`Preset ${preset.id}: Thumbnail not found (404).`);
+          thumbnailData = null; // Ensure it's null if not found
+        } else {
+          throw new Error(`Failed to fetch thumbnail: ${response.statusText}`);
+        }
+      } else {
+          const data = await response.json();
+          thumbnailData = data.thumbnail; // May be null if no thumbnail exists
+          console.log(`Preset ${preset.id}: fetchThumbnail received data, thumbnailData is now:`, thumbnailData ? thumbnailData.substring(0, 30) + '...' : thumbnailData);
       }
-      const data = await response.json();
-      thumbnailData = data.thumbnail; // May be null if no thumbnail exists
     } catch (error) {
       console.error(`Error fetching thumbnail for preset ${preset.id}:`, error);
       thumbnailData = null; // Set to null on error
@@ -63,9 +72,10 @@
     }
   }
   
+  
   onMount(() => {
-    // Fetch thumbnail if it wasn't included initially
-    // We assume if preset.thumbnail exists, it was provided during SSR or initial load
+    // RE-ADD call to fetchThumbnail if preset lacks thumbnail initially
+    // This handles the initial load case where thumbnails aren't sent with the list
     if (preset && !preset.thumbnail) {
       fetchThumbnail();
     }
@@ -81,6 +91,30 @@
     });
   });
   
+  // Reactive statement to refetch thumbnail if the preset prop changes *and* it lacks a thumbnail
+  $effect(() => {
+    const currentPresetId = preset?.id;
+    const hasPresetThumbnail = !!preset?.thumbnail;
+
+    // DON'T reset thumbnailData here unconditionally
+    // thumbnailData = null; 
+
+    console.log(`PresetCard effect: ID=${currentPresetId}, Prop has thumbnail=${hasPresetThumbnail}, Local thumbnailData exists=${!!thumbnailData}`);
+
+    // Only fetch if the prop lacks a thumbnail AND we don't already have thumbnailData loaded
+    if (currentPresetId && !hasPresetThumbnail && !thumbnailData) {
+      console.log(`Preset ${currentPresetId}: Prop lacks thumbnail AND local data missing, calling fetchThumbnail.`);
+      fetchThumbnail();
+    } else if (currentPresetId && hasPresetThumbnail) {
+      // If the prop *does* have a thumbnail (e.g., after regeneration update),
+      // clear any old async-loaded data to ensure the prop value is used.
+      if (thumbnailData) { // Only clear if local data actually exists
+        console.log(`Preset ${currentPresetId}: Prop has thumbnail, clearing local thumbnailData.`);
+        thumbnailData = null; 
+      }
+    }
+  });
+
   // Subscribe to the store to handle animation state changes
   unsubscribe = currentlyPlayingPresetId.subscribe(playingId => {
     if (playingId !== preset.id) {
@@ -296,46 +330,51 @@
   <!-- We'll move the tag and user inputs to after the action buttons -->
 
   <!-- Thumbnail section -->
-  {#if preset.type !== "timeline"}
-    <div class="relative">
-      {#if thumbnailData || preset.thumbnail}
-        <video
-          src={`data:video/webm;base64,${thumbnailData || preset.thumbnail}`}
-          autoplay
-          muted
-          loop
-          playsinline
-          class="w-full mb-2 rounded"
-          height="120"
-        ></video>
-      {:else if isAnimation(preset)}
+  <div class="relative">
+    {#if thumbnailData || preset.thumbnail}
+      <video
+        src={`data:video/webm;base64,${thumbnailData || preset.thumbnail}`}
+        autoplay
+        muted
+        loop
+        playsinline
+        class="w-full mb-2 rounded"
+        height="120"
+      ></video>
+    {:else if isThumbnailLoading}
+      <div class="w-full h-[120px] mb-2 rounded bg-gray-100 flex items-center justify-center">
+         <svg class="animate-spin h-6 w-6 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+      </div>
+    {:else if isAnimation(preset)}
         <div class="w-full h-[120px] mb-2 rounded bg-gray-100 flex items-center justify-center">
           <i class="fas fa-film text-4xl text-gray-400"></i>
         </div>
-      {/if}
-      <button
-        class="absolute top-2 right-2 bg-white rounded-full p-1.5 shadow-md hover:bg-gray-100 transition-colors"
-        on:click|stopPropagation={() => onRegenerateThumbnail(preset)}
-        disabled={isRegenerating}
-        title="Regenerate thumbnail"
+    {/if}
+    <button
+      class="absolute top-2 right-2 bg-white rounded-full p-1.5 shadow-md hover:bg-gray-100 transition-colors"
+      on:click|stopPropagation={() => onRegenerateThumbnail(preset)}
+      disabled={isRegenerating}
+      title="Regenerate thumbnail"
+    >
+      <svg
+        class={`w-4 h-4 ${isRegenerating ? "animate-spin" : ""}`}
+        xmlns="http://www.w3.org/2000/svg"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
       >
-        <svg
-          class={`w-4 h-4 ${isRegenerating ? "animate-spin" : ""}`}
-          xmlns="http://www.w3.org/2000/svg"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-          />
-        </svg>
-      </button>
-    </div>
-  {/if}
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+        />
+      </svg>
+    </button>
+  </div>
 
   <!-- Title and type -->
   <div class="flex justify-between items-start mb-2">
