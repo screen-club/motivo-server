@@ -1241,6 +1241,21 @@ def delete_preset(preset_id):
         logging.error(f"Error deleting preset: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/presets/<int:preset_id>/thumbnail', methods=['GET'])
+def get_preset_thumbnail(preset_id):
+    """Fetch only the thumbnail for a specific preset."""
+    try:
+        preset = Content.get_by_id(preset_id)
+        if preset and preset.get('thumbnail'):
+            return jsonify({'thumbnail': preset['thumbnail']})
+        elif preset:
+            return jsonify({'thumbnail': None}), 404 # Preset exists but no thumbnail
+        else:
+            return jsonify({'error': 'Preset not found'}), 404
+    except Exception as e:
+        logging.error(f"Error fetching thumbnail for preset {preset_id}: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 # Simple test endpoint that always returns recorded video names in the request
 @app.route('/api/test-videos', methods=['GET'])
 def test_videos():

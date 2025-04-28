@@ -99,13 +99,31 @@ class Content(BaseModel):
             return [{
                 "id": row.id,
                 "title": row.title,
-                "thumbnail": row.thumbnail,
                 "type": row.type,
                 "data": row.get_data(),
                 "cache_file_path": row.cache_file_path,
                 "tags": row.get_tags(),
                 "users": row.get_users()
             } for row in rows]
+
+    @classmethod
+    def get_by_id(cls, id):
+        """Fetch a single content item by its ID, including thumbnail."""
+        with db.connection_context():
+            try:
+                row = cls.get(Content.id == id)
+                return {
+                    "id": row.id,
+                    "title": row.title,
+                    "thumbnail": row.thumbnail,
+                    "type": row.type,
+                    "data": row.get_data(),
+                    "cache_file_path": row.cache_file_path,
+                    "tags": row.get_tags(),
+                    "users": row.get_users()
+                }
+            except DoesNotExist:
+                return None
 
     @classmethod
     def add(cls, title, thumbnail, type, data, cache_file_path=None, tags=None, users=None):

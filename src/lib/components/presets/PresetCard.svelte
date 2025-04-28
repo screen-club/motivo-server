@@ -8,18 +8,26 @@
   import { onDestroy, createEventDispatcher, onMount } from 'svelte';
   import { llmPromptStore, defaultPresetPromptStore } from '../../stores/llmInteractionStore';
   import { websocketService } from "../../services/websocket/websocketService";
+  import { getApiUrl } from '../../utils/api';
   
   const dispatch = createEventDispatcher();
 
-  export let preset;
-  export let onLoad;
-  export let onDelete;
-  export let onRegenerateThumbnail;
-  export let isDraggable = true;
-  export let isRegenerating = false;
-  export let allTags = [];
-  export let allUsers = [];
-  export let initialLoading = false;
+  // Component props using runes syntax
+  let {
+    preset,
+    onLoad,
+    onDelete,
+    onRegenerateThumbnail,
+    isDraggable = true,
+    isRegenerating = false,
+    allTags = [],
+    allUsers = [],
+    initialLoading = false
+  } = $props();
+
+  // State for async thumbnail loading
+  let thumbnailData = $state(null);
+  let isThumbnailLoading = $state(false);
 
   // State for delete feedback
   let isDeleting = false;
@@ -36,7 +44,32 @@
   // Add a websocket message handler to catch 'trigger_ai' events
   let wsUnsubscribe;
   
+  async function fetchThumbnail() {
+    if (!preset || !preset.id || thumbnailData) return;
+    isThumbnailLoading = true;
+    try {
+      const apiUrl = getApiUrl();
+      const response = await fetch(`${apiUrl}/api/presets/${preset.id}/thumbnail`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch thumbnail: ${response.statusText}`);
+      }
+      const data = await response.json();
+      thumbnailData = data.thumbnail; // May be null if no thumbnail exists
+    } catch (error) {
+      console.error(`Error fetching thumbnail for preset ${preset.id}:`, error);
+      thumbnailData = null; // Set to null on error
+    } finally {
+      isThumbnailLoading = false;
+    }
+  }
+  
   onMount(() => {
+    // Fetch thumbnail if it wasn't included initially
+    // We assume if preset.thumbnail exists, it was provided during SSR or initial load
+    if (preset && !preset.thumbnail) {
+      fetchThumbnail();
+    }
+
     // Subscribe to WebSocket messages to catch trigger_ai events
     wsUnsubscribe = websocketService.addMessageHandler((data) => {
       if (data && data.type === "trigger_ai") {
@@ -189,21 +222,38 @@
     }
   }
 
-  // Watch for FPS or speed factor changes and update animation
-  $: if (isAnimationPlaying && (animationFPS !== prevFPS || speedFactor !== prevSpeed)) {
-    updateAnimationParams();
-    
-    // Only restart the frame updater when speed changes, not when FPS changes
-    if (speedFactor !== prevSpeed) {
-      startFrameUpdater();
+  // Effect to react to animation parameter changes in runes mode
+  $effect(() => {
+    // Capture current values to check against previous state if needed inside the effect,
+    // though direct comparison in the condition is often enough.
+    const currentFPS = animationFPS;
+    const currentSpeed = speedFactor;
+
+    // Store previous values (consider using state if complex tracking needed)
+    let prevFPS = animationFPS; // Initialize or get from state
+    let prevSpeed = speedFactor; // Initialize or get from state
+
+    if (isAnimationPlaying) {
+      if (currentFPS !== prevFPS || currentSpeed !== prevSpeed) {
+        console.log(`Animation params changed: FPS ${prevFPS}->${currentFPS}, Speed ${prevSpeed}->${currentSpeed}`);
+        updateAnimationParams();
+
+        // Only restart the frame updater when speed changes
+        if (currentSpeed !== prevSpeed) {
+          startFrameUpdater();
+        }
+        
+        // Update previous values *after* comparison and action
+        // In a real component, you might store these in $state if needed elsewhere
+        // For this effect, just updating tracked vars is sufficient if they aren't exported/read outside
+        // For this effect, just updating tracked vars is sufficient if they aren't exported/read outside
+        prevFPS = currentFPS;
+        prevSpeed = currentSpeed;
+      }
     }
-    
-    prevFPS = animationFPS;
-    prevSpeed = speedFactor;
-  }
-  
-  let prevFPS = animationFPS;
-  let prevSpeed = speedFactor;
+    // Cleanup function if needed for the effect (e.g., clearing intervals on component destroy)
+    // return () => { /* cleanup logic */ };
+  });
   
   // Handle FPS slider change
   function handleFpsChange() {
@@ -248,9 +298,9 @@
   <!-- Thumbnail section -->
   {#if preset.type !== "timeline"}
     <div class="relative">
-      {#if preset.thumbnail}
+      {#if thumbnailData || preset.thumbnail}
         <video
-          src={`data:video/webm;base64,${preset.thumbnail}`}
+          src={`data:video/webm;base64,${thumbnailData || preset.thumbnail}`}
           autoplay
           muted
           loop
