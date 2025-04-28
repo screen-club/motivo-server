@@ -51,11 +51,12 @@
     const amplitudeValue = range * amplitude;
     
     // Convert frequency percentage to actual cycles over duration
-    // 0% = 1 cycle over entire duration, 100% = 20 cycles over duration
-    const cyclesOverDuration = 1 + (frequencyPercent / 100) * 19; // 1 to 20 cycles
+    // 0% = 1 cycle over entire duration, 100% = 120 cycles over duration
+    const cyclesOverDuration = 1 + (frequencyPercent / 100) * 119; // 1 to 120 cycles
     
     // Generate at least 20 points for a smooth curve, more for higher frequencies
-    const numPoints = Math.max(20, Math.min(200, Math.floor(cyclesOverDuration * 20)));
+    // Increased density factor from 20 to 40
+    const numPoints = Math.max(20, Math.min(2000, Math.floor(cyclesOverDuration * 40))); // Increased max points to 2000, doubled density
     
     for (let i = 0; i <= numPoints; i++) {
       const time = (i / numPoints) * duration;
@@ -71,6 +72,10 @@
           break;
         case 'triangle':
           value = centerValue + amplitudeValue * (2 * Math.asin(Math.sin(normalizedTime)) / Math.PI);
+          break;
+        case 'noise':
+          // Generate random value within the amplitude range centered around offset
+          value = centerValue + amplitudeValue * (Math.random() * 2 - 1);
           break;
         default:
           value = centerValue;
@@ -260,6 +265,15 @@
         >
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3 12 L7 6 L11 18 L15 6 L19 18 L23 12" />
+          </svg>
+        </button>
+        <button 
+          class="p-2 rounded {waveform === 'noise' ? 'bg-blue-100 border-blue-300' : 'bg-gray-50 border-gray-200'} border"
+          on:click={() => waveform = 'noise'}
+          title="Noise"
+        >
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="3 12 5 10 7 14 9 8 11 12 13 10 15 14 17 8 19 12 21 10" />
           </svg>
         </button>
       </div>
