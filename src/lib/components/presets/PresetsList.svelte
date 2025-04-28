@@ -424,6 +424,9 @@
           // Automatically load/play the newly added preset
           loadPresetConfig(data.payload);
           console.log(`[Auto Load] Triggered loading for new preset: ${data.payload.title} (ID: ${data.payload.id})`);
+          // Automatically regenerate thumbnail for the new preset
+          regenerateThumbnail(data.payload);
+          console.log(`[Auto Thumbnail] Triggered regeneration for new preset: ${data.payload.title} (ID: ${data.payload.id})`);
         }
       });
       // ---------------------------------------------

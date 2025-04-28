@@ -1105,11 +1105,16 @@ def create_config():
         print(f"Config type: {data['type']}")
 
         # Fetch the newly created preset data
-        new_preset = Content.get_by_id(config_id)
-        if new_preset:
-            # Emit event to all clients
-            socketio.emit('preset_added', new_preset)
-            logging.info(f"Emitted 'preset_added' event for ID: {config_id}")
+        new_preset_obj = Content.get_by_id(config_id)
+        if new_preset_obj:
+            # Convert the Content object to a dictionary
+            new_preset_dict = new_preset_obj.to_dict() if hasattr(new_preset_obj, 'to_dict') else None
+            if new_preset_dict:
+                # Emit the dictionary representation
+                socketio.emit('preset_added', {'type': 'preset_added', 'payload': new_preset_dict})
+                logging.info(f"Emitted 'preset_added' event for ID: {config_id}")
+            else:
+                logging.error(f"Failed to serialize newly created preset object with ID: {config_id}")
         else:
             logging.warning(f"Could not fetch newly created preset with ID: {config_id}")
 
@@ -1167,11 +1172,16 @@ def create_preset():
         logging.info(f"Created preset with id: {preset_id}")
 
         # Fetch the newly created preset data
-        new_preset = Content.get_by_id(preset_id)
-        if new_preset:
-            # Emit event to all clients
-            socketio.emit('preset_added', new_preset)
-            logging.info(f"Emitted 'preset_added' event for ID: {preset_id}")
+        new_preset_obj = Content.get_by_id(preset_id)
+        if new_preset_obj:
+            # Convert the Content object to a dictionary
+            new_preset_dict = new_preset_obj.to_dict() if hasattr(new_preset_obj, 'to_dict') else None
+            if new_preset_dict:
+                # Emit the dictionary representation
+                socketio.emit('preset_added', {'type': 'preset_added', 'payload': new_preset_dict})
+                logging.info(f"Emitted 'preset_added' event for ID: {preset_id}")
+            else:
+                logging.error(f"Failed to serialize newly created preset object with ID: {preset_id}")
         else:
             logging.warning(f"Could not fetch newly created preset with ID: {preset_id}")
 
