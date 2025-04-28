@@ -169,8 +169,8 @@ class MessageHandler:
         # which will return the computed z directly.
         pass # Remove the old return logic
     
-    async def _compute_reward_context_background(self, reward_config, fallback_context):
-        """Background task to compute reward context, update self.current_z, and reset flag."""
+    async def _compute_reward_context_background(self, reward_config, fallback_context, update_current_z: bool = True, reset_computing_flag: bool = True):
+        """Background task to compute reward context, optionally update self.current_z, and optionally reset flag."""
         computed_z = None # Initialize computed_z
         try:
             # Run the actual computation in a thread to avoid blocking asyncio loop
@@ -193,9 +193,12 @@ class MessageHandler:
             else:
                 computed_z = z # Store the successfully computed z
             
-            # --- Update the main context --- 
-            self.current_z = computed_z
-            logger.info("Updated self.current_z with computed context.")
+            # --- Optionally Update the main context --- 
+            if update_current_z:
+                self.current_z = computed_z
+                logger.info("Updated self.current_z with computed context.")
+            else:
+                logger.info("Skipping update of self.current_z as requested.")
             # --- End Update --- 
             
             # Status update logic (moved slightly, still uses self.computation_status)
@@ -240,15 +243,15 @@ class MessageHandler:
             except Exception as broadcast_error:
                 logger.error(f"Error broadcasting computation error: {str(broadcast_error)}")
         
-        # Return the computed z (or fallback if error occurred)
-        # Note: This return value is only used by handle_mix_pose_reward currently
-        # The main context update happens via self.current_z = computed_z above
         # return computed_z # We don't need to return it anymore as we update self.current_z
         finally:
-             # --- Reset the computing flag --- 
-             self.is_computing_reward = False
-             logger.info("Reset is_computing_reward flag to False.")
+             # --- Optionally Reset the computing flag --- 
+             if reset_computing_flag:
+                 self.is_computing_reward = False
+                 logger.info("Reset is_computing_reward flag to False.")
              # --- End Reset --- 
+             # Return the computed z regardless of whether self.current_z was updated
+             return computed_z
 
     async def handle_message(self, websocket, message: str) -> None:
         """Main message handler that routes to specific command handlers"""
@@ -521,7 +524,7 @@ class MessageHandler:
                 # Launch background computation and set flag
                 self.is_computing_reward = True # Set flag before starting task
                 fallback_context = self._get_fallback_context() # Get fallback for the task
-                asyncio.create_task(self._compute_reward_context_background(self.active_rewards, fallback_context))
+                asyncio.create_task(self._compute_reward_context_background(self.active_rewards, fallback_context, reset_computing_flag=True))
 
                 response = {
                     "type": "reward_updated",
@@ -560,7 +563,7 @@ class MessageHandler:
             mix_weight = data.get("mix_weight", 0.5) # Weight for the INPUT reward context
             mix_strategy = data.get("mix_strategy", "slerp")
 
-            mix_strategy = "slerp"
+            mix_strategy = "linear"
             
             logger.info(f"Mixing dynamic hold reward and input reward.")
             logger.info(f"  Strategy: {mix_strategy}, Weight (for input reward): {mix_weight:.2f}")
@@ -596,14 +599,14 @@ class MessageHandler:
             
             logger.info("Creating hold-pose reward context computation task...")
             hold_task = asyncio.create_task(
-                self._compute_reward_context_background(reward_config_hold, fallback_context)
+                self._compute_reward_context_background(reward_config_hold, fallback_context, update_current_z=False, reset_computing_flag=False)
             )
 
             # --- 4. Calculate Input Reward Context (input_reward_z) --- 
             if reward_config_input and reward_config_input.get('rewards'):
                 logger.info("Creating input reward context computation task...")
                 input_task = asyncio.create_task(
-                    self._compute_reward_context_background(reward_config_input, fallback_context)
+                    self._compute_reward_context_background(reward_config_input, fallback_context, update_current_z=False, reset_computing_flag=False)
                 )
             else:
                  logger.info("Input reward config is empty, using current context for mixing.")
@@ -862,7 +865,7 @@ class MessageHandler:
             logger.info("Creating background task for reward computation...")
             self.is_computing_reward = True # Set flag before starting task
             fallback_context = self._get_fallback_context() # Get fallback for the task
-            asyncio.create_task(self._compute_reward_context_background(self.active_rewards, fallback_context))
+            asyncio.create_task(self._compute_reward_context_background(self.active_rewards, fallback_context, reset_computing_flag=True))
             
             # Send response immediately, computation happens in background
             response = {
