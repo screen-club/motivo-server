@@ -161,6 +161,24 @@ class GeminiSocketService {
           // llmPromptStore.set(defaultPrompt);
         }
       });
+
+      // --- Add listener for preset_added ---
+      this.socket.on("preset_added", (data) => {
+        console.log("⚡ Received preset_added event:", data);
+        // Notify all generic handlers
+        this.messageHandlers.forEach((handler) => {
+          try {
+            // Pass data in the standard format { type: 'event_name', ...payload }
+            handler({ type: "preset_added", ...data });
+          } catch (error) {
+            console.error(
+              "[DEBUG GEMINI SOCKET] Error in preset_added handler:",
+              error
+            );
+          }
+        });
+      });
+      // -------------------------------------
     } catch (error) {
       console.error("GeminiSocketService: Setup error", error);
     }
