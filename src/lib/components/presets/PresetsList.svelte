@@ -170,7 +170,8 @@
           duration: timelineComponent.duration,
           placedPresets: timelineComponent.placedPresets,
           envelopes: timelineComponent.envelopes // Include envelopes
-        }
+        },
+        thumbnail: '' // Add placeholder thumbnail for timelines
       };
       
       await DbService.addConfig(config);
@@ -296,8 +297,14 @@
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.onloadend = () => {
-        const base64String = reader.result.split(',')[1];
-        resolve(base64String);
+        if (typeof reader.result === 'string') {
+          const base64String = reader.result.split(',')[1];
+          resolve(base64String);
+        } else {
+          // Handle the case where reader.result is not a string (e.g., ArrayBuffer)
+          console.error('FileReader result is not a string:', reader.result);
+          resolve(''); // Resolve with empty string or handle error appropriately
+        }
       };
       reader.readAsDataURL(blob);
     });
@@ -316,7 +323,7 @@
         }
         
         if (modelInfo && contextInfo) {
-          cleanup();
+          if (typeof cleanup === 'function') cleanup();
           resolve({ modelInfo, contextInfo });
         }
       });
@@ -325,7 +332,7 @@
       websocketService.send({ type: "get_current_context" });
 
       setTimeout(() => {
-        cleanup();
+        if (typeof cleanup === 'function') cleanup();
         reject(new Error('Timeout waiting for context data'));
       }, 5000);
     });
@@ -509,7 +516,9 @@
           class="border rounded-md px-2 py-1 text-sm w-full"
           on:focus={() => showTagSuggestions = true}
           on:input={(e) => {
-            tagSearchInput = e.target.value;
+            if (e.target instanceof HTMLInputElement) { 
+              tagSearchInput = e.target.value;
+            }
             showTagSuggestions = true;
           }}
           on:blur={() => setTimeout(() => (showTagSuggestions = false), 200)}
@@ -539,14 +548,14 @@
         on:click={saveCurrentTimeline}
         disabled={isSaving}
       >
-        {isSaving ? 'Saving...' : 'Save Timeline'}
+        {isSaving ? 'Saving...' : 'New Timeline'}
       </button>
       <button 
         class="bg-green-500 text-white px-3 py-1 text-sm font-medium rounded-md hover:bg-green-600 transition-colors disabled:bg-gray-400"
         on:click={saveCurrentConfig}
         disabled={isSaving}
       >
-        {isSaving ? 'Saving...' : 'Save Current'}
+        {isSaving ? 'Saving...' : 'Save Preset'}
       </button>
     </div>
   </div>
@@ -588,7 +597,6 @@
           
           {#if showTimelines}
             <div class="flex flex-wrap gap-4 transition-all duration-300">
-              <PresetCardAdd on:add={saveCurrentTimeline} />
               {#each filterPresets(presets).filter(p => p.type === 'timeline') as preset (preset.id)}
                 <PresetCard
                   {preset}
