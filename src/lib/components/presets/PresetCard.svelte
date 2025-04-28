@@ -21,6 +21,9 @@
   export let allUsers = [];
   export let initialLoading = false;
 
+  // State for delete feedback
+  let isDeleting = false;
+
   // Animation state
   let isAnimationPlaying = false;
   let animationFPS = 4;  // Number of poses to send in one second
@@ -215,6 +218,12 @@
     // Set the store value instead of dispatching an event
     llmPromptStore.set(defaultPrompt);
   }
+
+  // Handle delete button click
+  function handleDeleteClick() {
+    isDeleting = true; // Set deleting state immediately
+    onDelete(preset.id); // Call parent's delete function (async)
+  }
 </script>
 
 <div
@@ -224,9 +233,9 @@
       e.dataTransfer.setData("preset", JSON.stringify(preset));
     }
   }}
-  class="flex-shrink-0 w-52 border rounded-lg p-4 bg-white shadow-sm {preset.type !== 'timeline'
-    ? 'cursor-move'
-    : 'cursor-pointer'}"
+  class="flex-shrink-0 w-52 border rounded-lg p-4 bg-white shadow-sm transition-opacity duration-300 
+    ${isDeleting ? 'opacity-50 pointer-events-none' : ''}
+    ${preset.type !== 'timeline' ? 'cursor-move' : 'cursor-pointer'}"
   on:click={() => {
     if (preset.type === "timeline") {
       onLoad(preset);
@@ -392,14 +401,24 @@
     {/if}
     
     <button
-      class="inline-flex items-center justify-center p-2 rounded-md bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
-      on:click={() => onDelete(preset.id)}
+      class="inline-flex items-center justify-center p-2 rounded-md bg-red-100 text-red-700 hover:bg-red-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+      on:click={handleDeleteClick} 
       aria-label="Delete preset"
       title="Delete"
+      disabled={isDeleting} 
     >
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
-        <path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clip-rule="evenodd" />
-      </svg>
+      {#if isDeleting}
+        <!-- Simple Spinner -->
+        <svg class="animate-spin h-4 w-4 text-red-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+      {:else}
+        <!-- Original Delete Icon -->
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+          <path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clip-rule="evenodd" />
+        </svg>
+      {/if}
     </button>
   </div>
   
