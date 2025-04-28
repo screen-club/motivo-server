@@ -149,9 +149,6 @@ Set `margin` or per-axis `margin_x/y/z` to control the **precision tolerance**. 
 - `"gaussian"` / `"cosine"`: Optional for smooth shaping
 
 ## 5. Best Practices for Behavior Design
-- Always include at least one **stability signal**:
-  - `upright_weight > 0`
-  - `control_weight > 0`
 - Combine 2–4 body targets for balanced pose shaping; no more
 - Avoid conflicting targets (e.g. pull foot forward & backward)
 
