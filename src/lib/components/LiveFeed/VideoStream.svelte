@@ -2,6 +2,7 @@
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import { websocketService, computingStatus } from '../../services/websocket';
   import { webrtcService, isLoading, hasStream, currentQuality, qualityOptions } from '../../services/webrtc';
+  import ParameterPanel from '../parameters/ParameterPanel.svelte';
   
   const dispatch = createEventDispatcher();
   
@@ -335,5 +336,13 @@
         </div>
       </div>
     {/if}
+
+    <!-- Conditionally display ParameterPanel in top-right for REAL fullscreen -->
+    {#if isFullscreen}
+      <div class="absolute top-2 right-2 z-50 bg-white/80 backdrop-blur-sm p-4 rounded-lg shadow-lg">
+        <ParameterPanel />
+      </div>
+    {/if}
+
   </div>
 </div>

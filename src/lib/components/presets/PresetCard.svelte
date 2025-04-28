@@ -292,9 +292,9 @@
           console.error("Failed to update title:", error);
         }
       }}
-      class="font-semibold text-gray-800 bg-transparent focus:bg-gray-100 focus:ring-1 focus:ring-blue-500 focus:outline-none rounded px-1"
+      class="font-semibold text-gray-800 bg-transparent focus:bg-gray-100 focus:ring-1 focus:ring-blue-500 focus:outline-none rounded px-1 flex-1 min-w-0"
     />
-    <span class="text-xs px-2 py-1 rounded-full {preset.type === 'pose' ? 'bg-blue-100 text-blue-800' : preset.type === 'rewards' ? 'bg-green-100 text-green-800' : preset.type === 'timeline' ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-800'}">
+    <span class="text-xs px-2 py-1 rounded-full flex-shrink-0 {preset.type === 'pose' ? 'bg-blue-100 text-blue-800' : preset.type === 'rewards' ? 'bg-green-100 text-green-800' : preset.type === 'timeline' ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-800'}">
       {preset.type}
     </span>
   </div>

@@ -25,6 +25,8 @@
     let observer;
     let isLargePiP = $state(false); // State for large PiP mode
     let videoContainerRef; // Ref for the outer container
+    let videoWidth = $state(null); // State to store the video width
+    let videoHeight = $state(null); // State to store the video height
     
     // Get valid panel from localStorage or default to 'rewards'
     const storedPanel = localStorage.getItem('controlActivePanel');
@@ -123,11 +125,11 @@
         });
     });
 
-    // Add/remove class to outer container based on PiP state
+    // Effect to capture video width when not in PiP
     $effect(() => {
-        const pipActive = isPiPMode || isLargePiP;
-        if (videoContainerRef) {
-            videoContainerRef.classList.toggle('has-pip-active', pipActive);
+        if (videoWrapperRef && !isPiPMode && !isLargePiP) {
+            videoWidth = videoWrapperRef.offsetWidth;
+            videoHeight = videoWrapperRef.offsetHeight; // Capture height too
         }
     });
 
@@ -140,61 +142,10 @@
 <div class="bg-gray-50 p-4">
     <div class="flex gap-8">
         <!-- Left column -->
-        <div class="w-[420px] flex flex-col gap-8">
-            <!-- Outer container that stays in flow -->
-            <div class="video-container relative" bind:this={videoContainerRef}> 
-                <!-- Element for Intersection Observer trigger -->
-                <div bind:this={videoIntersectionTriggerRef} class="absolute top-0 h-1 w-full"></div>
-
-                <!-- Inner Wrapper for the Video Feed (this is what moves/resizes) -->
-                <div 
-                  class:pip-mode={isPiPMode || isLargePiP} 
-                  class:pip-large={isLargePiP}
-                  class="video-wrapper"
-                >
-                    <LiveFeed {isPiPMode} {isLargePiP} on:togglePip={handleTogglePip} />
-                    
-                    <!-- Scaled Parameter Panel for PiP -->
-                    <ParameterPanel 
-                      class="pip-params {!(isPiPMode || isLargePiP) ? 'hidden' : ''}"
-                      isCompact={true}
-                    />
-                </div>
-            </div>
-
-            <!-- Original Parameter Panel (Hidden during PiP) -->
-            <ParameterPanel class="original-params flex-1 min-w-[400px] {(isPiPMode || isLargePiP) ? 'invisible' : ''}" />
-            
-            {#if isTestingAll}
-                <div class="bg-white/50 p-4 rounded-lg space-y-2">
-                    <div class="flex justify-between items-center">
-                        <span class="font-medium">Testing Progress</span>
-                        <span class="text-sm">{currentStep}/{totalSteps}</span>
-                    </div>
-                    {#if testingStatus}
-                        <p class="text-sm text-gray-600">{testingStatus}</p>
-                    {/if}
-                    <div class="w-full bg-gray-200 rounded-full h-2">
-                        <div 
-                            class="bg-blue-500 h-2 rounded-full transition-all duration-300" 
-                            style="width: {(currentStep / totalSteps * 100) || 0}%"
-                        ></div>
-                    </div>
-                </div>
-            {/if}
-
-            <!-- Add Test All button -->
-            <button 
-                class="w-full px-4 py-2 rounded-lg font-medium transition-colors {isTestingAll ? 'bg-red-500 text-white' : 'bg-blue-500 text-white'}"
-                onclick={handleTestAll}
-            >
-                {isTestingAll ? 'Stop Testing' : 'Test All Options'}
-            </button>
-        </div>
-
-        <!-- Right side content -->
-        <div class="flex-1 flex flex-col gap-8">
-            <!-- Panel selection buttons -->
+        <div 
+            class="flex-[0_1_35%] flex flex-col gap-8" 
+        >
+            <!-- Moved Panel selection buttons here -->
             <div class="flex gap-4">
                 <button 
                     class="px-4 py-2 rounded-lg font-medium transition-colors {activePanel === 'rewards' ? 'bg-amber-500 text-white' : 'bg-gray-200 text-gray-700'}"
@@ -203,14 +154,41 @@
                     Rewards
                 </button>
                 <button 
-                class="px-4 py-2 rounded-lg font-medium transition-colors {activePanel === 'llm' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}"
-                onclick={() => activePanel = /** @type {'llm'} */ ('llm')}
-            >
-                LLM Control
-            </button>
+                    class="px-4 py-2 rounded-lg font-medium transition-colors {activePanel === 'llm' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-700'}"
+                    onclick={() => activePanel = /** @type {'llm'} */ ('llm')}
+                >
+                    LLM Control
+                </button>
             </div>
 
-            <!-- Conditional panel display -->
+            <!-- Outer container that stays in flow - Apply height here -->
+            <div 
+                class="video-container relative"
+                bind:this={videoContainerRef}
+                style="height: {videoHeight ? videoHeight + 'px' : 'auto'}"
+            > 
+                <!-- Element for Intersection Observer trigger -->
+                <div bind:this={videoIntersectionTriggerRef} class="absolute top-0 h-1 w-full"></div>
+
+                <!-- Inner Wrapper for the Video Feed (this is what moves/resizes) -->
+                <div 
+                  bind:this={videoWrapperRef} 
+                  class:pip-mode={isPiPMode || isLargePiP} 
+                  class:pip-large={isLargePiP}
+                  class="video-wrapper"
+                  style="width: {isPiPMode || isLargePiP ? (videoWidth ? videoWidth + 'px' : 'auto') : 'auto'}"
+                >
+                    <LiveFeed {isPiPMode} {isLargePiP} on:togglePip={handleTogglePip} />
+                    
+                    <!-- Scaled Parameter Panel for PiP -->
+                    
+                </div>
+            </div>
+
+            <!-- Original Parameter Panel (Keep visible during PiP) -->
+            <ParameterPanel class="original-params flex-1 min-w-[400px]" />
+            
+            <!-- Moved Conditional panel display here -->
             {#if activePanel === 'rewards'}
                 <div class="flex-1 flex flex-wrap gap-8">
                     <div class="flex-1 max-w-[420px] bg-amber-100/50 p-4 rounded-xl">
@@ -290,23 +268,54 @@
                     <LLM />
                 </div>
             {/if}
+
+            {#if isTestingAll}
+                <div class="bg-white/50 p-4 rounded-lg space-y-2">
+                    <div class="flex justify-between items-center">
+                        <span class="font-medium">Testing Progress</span>
+                        <span class="text-sm">{currentStep}/{totalSteps}</span>
+                    </div>
+                    {#if testingStatus}
+                        <p class="text-sm text-gray-600">{testingStatus}</p>
+                    {/if}
+                    <div class="w-full bg-gray-200 rounded-full h-2">
+                        <div 
+                            class="bg-blue-500 h-2 rounded-full transition-all duration-300" 
+                            style="width: {(currentStep / totalSteps * 100) || 0}%"
+                        ></div>
+                    </div>
+                </div>
+            {/if}
+
+            <!-- Add Test All button -->
+            <button 
+                class="w-full px-4 py-2 rounded-lg font-medium transition-colors {isTestingAll ? 'bg-red-500 text-white' : 'bg-blue-500 text-white'}"
+                onclick={handleTestAll}
+            >
+                {isTestingAll ? 'Stop Testing' : 'Test All Options'}
+            </button>
+        </div>
+
+        <!-- Right side content (Now only PresetsList) -->
+        <div class="flex-1 flex flex-col gap-8">
+            <!-- PresetsList remains here -->
+            <div class="w-full">
+                <PresetsList />
+            </div>
         </div>
     </div>
 </div>
-<!-- Add PresetsList at the bottom -->
-<div class="w-full">
-    <PresetsList />
-</div>
+
 <style>
     .video-container {
         position: relative; /* Needed for the ::before pseudo-element */
     }
 
     /* Add padding to the container when inner video is PiP */
-    .video-container.has-pip-active {
-        padding-top: 240px; /* Approximate height of the video feed */
-        /* Adjust height if necessary */
-    }
+    /* .video-container.has-pip-active {
+        
+        
+    }*/
 
     .video-wrapper {
         transition: all 0.3s ease-in-out;
@@ -318,7 +327,6 @@
         position: fixed;
         top: 1rem;
         left: 1rem;
-        width: 420px; /* Default PiP width (matches original container) */
         height: auto;
         z-index: 50;
         border-radius: 0.5rem;
@@ -328,26 +336,12 @@
     }
 
     .video-wrapper.pip-large {
-        width: 800px; /* Override for large PiP with fixed width */
         overflow: hidden; /* Ensure overflow hidden */
         /* Other styles are inherited from pip-mode */
     }
 
-    .pip-params {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        transform: scale(0.35); /* Adjust scale factor as needed */
-        transform-origin: bottom left;
-        background: rgba(255, 255, 255, 0.9);
-        padding: 0.5rem; /* Add some padding */
-        border-top: 1px solid rgba(0,0,0,0.1);
-        pointer-events: none; /* Disable interaction */
-        transition: opacity 0.3s ease-in-out;
-        opacity: 1;
-    }
-
+    /* Removed .pip-params CSS rule */
+    
     /* Custom grid layout for auto-fitting columns */
     .grid-auto-fit {
         display: grid;

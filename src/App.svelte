@@ -35,7 +35,7 @@
       </div>
     </main>
 
-    <Footer />
+   
    
   </Router>
 </div>

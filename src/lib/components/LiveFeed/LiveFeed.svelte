@@ -28,8 +28,14 @@
 </script>
 
 <div class="w-full">
-  <!-- Video Stream -->
-  <VideoStream {isPiPMode} {isLargePiP} on:togglePip={forwardTogglePip} />
+  <!-- Video Stream Wrapper -->
+  <div class="relative"> 
+    <VideoStream 
+      {isPiPMode} 
+      {isLargePiP} 
+      on:togglePip={forwardTogglePip} 
+    />
+  </div>
   
   <!-- Compact Status Indicators -->
   <div class="flex items-center gap-4 px-2 py-1 text-xs text-gray-600 border-t border-gray-200 bg-gray-50 rounded-b-xl">
