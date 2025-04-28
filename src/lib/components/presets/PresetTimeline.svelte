@@ -74,6 +74,7 @@
   let dragStartX = 0;
   let dragStartPosition = 0;
   let isDragging = false;
+  let potentialClick = false; // Flag to differentiate click from drag
 
   // Handle preset dragging - direct manipulation instead of drag/drop API
   function handlePresetMouseDown(event, preset) {
@@ -83,9 +84,10 @@
     event.stopPropagation(); // Prevent timeline click
     
     isDraggingPreset = preset;
-    isDragging = true;
     dragStartX = event.clientX;
     dragStartPosition = preset.position;
+    potentialClick = true; // Assume it might be a click initially
+    isDragging = false; // Not dragging yet
     
     // Add temporary event listeners to window
     window.addEventListener('mousemove', handlePresetMouseMove);
@@ -93,43 +95,60 @@
   }
   
   function handlePresetMouseMove(event) {
-    if (!isDragging || !isDraggingPreset) return;
-    
-    const timelineRect = timelineRef.getBoundingClientRect();
-    const deltaX = event.clientX - dragStartX;
-    const timeDelta = (deltaX / timelineRect.width) * viewportDuration;
-    
-    // Calculate new position
-    let newPosition = Math.max(0, dragStartPosition + timeDelta);
-    
-    // Make sure preset doesn't go past the timeline duration
-    const maxDuration = getMaxAnimationDuration(isDraggingPreset);
-    newPosition = Math.min(newPosition, duration - maxDuration);
-    
-    // Update the preset position in real-time
-    isDraggingPreset.position = newPosition;
-    
-    // Force a UI update
-    placedPresets = [...placedPresets];
+    if (!isDraggingPreset) return; // Need a preset targeted by mousedown
+
+    const deltaX = Math.abs(event.clientX - dragStartX);
+    const moveThreshold = 5; // Pixels threshold to initiate drag
+
+    // If movement exceeds threshold, confirm drag and cancel potential click
+    if (deltaX > moveThreshold || isDragging) {
+      if (!isDragging) {
+        // First time drag threshold is crossed
+        isDragging = true;
+      }
+      potentialClick = false; // It's definitely a drag, not a click
+
+      const timelineRect = timelineRef.getBoundingClientRect();
+      const currentDeltaX = event.clientX - dragStartX;
+      const timeDelta = (currentDeltaX / timelineRect.width) * viewportDuration;
+      
+      // Calculate new position
+      let newPosition = Math.max(0, dragStartPosition + timeDelta);
+      
+      // Make sure preset doesn't go past the timeline duration
+      const maxDuration = getMaxAnimationDuration(isDraggingPreset);
+      newPosition = Math.min(newPosition, duration - maxDuration);
+      
+      // Update the preset position in real-time
+      isDraggingPreset.position = newPosition;
+      
+      // Force a UI update
+      placedPresets = [...placedPresets];
+    }
   }
   
   function handlePresetMouseUp() {
-    if (isDragging && isDraggingPreset) {
-      // Sort presets by position
+    // Clean up window listeners first
+    window.removeEventListener('mousemove', handlePresetMouseMove);
+    window.removeEventListener('mouseup', handlePresetMouseUp);
+
+    if (isDragging) {
+      // Drag occurred
       placedPresets = placedPresets.sort((a, b) => a.position - b.position);
+      selectedPreset = isDraggingPreset; // Select the preset after dragging
       
-      // Save timeline changes after moving a preset
       if (timelineId) {
         saveTimelineChanges();
       }
+    } else if (potentialClick && isDraggingPreset) {
+      // No drag, treat as a click
+      selectedPreset = selectedPreset === isDraggingPreset ? null : isDraggingPreset;
     }
     
+    // Reset state
     isDragging = false;
+    potentialClick = false;
     isDraggingPreset = null;
-    
-    // Remove temporary event listeners
-    window.removeEventListener('mousemove', handlePresetMouseMove);
-    window.removeEventListener('mouseup', handlePresetMouseUp);
   }
 
   // Calculate preset width based on duration at fixed 30fps
@@ -317,12 +336,6 @@
     });
   }
 
-  // Handle preset selection
-  function handlePresetClick(event, preset) {
-    event.stopPropagation();
-    selectedPreset = selectedPreset === preset ? null : preset;
-  }
-
   // Handle keydown for delete, spacebar, and arrow keys
   function handleKeydown(event) {
     // Check if event is in an input field or textarea
@@ -331,15 +344,41 @@
     
     // Only handle keyboard shortcuts if not in an input field
     if (!isInput) {
-      // Handle Delete key to remove selected preset
-      if (event.key === 'Delete' && selectedPreset) {
-        stopPresetAnimation(selectedPreset);
-        placedPresets = placedPresets.filter(p => p !== selectedPreset);
-        selectedPreset = null;
-        
-        // Save timeline changes after deleting a preset
-        if (timelineId) {
-          saveTimelineChanges();
+      // Handle Delete key to remove selected or dragged preset
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        let presetToDelete = null;
+
+        // Prioritize deleting the currently dragged preset
+        if (isDraggingPreset) {
+          presetToDelete = isDraggingPreset;
+
+          // Clean up the drag state immediately since the drag is cancelled by deletion
+          window.removeEventListener('mousemove', handlePresetMouseMove);
+          window.removeEventListener('mouseup', handlePresetMouseUp);
+          isDragging = false;
+          isDraggingPreset = null; // Clear the reference to the dragged preset
+
+        } else if (selectedPreset) {
+          // Fallback to deleting the selected preset if not dragging
+          presetToDelete = selectedPreset;
+        }
+
+        if (presetToDelete) {
+          // Stop any animation associated with the preset
+          stopPresetAnimation(presetToDelete);
+          
+          // Remove the preset from the timeline using its ID for comparison
+          placedPresets = placedPresets.filter(p => p.id !== presetToDelete.id);
+          
+          // If the deleted preset was the selected one, clear the selection
+          if (selectedPreset === presetToDelete) {
+            selectedPreset = null;
+          }
+          
+          // Save timeline changes after deleting a preset
+          if (timelineId) {
+            saveTimelineChanges();
+          }
         }
       }
       
@@ -763,7 +802,6 @@
             width: {getPresetWidth(preset)};
           "
           on:mousedown={(e) => handlePresetMouseDown(e, preset)}
-          on:click={(e) => handlePresetClick(e, preset)}
         >
           <div class="px-1 py-0.5 bg-white/80 text-xs font-medium rounded-t border border-gray-300 text-center">
             {preset.title || 'Untitled'}
