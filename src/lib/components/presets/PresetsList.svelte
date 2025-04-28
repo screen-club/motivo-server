@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { tick } from 'svelte';
   import { fade } from 'svelte/transition';
   import { DbService } from '../../services/db';
   import { websocketService } from '../../services/websocket';
@@ -53,6 +54,9 @@
   // Function to cleanup context listener
   let cleanupContextListener = null; 
   
+  // Reference to the scrollable container
+  let presetContainer; 
+
   async function loadPresets() {
     try {
       presets = await DbService.getAllConfigs();
@@ -417,19 +421,31 @@
       await videoBuffer.initializeBuffer();
       
       // --- Add WebSocket listener FOR PRESETS using geminiSocketService ---
-      cleanupPresetListener = geminiSocketService.addMessageHandler((data) => {
+      cleanupPresetListener = geminiSocketService.addMessageHandler(async (data) => {
         // Log the raw incoming data from Gemini service
         console.log('[Gemini Socket Received]', data);
         
         // Check for the preset_added type
         if (data.type === 'preset_added' && data.payload) { 
           console.log('Preset added via Gemini Socket:', data.payload);
-          // Prepend the new preset to the list
-          presets = [data.payload, ...presets];
-          // Automatically load/play the newly added preset
+          // Append the new preset to the end of the list
+          presets = [...presets, data.payload];
+
+          // Wait for the DOM to update after adding the preset
+          await tick();
+
+          // Scroll the container to the bottom to show the new preset
+          if (presetContainer) {
+            presetContainer.scrollTo({ 
+              top: presetContainer.scrollHeight, 
+              behavior: 'smooth' 
+            });
+            console.log('[Scroll] Scrolled preset container to bottom to show new preset.');
+          }
+
+          // Now trigger load and thumbnail generation
           loadPresetConfig(data.payload);
           console.log(`[Auto Load] Triggered loading for new preset: ${data.payload.title} (ID: ${data.payload.id})`);
-          // Automatically regenerate thumbnail for the new preset
           regenerateThumbnail(data.payload);
           console.log(`[Auto Thumbnail] Triggered regeneration for new preset: ${data.payload.title} (ID: ${data.payload.id})`);
         }
@@ -610,7 +626,10 @@
   {:else}
     <!-- Toggle states are defined in the script section -->
     
-    <div class="flex flex-wrap gap-4 overflow-y-auto pb-4 max-h-[calc(100vh-20rem)]">
+    <div 
+      bind:this={presetContainer} 
+      class="flex flex-wrap gap-4 overflow-y-auto pb-4 max-h-[calc(100vh-20rem)]"
+    >
       <!-- Display timelines first -->
       {#if filterPresets(presets).some(p => p.type === 'timeline')}
         <div class="w-full mb-2">
