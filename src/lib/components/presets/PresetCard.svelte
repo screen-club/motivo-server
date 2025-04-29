@@ -4,6 +4,7 @@
   import { DbService } from "../../services/db";
   import { fade } from 'svelte/transition';
   import { get } from 'svelte/store';
+  import { tick } from 'svelte';
   import { currentlyPlayingPresetId } from "../../stores/playbackStore";
   import { onDestroy, createEventDispatcher, onMount } from 'svelte';
   import { llmPromptStore, defaultPresetPromptStore } from '../../stores/llmInteractionStore';
@@ -33,11 +34,11 @@
   let isDeleting = false;
 
   // Animation state
-  let isAnimationPlaying = false;
-  let animationFPS = 4;  // Number of poses to send in one second
-  let speedFactor = 1;
-  let currentFrame = 0;
-  let totalFrames = 0;
+  let isAnimationPlaying = $state(false);
+  let animationFPS = $state(4);  // Number of poses to send in one second
+  let speedFactor = $state(1);
+  let currentFrame = $state(0);
+  let totalFrames = $state(0); // Make totalFrames reactive state
   let frameUpdateInterval;
   let unsubscribe;
   
@@ -127,24 +128,35 @@
     }
   });
 
-  function isAnimation(preset) {
-    if (!preset.data) return false;
-    
+  // Computed property to determine if it's an animation (avoids side effects in function)
+  let isPresetAnimation = $derived(() => {
+    if (!preset?.data) return false;
+    let frames = 0;
     if (Array.isArray(preset.data.pose)) {
-      totalFrames = preset.data.pose.length;
-      return totalFrames > 1;
+      frames = preset.data.pose.length;
+    } else if (Array.isArray(preset.data.qpos)) {
+      frames = preset.data.qpos.length;
     }
-    
-    if (Array.isArray(preset.data.qpos)) {
-      totalFrames = preset.data.qpos.length;
-      return totalFrames > 1;
+    return frames > 1;
+  });
+
+  // Effect to update totalFrames when the preset changes
+  $effect(() => {
+    let frames = 0;
+    if (preset?.data) {
+      if (Array.isArray(preset.data.pose)) {
+        frames = preset.data.pose.length;
+      } else if (Array.isArray(preset.data.qpos)) {
+        frames = preset.data.qpos.length;
+      }
     }
-    
-    return false;
-  }
+    totalFrames = frames;
+    console.log(`Preset ${preset?.id} effect: Updated totalFrames to ${totalFrames}`);
+  });
 
   function getAnimationDuration() {
-    return (totalFrames / 30) / speedFactor; // Duration in seconds
+    // Use the reactive totalFrames state variable
+    return (totalFrames / 30) / speedFactor; 
   }
 
   function startFrameUpdater() {
@@ -154,15 +166,21 @@
     
     // Calculate interval based on 30 FPS base rate and speed factor
     const intervalTime = (1000 / 30) / speedFactor;
+    console.log(`Preset ${preset?.id}: Starting frame updater interval with time ${intervalTime.toFixed(2)}ms`); // Log interval start
     
     frameUpdateInterval = setInterval(() => {
       if (!isAnimationPlaying) return;
+      const prevFrame = currentFrame;
       currentFrame = (currentFrame + 1) % totalFrames;
+      // Log inside the interval
+      console.log(`Preset ${preset?.id}: Frame updated ${prevFrame} -> ${currentFrame} (Total: ${totalFrames})`); 
     }, intervalTime);
   }
 
   async function handleLoad() {
-    if (isAnimation(preset)) {
+    // Use the computed property isPresetAnimation
+    if (isPresetAnimation) { 
+      console.log(`Preset ${preset?.id}: Starting animation with totalFrames = ${totalFrames}`); 
       isAnimationPlaying = true;
       currentlyPlayingPresetId.set(preset.id);
       currentFrame = 0;
@@ -306,7 +324,7 @@
   // Handle delete button click
   function handleDeleteClick() {
     isDeleting = true; // Set deleting state immediately
-    onDelete(preset.id); // Call parent's delete function (async)
+    onDelete(preset.id); // Call parent's delete function
   }
 </script>
 
@@ -348,7 +366,7 @@
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
       </div>
-    {:else if isAnimation(preset)}
+    {:else if isPresetAnimation}
         <div class="w-full h-[120px] mb-2 rounded bg-gray-100 flex items-center justify-center">
           <i class="fas fa-film text-4xl text-gray-400"></i>
         </div>
@@ -400,7 +418,7 @@
   <!-- Preset info -->
   <div class="text-sm text-gray-600 mb-4">
     {#if preset.data?.pose || preset.data?.qpos}
-      {#if isAnimation(preset)}
+      {#if isPresetAnimation}
         <p>Duration: {(getAnimationDuration()).toFixed(2)}s</p>
         <!-- Animation Controls -->
         <div class="mt-2 space-y-2">
@@ -441,7 +459,7 @@
   <div class="flex justify-between items-center gap-2 mb-3">
     {#if preset.type !== "timeline"}
       <div class="flex gap-2">
-        {#if isAnimation(preset)}
+        {#if isPresetAnimation}
           {#if isAnimationPlaying}
             <button
               class="inline-flex items-center justify-center p-2 rounded-md bg-orange-100 text-orange-700 hover:bg-orange-200 transition-colors"

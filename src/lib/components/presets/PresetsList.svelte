@@ -520,12 +520,16 @@
 
   async function deletePreset(id) {
     try {
+      // Only call the backend service here
       await DbService.deleteConfig(id);
-      await loadPresets();
+      // Refresh the list only AFTER the delete is successful
+      await loadPresets(); 
       saveError = '';
     } catch (error) {
       console.error('Failed to delete preset:', error);
       saveError = 'Failed to delete preset. Please try again.';
+      // Optional: If delete fails, maybe force a refresh anyway?
+      // await loadPresets(); 
     }
   }
 </script>
