@@ -263,7 +263,7 @@ export class PoseService {
     };
 
     // Reset and start FPS logging
-    this.startFpsLogging();
+    // this.startFpsLogging();
 
     // Start the animation interval with new timing
     this.currentAnimation = setInterval(playFrame, frameDelay);
@@ -376,7 +376,7 @@ export class PoseService {
     await playFrame();
 
     // Start FPS logging
-    this.startFpsLogging();
+    //this.startFpsLogging();
 
     // Start the animation interval
     this.currentAnimation = setInterval(playFrame, frameDelay);

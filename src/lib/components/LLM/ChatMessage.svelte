@@ -86,12 +86,14 @@
               <!-- Image on the right side if available -->
               {#if message.imagePath || message.image_path}
                 <div class="shrink-0 border rounded-md overflow-hidden shadow-sm" style="max-width: 140px;">
+                  <!-- 
                   <img 
                     src={processImagePath(message.imagePath || message.image_path)} 
                     alt="Input for Gemini" 
                     class="w-full h-auto" 
                     style="max-height: 120px; object-fit: cover;" 
                   />
+                -->
                   <div class="bg-gray-50 text-[10px] text-gray-500 px-1.5 py-0.5 text-right">
                     {#if message.timestamp_str}
                       {message.timestamp_str}

@@ -38,7 +38,7 @@
   let animationFPS = $state(4);  // Number of poses to send in one second
   let speedFactor = $state(1);
   let currentFrame = $state(0);
-  let totalFrames = $state(0); // Make totalFrames reactive state
+  let totalFrames = $state(1);
   let frameUpdateInterval;
   let unsubscribe;
   
@@ -128,31 +128,24 @@
     }
   });
 
-  // Computed property to determine if it's an animation (avoids side effects in function)
-  let isPresetAnimation = $derived(() => {
-    if (!preset?.data) return false;
-    let frames = 0;
-    if (Array.isArray(preset.data.pose)) {
-      frames = preset.data.pose.length;
-    } else if (Array.isArray(preset.data.qpos)) {
-      frames = preset.data.qpos.length;
-    }
-    return frames > 1;
-  });
-
   // Effect to update totalFrames when the preset changes
   $effect(() => {
-    let frames = 0;
-    if (preset?.data) {
-      if (Array.isArray(preset.data.pose)) {
-        frames = preset.data.pose.length;
-      } else if (Array.isArray(preset.data.qpos)) {
-        frames = preset.data.qpos.length;
-      }
+    if (preset.data?.pose?.length > 0) {
+      totalFrames = preset.data.pose.length;
+    } else if (preset.data?.qpos?.length > 0) {
+      totalFrames = preset.data.qpos.length;
+    } else {
+      totalFrames = 1;
     }
-    totalFrames = frames;
-    console.log(`Preset ${preset?.id} effect: Updated totalFrames to ${totalFrames}`);
+    
+    // Safety check - ensure animation isn't playing for non-animations
+    if (totalFrames <= 1 && isAnimationPlaying) {
+      stopAnimation();
+    }
   });
+
+  // Computed property to determine if it's an animation (avoids side effects in function)
+  let isPresetAnimation = $derived(totalFrames > 1);
 
   function getAnimationDuration() {
     // Use the reactive totalFrames state variable
@@ -410,8 +403,8 @@
       }}
       class="font-semibold text-gray-800 bg-transparent focus:bg-gray-100 focus:ring-1 focus:ring-blue-500 focus:outline-none rounded px-1 flex-1 min-w-0"
     />
-    <span class="text-xs px-2 py-1 rounded-full flex-shrink-0 {preset.type === 'pose' ? 'bg-blue-100 text-blue-800' : preset.type === 'rewards' ? 'bg-green-100 text-green-800' : preset.type === 'timeline' ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-800'}">
-      {preset.type}
+    <span class="text-xs px-2 py-1 rounded-full flex-shrink-0 {preset.type === 'pose' ? (isPresetAnimation ? 'bg-indigo-100 text-indigo-800' : 'bg-blue-100 text-blue-800') : preset.type === 'rewards' ? 'bg-green-100 text-green-800' : preset.type === 'timeline' ? 'bg-purple-100 text-purple-800' : 'bg-gray-100 text-gray-800'}">
+      {preset.type === 'pose' && isPresetAnimation ? 'anim' : preset.type}
     </span>
   </div>
 
@@ -436,7 +429,7 @@
             <span class="text-xs ml-2">{animationFPS}</span>
           </div>
           
-          <!-- Progress Bar - always visible -->
+          <!-- Progress Bar -->
           <div class="space-y-1">
             <div class="w-full bg-gray-200 rounded-full h-2.5">
               <div 
@@ -467,8 +460,8 @@
               aria-label="Stop animation"
               title="Stop"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
-                <path d="M5.75 3a.75.75 0 00-.75.75v12.5c0 .414.336.75.75.75h8.5a.75.75 0 00.75-.75V3.75A.75.75 0 0014.25 3h-8.5z" />
+              <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                <path fill-rule="evenodd" d="M4.5 7.5a3 3 0 013-3h9a3 3 0 013 3v9a3 3 0 01-3 3h-9a3 3 0 01-3-3v-9z" clip-rule="evenodd" />
               </svg>
             </button>
           {:else}
@@ -478,8 +471,8 @@
               aria-label="Play animation"
               title="Play"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
-                <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+              <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                <path fill-rule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.573 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd" />
               </svg>
             </button>
           {/if}
@@ -490,8 +483,8 @@
             aria-label="Play preset"
             title="Play"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
-              <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+            <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+              <path fill-rule="evenodd" d="M4.5 5.653c0-1.426 1.529-2.33 2.779-1.643l11.54 6.348c1.295.712 1.295 2.573 0 3.285L7.28 19.991c-1.25.687-2.779-.217-2.779-1.643V5.653z" clip-rule="evenodd" />
             </svg>
           </button>
         {/if}
