@@ -598,14 +598,21 @@ class MessageHandler:
                 hold_pose_rewards_list.append({"name": "position", "targets": [target_spec], "upright_weight": 0.0, "control_weight": 0.0})
             reward_config_hold = {"rewards": hold_pose_rewards_list, "weights": [1.0]*len(hold_pose_rewards_list), "combinationType": "geometric", "name": "DynamicHoldPose"}
             
-            logger.info("Creating hold-pose reward context computation task...")
+            # Temporarily save and override batch size to ensure exactly 750 for hold pose
+            from rewards.reward_context import get_config, update_config
+            original_config = get_config()
+            update_config({"batch_size": 750})  # Force 750 for hold pose computation
+            
+            logger.info("Creating hold-pose reward context computation task with fixed batch size of 750...")
             hold_task = asyncio.create_task(
                 self._compute_reward_context_background(reward_config_hold, fallback_context, update_current_z=False, reset_computing_flag=False)
             )
 
             # --- 4. Calculate Input Reward Context (input_reward_z) --- 
             if reward_config_input and reward_config_input.get('rewards'):
-                logger.info("Creating input reward context computation task...")
+                # Restore original batch size for input reward computation
+                update_config(original_config)
+                logger.info("Creating input reward context computation task with user-configured batch size...")
                 input_task = asyncio.create_task(
                     self._compute_reward_context_background(reward_config_input, fallback_context, update_current_z=False, reset_computing_flag=False)
                 )
