@@ -123,13 +123,23 @@
 
   // Subscribe to the store to handle animation state changes
   unsubscribe = currentlyPlayingPresetId.subscribe(playingId => {
+    // If another preset started playing, stop this one
     if (playingId !== preset.id) {
       if (isAnimationPlaying) {
-        stopAnimation();
+        console.log(`Preset ${preset.id}: Stopping animation because preset ${playingId} is now playing`);
+        isAnimationPlaying = false;
+        if (frameUpdateInterval) {
+          clearInterval(frameUpdateInterval);
+          frameUpdateInterval = null;
+        }
       }
-    } else if (!isAnimationPlaying && playingId === preset.id) {
-      // Another component requested this preset to play
-      handleLoad();
+    } 
+    // If this preset is now playing according to the store but not locally, start it
+    else if (!isAnimationPlaying && playingId === preset.id) {
+      console.log(`Preset ${preset.id}: Starting animation because store indicates it should be playing`);
+      isAnimationPlaying = true;
+      // Don't call handleLoad here to avoid infinite loops - the card that triggered this update
+      // already called onLoad, so we just need to update our local state
     }
   });
 
@@ -179,17 +189,22 @@
     // Use the computed property isPresetAnimation
     if (isPresetAnimation) { 
       console.log(`Preset ${preset?.id}: Starting animation with totalFrames = ${totalFrames}`); 
-      isAnimationPlaying = true;
+      // First set the global playing state through the store
       currentlyPlayingPresetId.set(preset.id);
+      // Then update local state
+      isAnimationPlaying = true;
       currentFrame = 0;
       startFrameUpdater();
+      // Call the parent handler to load the animation
       onLoad(preset, { 
         isAnimation: true, 
         fps: animationFPS,
         speedFactor: speedFactor
       });
     } else {
-      // Always treat as an animation, even for single frame poses
+      // For single frame poses, stop any playing animations first
+      currentlyPlayingPresetId.set(null); // This will signal all animation presets to stop
+      // For single frame poses, just load it without changing playing state
       onLoad(preset, { 
         isAnimation: true, 
         fps: animationFPS,
@@ -205,20 +220,25 @@
         isAnimation: true,
         fps: animationFPS,
         speedFactor: speedFactor,
-        updateParamsOnly: true
+        updateParamsOnly: true,
+        currentFrame: currentFrame
       });
     }
   }
 
   function stopAnimation() {
     if (isAnimationPlaying) {
-      isAnimationPlaying = false;
+      console.log(`Preset ${preset?.id}: Stopping animation locally`);
+      // First update the store to indicate no animation is playing
       currentlyPlayingPresetId.set(null);
+      // Then update local state
+      isAnimationPlaying = false;
       currentFrame = 0;
       if (frameUpdateInterval) {
         clearInterval(frameUpdateInterval);
         frameUpdateInterval = null;
       }
+      // Notify parent component
       onLoad(preset, { stopAnimation: true });
     }
   }
@@ -311,6 +331,63 @@
     updateAnimationParams();
   }
 
+  function handleKeyDown(event) {
+    if (!isPresetAnimation) return;
+    
+    // Only handle keyboard events if this preset is being played
+    if (preset.id !== $currentlyPlayingPresetId) return;
+    
+    switch(event.key) {
+      case "ArrowLeft":
+        // Previous frame
+        if (currentFrame > 0) {
+          currentFrame--;
+        } else {
+          currentFrame = totalFrames - 1; // Loop to the end
+        }
+        updateFrame();
+        break;
+      case "ArrowRight":
+        // Next frame
+        if (currentFrame < totalFrames - 1) {
+          currentFrame++;
+        } else {
+          currentFrame = 0; // Loop to the start
+        }
+        updateFrame();
+        break;
+      case " ": // Space bar
+        // Toggle play/pause
+        if (isAnimationPlaying) {
+          stopAnimation();
+        } else {
+          handleLoad();
+        }
+        event.preventDefault(); // Prevent scrolling
+        break;
+    }
+  }
+  
+  // Create tick marks for the slider based on number of frames
+  let tickMarks = $derived(totalFrames <= 20 ? Array.from({ length: totalFrames }).map((_, i) => i) : []);
+
+  function updateFrame() {
+    // Reset any pending animation frames
+    if (frameUpdateInterval) {
+      clearInterval(frameUpdateInterval);
+      frameUpdateInterval = null;
+    }
+    
+    // Update the pose to the current frame - use direct mode for immediate feedback
+    onLoad(preset, { 
+      isAnimation: true,
+      fps: animationFPS,
+      speedFactor: speedFactor,
+      currentFrame: currentFrame,
+      directUpdate: true // Signal that this is a direct frame update for immediate response
+    });
+  }
+
   function handleIAPrompt() {
     stopAnimation();
     // Use the default prompt from the store instead of hardcoding it
@@ -335,12 +412,15 @@
   }}
   class="flex-shrink-0 w-52 border rounded-lg p-4 bg-white shadow-sm transition-opacity duration-300 
     ${isDeleting ? 'opacity-50 pointer-events-none' : ''}
-    ${preset.type !== 'timeline' ? 'cursor-move' : 'cursor-pointer'}"
+    ${preset.type !== 'timeline' ? 'cursor-move' : 'cursor-pointer'}
+    focus:outline-none focus:ring-2 focus:ring-blue-500"
   on:click={() => {
     if (preset.type === "timeline") {
       onLoad(preset);
     }
   }}
+  on:keydown={handleKeyDown}
+  tabindex="0"
   transition:fade
 >
   <!-- We'll move the tag and user inputs to after the action buttons -->
@@ -436,11 +516,61 @@
           
           <!-- Progress Bar -->
           <div class="space-y-1">
-            <div class="w-full bg-gray-200 rounded-full h-2.5">
+            <div class="w-full bg-gray-200 rounded-full h-4 relative">
               <div 
-                class="bg-blue-600 h-2.5 rounded-full transition-all" 
+                class="bg-blue-600 h-4 rounded-full" 
                 style="width: {(currentFrame / Math.max(totalFrames - 1, 1)) * 100}%"
               ></div>
+              
+              <!-- Tick marks for frames (only show if frames ≤ 20) -->
+              {#if tickMarks.length > 0}
+                <div class="absolute top-full mt-1 w-full flex justify-between px-0.5">
+                  {#each tickMarks as tick}
+                    <div 
+                      class="w-0.5 h-1.5 bg-gray-400 {tick === currentFrame ? 'bg-blue-600' : ''}"
+                      on:click={() => {
+                        currentFrame = tick;
+                        updateFrame();
+                      }}
+                    ></div>
+                  {/each}
+                </div>
+              {/if}
+              
+              <input 
+                type="range"
+                bind:value={currentFrame}
+                min="0"
+                max={totalFrames - 1}
+                step="1"
+                class="absolute inset-0 w-full h-full opacity-25 cursor-pointer hover:opacity-50"
+                style="
+                  /* Hide the thumb completely */
+                  -webkit-appearance: none;
+                  appearance: none;
+                  /* Ensure background is transparent */
+                  background: transparent;
+                "
+                on:input={(e) => {
+                  if (isAnimationPlaying) {
+                    // Stop the animation if user is manually scrubbing
+                    clearInterval(frameUpdateInterval);
+                  }
+                  // Immediately update the frame while scrubbing
+                  updateFrame();
+                }}
+                on:change={() => {
+                  // When user stops scrubbing, update the animation state
+                  if (isAnimationPlaying) {
+                    startFrameUpdater(); // Restart the animation
+                  }
+                }}
+              />
+            </div>
+            <div class="flex justify-between text-xs text-gray-500">
+              <span>0</span>
+              <span>{currentFrame}</span>
+              <span>{totalFrames - 1}</span>
             </div>
           </div>
         </div>
@@ -484,7 +614,11 @@
         {:else}
           <button
             class="inline-flex items-center justify-center p-2 rounded-md bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors"
-            on:click={() => onLoad(preset)}
+            on:click={() => {
+              // Stop any playing animations first
+              currentlyPlayingPresetId.set(null);
+              onLoad(preset);
+            }}
             aria-label="Play preset"
             title="Play"
           >
@@ -570,3 +704,24 @@
     />
   </div>
 </div>
+
+<style>
+  /* Hide the range input thumb in all browsers */
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 0;
+    height: 0;
+  }
+  
+  input[type=range]::-moz-range-thumb {
+    width: 0;
+    height: 0;
+    border: none;
+  }
+  
+  input[type=range]::-ms-thumb {
+    width: 0;
+    height: 0;
+  }
+</style>
