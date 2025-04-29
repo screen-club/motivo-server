@@ -96,17 +96,22 @@
   $effect(() => {
     const currentPresetId = preset?.id;
     const hasPresetThumbnail = !!preset?.thumbnail;
+    const hasLightweightIndicator = !!preset?.has_thumbnail;
 
-    // DON'T reset thumbnailData here unconditionally
-    // thumbnailData = null; 
+    console.log(`PresetCard effect: ID=${currentPresetId}, Prop has thumbnail=${hasPresetThumbnail}, Has thumbnail indicator=${hasLightweightIndicator}, Local thumbnailData exists=${!!thumbnailData}`);
 
-    console.log(`PresetCard effect: ID=${currentPresetId}, Prop has thumbnail=${hasPresetThumbnail}, Local thumbnailData exists=${!!thumbnailData}`);
-
-    // Only fetch if the prop lacks a thumbnail AND we don't already have thumbnailData loaded
-    if (currentPresetId && !hasPresetThumbnail && !thumbnailData) {
-      console.log(`Preset ${currentPresetId}: Prop lacks thumbnail AND local data missing, calling fetchThumbnail.`);
+    // Case 1: We have a lightweight preset with has_thumbnail=true but no actual thumbnail data
+    if (currentPresetId && !hasPresetThumbnail && hasLightweightIndicator && !thumbnailData) {
+      console.log(`Preset ${currentPresetId}: Lightweight preset indicates it has a thumbnail, fetching it.`);
       fetchThumbnail();
-    } else if (currentPresetId && hasPresetThumbnail) {
+    } 
+    // Case 2: Regular case - no thumbnail in prop and no indicator that one exists
+    else if (currentPresetId && !hasPresetThumbnail && !hasLightweightIndicator && !thumbnailData) {
+      console.log(`Preset ${currentPresetId}: No thumbnail indicators.`);
+      // Don't fetch if there's no indication a thumbnail exists
+    }
+    // Case 3: We have the thumbnail data in the prop already
+    else if (currentPresetId && hasPresetThumbnail) {
       // If the prop *does* have a thumbnail (e.g., after regeneration update),
       // clear any old async-loaded data to ensure the prop value is used.
       if (thumbnailData) { // Only clear if local data actually exists

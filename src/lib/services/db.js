@@ -2,7 +2,7 @@
  * Base API URL from environment variables
  * @type {string}
  */
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5002';
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5002";
 
 /**
  * Service for handling database operations
@@ -14,11 +14,13 @@ export class DbService {
    */
   static async getAllConfigs() {
     try {
-      // Use the new API endpoint
+      // Use the new API endpoint which now returns lightweight data by default
       const response = await fetch(`${API_URL}/api/presets`);
       if (!response.ok) {
         // Fallback to the old endpoint if the new one fails
-        console.warn('New API endpoint failed, falling back to legacy endpoint');
+        console.warn(
+          "New API endpoint failed, falling back to legacy endpoint"
+        );
         const legacyResponse = await fetch(`${API_URL}/api/conf`);
         if (!legacyResponse.ok) {
           throw new Error(`HTTP error! status: ${legacyResponse.status}`);
@@ -27,7 +29,7 @@ export class DbService {
       }
       return await response.json();
     } catch (error) {
-      console.error('Error fetching configs:', error);
+      console.error("Error fetching configs:", error);
       throw error;
     }
   }
@@ -44,13 +46,21 @@ export class DbService {
    * @param {string[]} [config.users] Array of users
    * @returns {Promise<Object>} Created configuration
    */
-  static async addConfig({ title, thumbnail = '', type, data, cache_file_path = null, tags = [], users = [] }) {
+  static async addConfig({
+    title,
+    thumbnail = "",
+    type,
+    data,
+    cache_file_path = null,
+    tags = [],
+    users = [],
+  }) {
     try {
       // Use the new API endpoint
       const response = await fetch(`${API_URL}/api/presets`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           title,
@@ -59,17 +69,19 @@ export class DbService {
           data,
           cache_file_path,
           tags,
-          users
-        })
+          users,
+        }),
       });
 
       if (!response.ok) {
         // Fallback to the old endpoint if the new one fails
-        console.warn('New API endpoint failed, falling back to legacy endpoint');
+        console.warn(
+          "New API endpoint failed, falling back to legacy endpoint"
+        );
         const legacyResponse = await fetch(`${API_URL}/api/conf`, {
-          method: 'POST',
+          method: "POST",
           headers: {
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
           },
           body: JSON.stringify({
             title,
@@ -78,8 +90,8 @@ export class DbService {
             data,
             cache_file_path,
             tags,
-            users
-          })
+            users,
+          }),
         });
 
         if (!legacyResponse.ok) {
@@ -89,7 +101,7 @@ export class DbService {
       }
       return await response.json();
     } catch (error) {
-      console.error('Error adding config:', error);
+      console.error("Error adding config:", error);
       throw error;
     }
   }
@@ -109,22 +121,24 @@ export class DbService {
     try {
       // Use the new API endpoint
       const response = await fetch(`${API_URL}/api/presets/${id}`, {
-        method: 'PUT',
+        method: "PUT",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify(config)
+        body: JSON.stringify(config),
       });
 
       if (!response.ok) {
         // Fallback to the old endpoint if the new one fails
-        console.warn('New API endpoint failed, falling back to legacy endpoint');
+        console.warn(
+          "New API endpoint failed, falling back to legacy endpoint"
+        );
         const legacyResponse = await fetch(`${API_URL}/api/conf/${id}`, {
-          method: 'PUT',
+          method: "PUT",
           headers: {
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
           },
-          body: JSON.stringify(config)
+          body: JSON.stringify(config),
         });
 
         if (!legacyResponse.ok) {
@@ -134,7 +148,7 @@ export class DbService {
       }
       return await response.json();
     } catch (error) {
-      console.error('Error updating config:', error);
+      console.error("Error updating config:", error);
       throw error;
     }
   }
@@ -148,14 +162,16 @@ export class DbService {
     try {
       // Use the new API endpoint
       const response = await fetch(`${API_URL}/api/presets/${id}`, {
-        method: 'DELETE'
+        method: "DELETE",
       });
 
       if (!response.ok) {
         // Fallback to the old endpoint if the new one fails
-        console.warn('New API endpoint failed, falling back to legacy endpoint');
+        console.warn(
+          "New API endpoint failed, falling back to legacy endpoint"
+        );
         const legacyResponse = await fetch(`${API_URL}/api/conf/${id}`, {
-          method: 'DELETE'
+          method: "DELETE",
         });
 
         if (!legacyResponse.ok) {
@@ -165,7 +181,7 @@ export class DbService {
       }
       return await response.json();
     } catch (error) {
-      console.error('Error deleting config:', error);
+      console.error("Error deleting config:", error);
       throw error;
     }
   }
@@ -179,7 +195,7 @@ export class DbService {
   static async updatePresetTags(id, tags) {
     return await this.updateConfig(id, { tags });
   }
-  
+
   /**
    * Update preset users
    * @param {number} id Preset ID
@@ -196,16 +212,16 @@ export class DbService {
    * @returns {Set<string>} Set of unique tags
    */
   static getAllUniqueTags(presets) {
-    return new Set(presets.flatMap(preset => preset.tags || []));
+    return new Set(presets.flatMap((preset) => preset.tags || []));
   }
-  
+
   /**
    * Get all unique users from all presets
    * @param {Array} presets Array of all presets
    * @returns {Set<string>} Set of unique users
    */
   static getAllUniqueUsers(presets) {
-    return new Set(presets.flatMap(preset => preset.users || []));
+    return new Set(presets.flatMap((preset) => preset.users || []));
   }
 }
 

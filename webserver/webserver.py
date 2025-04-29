@@ -1165,7 +1165,8 @@ def delete_config(config_id):
 @app.route('/api/presets', methods=['GET'])
 def get_presets():
     try:
-        presets = Content.get_all()
+        # Use the lightweight version by default for better performance
+        presets = Content.get_lightweight()
         return jsonify(presets)
     except Exception as e:
         logging.error(f"Error fetching presets: {str(e)}")

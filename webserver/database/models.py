@@ -105,6 +105,71 @@ class Content(BaseModel):
                 "tags": row.get_tags(),
                 "users": row.get_users()
             } for row in rows]
+            
+    @classmethod
+    def get_lightweight(cls):
+        """Return all presets with minimal data (no thumbnails) and reduced precision"""
+        with db.connection_context():
+            rows = cls.select()
+            result = []
+            
+            for row in rows:
+                # Get full data first
+                data = row.get_data()
+                
+                # Process the data to reduce its size
+                lightweight_data = {}
+                
+                # Handle pose data - reduce precision if present
+                if 'pose' in data and isinstance(data['pose'], list):
+                    # Round pose values to 3 decimal places
+                    lightweight_data['pose'] = [
+                        [round(value, 3) for value in pose] 
+                        for pose in data['pose']
+                    ]
+                
+                # Handle qpos data similarly if present
+                if 'qpos' in data and isinstance(data['qpos'], list):
+                    lightweight_data['qpos'] = [
+                        [round(value, 3) for value in qpos]
+                        for qpos in data['qpos']
+                    ]
+                
+                # Include only minimal metadata
+                if 'duration' in data:
+                    lightweight_data['duration'] = data['duration']
+                
+                # For timeline presets, include just the references, not all nested data
+                if row.type == 'timeline' and 'placedPresets' in data:
+                    lightweight_data['placedPresets'] = [
+                        {
+                            'id': item.get('id'),
+                            'startTime': item.get('startTime'),
+                            'duration': item.get('duration')
+                        }
+                        for item in data.get('placedPresets', [])
+                    ]
+                
+                # For other types of data, include them as is
+                for key, value in data.items():
+                    if key not in lightweight_data and key not in ['pose', 'qpos', 'placedPresets']:
+                        lightweight_data[key] = value
+                
+                # Create the preset with lightweight data
+                preset = {
+                    "id": row.id,
+                    "title": row.title,
+                    "type": row.type,
+                    "thumbnail": None,  # Don't include actual thumbnail data
+                    "has_thumbnail": bool(row.thumbnail),  # Just indicate if a thumbnail exists
+                    "data": lightweight_data,
+                    "tags": row.get_tags(),
+                    "users": row.get_users()
+                }
+                
+                result.append(preset)
+                
+            return result
 
     @classmethod
     def get_by_id(cls, id):

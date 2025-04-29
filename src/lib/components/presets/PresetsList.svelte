@@ -59,9 +59,16 @@
 
   async function loadPresets() {
     try {
+      // Use the standard endpoint which now returns lightweight data by default
       presets = await DbService.getAllConfigs();
       loadError = '';
       initialLoadComplete = true;
+      
+      // Log the data size reduction
+      if (presets.length > 0) {
+        const dataSize = new TextEncoder().encode(JSON.stringify(presets)).length;
+        console.log(`Loaded ${presets.length} presets (${(dataSize / 1024).toFixed(2)} KB)`);
+      }
     } catch (error) {
       console.error('Failed to load presets:', error);
       loadError = 'Failed to load presets. Please try again.';

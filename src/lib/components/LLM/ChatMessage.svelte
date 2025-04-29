@@ -84,7 +84,7 @@
               </div>
               
               <!-- Image on the right side if available -->
-              {#if message.imagePath || message.image_path}
+              {#if false}
                 <div class="shrink-0 border rounded-md overflow-hidden shadow-sm" style="max-width: 140px;">
                   <!-- 
                   <img 
