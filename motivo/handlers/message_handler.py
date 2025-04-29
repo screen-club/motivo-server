@@ -18,7 +18,7 @@ import time
 
 from core.config import config
 from utils.frame_utils import FrameRecorder, save_shared_frame, VideoRecorder
-from rewards.reward_context import compute_reward_context
+from rewards.reward_context import compute_reward_context, update_config, get_config
 
 logger = logging.getLogger('message_handler')
 
@@ -78,6 +78,7 @@ class MessageHandler:
             "capture_frame": self.handle_capture_frame,
             "make_snapshot": self.handle_make_snapshot,
             "get_target_positions": self.handle_get_target_positions,
+            "update_reward_computation": self.handle_update_reward_computation,
         }
         
         # We'll use the default executor for running tasks, so no need for custom thread pools
@@ -1590,6 +1591,50 @@ class MessageHandler:
             if self.stop_recording_timer: # Clean up timer just in case
                  self.stop_recording_timer.cancel()
                  self.stop_recording_timer = None
+
+    async def handle_update_reward_computation(self, websocket, data: Dict[str, Any]) -> None:
+        """Update reward computation settings like batch size"""
+        try:
+            logger.info("Updating reward computation settings")
+            computation_settings = data.get("settings", {})
+            
+            # Validate settings
+            if "batch_size" in computation_settings:
+                batch_size = int(computation_settings["batch_size"])
+                if batch_size < 10:
+                    raise ValueError("Batch size must be at least 10")
+                if batch_size > 5000:
+                    raise ValueError("Batch size must not exceed 5000")
+                
+                # Update the batch size in the global config
+                update_config({"batch_size": batch_size})
+                logger.info(f"Updated batch size to {batch_size}")
+            
+            # Add other computation settings here if needed
+            
+            # Get the current config for the response
+            current_config = get_config()
+            
+            response = {
+                "type": "reward_computation_updated",
+                "status": "success",
+                "settings": current_config,
+                "timestamp": datetime.now().isoformat()
+            }
+            await websocket.send(json.dumps(response))
+            
+        except Exception as e:
+            error_msg = f"Error updating reward computation settings: {str(e)}"
+            logger.error(error_msg)
+            traceback.print_exc()
+            
+            response = {
+                "type": "reward_computation_updated",
+                "status": "error",
+                "error": error_msg,
+                "timestamp": datetime.now().isoformat()
+            }
+            await websocket.send(json.dumps(response))
 
 # Register cleanup function after the class is defined
 def _cleanup_message_handlers_at_exit():

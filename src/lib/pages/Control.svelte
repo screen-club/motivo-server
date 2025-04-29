@@ -27,6 +27,11 @@
     let videoContainerRef; // Ref for the outer container
     let videoWidth = $state(null); // State to store the video width
     
+    // Reward computation settings
+    let batchSize = $state(750); // Default value matching the backend
+    let isUpdatingBatchSize = $state(false);
+    let batchSizeUpdateStatus = $state('');
+    
     // Get valid panel from localStorage or default to 'rewards'
     const storedPanel = localStorage.getItem('controlActivePanel');
     /** @type {'rewards' | 'llm'} */
@@ -91,6 +96,45 @@
             isEditingDefaultPrompt = false;
         }
     }
+    
+    // Function to update batch size
+    async function updateBatchSize() {
+        if (!isSocketReady) {
+            batchSizeUpdateStatus = 'Socket not connected';
+            return;
+        }
+        
+        try {
+            isUpdatingBatchSize = true;
+            batchSizeUpdateStatus = 'Updating...';
+            
+            const response = await websocketService.sendMessage({
+                type: 'update_reward_computation',
+                settings: {
+                    batch_size: batchSize
+                }
+            });
+            
+            if (response.status === 'success') {
+                batchSizeUpdateStatus = 'Updated successfully';
+                // Update local batch size with the value from the server
+                if (response.settings && response.settings.batch_size) {
+                    batchSize = response.settings.batch_size;
+                }
+                
+                // Clear status after 3 seconds
+                setTimeout(() => {
+                    batchSizeUpdateStatus = '';
+                }, 3000);
+            } else {
+                batchSizeUpdateStatus = response.error || 'Update failed';
+            }
+        } catch (error) {
+            batchSizeUpdateStatus = error.message || 'Error updating batch size';
+        } finally {
+            isUpdatingBatchSize = false;
+        }
+    }
 
     onMount(() => {
         cleanupListener = websocketService.onReadyStateChange((ready) => {
@@ -121,6 +165,18 @@
             }
             if (cleanupListener) cleanupListener();
             rewardStore.stopTesting();
+        });
+        
+        // Get current batch size on load
+        websocketService.sendMessage({
+            type: 'update_reward_computation',
+            settings: {}  // Empty settings to just get current values
+        }).then(response => {
+            if (response.status === 'success' && response.settings && response.settings.batch_size) {
+                batchSize = response.settings.batch_size;
+            }
+        }).catch(err => {
+            console.error('Failed to get current batch size:', err);
         });
     });
 
@@ -187,6 +243,48 @@
 
             <!-- Original Parameter Panel (Keep visible during PiP) -->
             <ParameterPanel class="original-params flex-1 min-w-[400px]" />
+            
+            <!-- Reward Computation Settings -->
+            <div class="bg-blue-100/50 p-4 rounded-xl">
+                <h3 class="font-medium text-gray-800 mb-2">Reward Computation Settings</h3>
+                
+                <div class="mb-4">
+                    <label for="batchSize" class="block text-sm font-medium text-gray-700 mb-1">
+                        Batch Size: {batchSize}
+                    </label>
+                    <div class="flex items-center gap-2">
+                        <input 
+                            type="range" 
+                            id="batchSize" 
+                            bind:value={batchSize}
+                            min="100" 
+                            max="3000" 
+                            step="50" 
+                            class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                        />
+                    </div>
+                    <div class="flex items-center justify-between mt-2">
+                        <span class="text-xs text-gray-500">Smaller = Faster, less accurate</span>
+                        <span class="text-xs text-gray-500">Larger = Slower, more accurate</span>
+                    </div>
+                    
+                    <div class="mt-2 flex justify-between items-center">
+                        <button 
+                            onclick={updateBatchSize}
+                            disabled={isUpdatingBatchSize || !isSocketReady}
+                            class="px-3 py-1 text-sm bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                        >
+                            {isUpdatingBatchSize ? 'Updating...' : 'Update Batch Size'}
+                        </button>
+                        
+                        {#if batchSizeUpdateStatus}
+                            <span class="{batchSizeUpdateStatus.includes('success') ? 'text-green-600' : 'text-red-600'} text-sm">
+                                {batchSizeUpdateStatus}
+                            </span>
+                        {/if}
+                    </div>
+                </div>
+            </div>
             
             <!-- Moved Conditional panel display here -->
             {#if activePanel === 'rewards'}

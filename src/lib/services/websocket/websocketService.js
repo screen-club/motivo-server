@@ -380,6 +380,67 @@ class WebSocketService {
     });
     return WS_STATE.isConnected;
   }
+
+  /**
+   * Send a message and wait for a response
+   * @param {Object} data - The message data to send
+   * @returns {Promise<Object>} - Promise that resolves with the response
+   */
+  sendMessage(data) {
+    return new Promise((resolve, reject) => {
+      // Generate a unique message ID
+      const messageId =
+        Date.now() + "-" + Math.random().toString(36).substring(2, 10);
+
+      // Create message with ID
+      const message = {
+        ...data,
+        message_id: messageId,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Set up one-time handler for this specific message
+      const responseHandler = (response) => {
+        // Check if this is a response to our message
+        const isMatchingResponse =
+          (response.message_id && response.message_id.includes(messageId)) ||
+          (response.type && response.type === `${data.type}_updated`);
+
+        if (isMatchingResponse) {
+          // Remove this temporary handler
+          this.removeMessageHandler(handlerId);
+          resolve(response);
+        }
+      };
+
+      // Add the handler with a unique ID
+      const handlerId = this.addMessageHandler(responseHandler);
+
+      // Set a timeout to avoid hanging promises
+      const timeoutId = setTimeout(() => {
+        this.removeMessageHandler(handlerId);
+        reject(new Error("Response timeout exceeded"));
+      }, 10000); // 10 second timeout
+
+      // Send the message
+      if (
+        WS_STATE.isConnected &&
+        WS_STATE.socket?.readyState === WebSocket.OPEN
+      ) {
+        try {
+          WS_STATE.socket.send(JSON.stringify(message));
+        } catch (error) {
+          clearTimeout(timeoutId);
+          this.removeMessageHandler(handlerId);
+          reject(error);
+        }
+      } else {
+        clearTimeout(timeoutId);
+        this.removeMessageHandler(handlerId);
+        reject(new Error("WebSocket is not connected"));
+      }
+    });
+  }
 }
 
 // Export singleton instance

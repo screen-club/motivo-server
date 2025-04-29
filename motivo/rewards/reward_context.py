@@ -50,6 +50,12 @@ import atexit
 # Create a global process executor
 _global_process_executor = None
 
+# Global configuration variables
+_config = {
+    'batch_size': 750,  # Default batch size
+    'use_gpu': True     # Default GPU usage
+}
+
 def get_process_executor(max_workers=None):
     """Get or create a global process executor"""
     global _global_process_executor
@@ -158,7 +164,8 @@ class RewardContextComputer:
         print(f"USING REWARD COMBINATION METHOD: {combination_type.upper()} (CPU)")
         print("="*50 + "\n")
         
-        batch_size = 10_000
+        # Use the batch size from global config instead of hardcoded value
+        batch_size = _config['batch_size']
         idx = np.random.randint(0, len(buffer_data['next_qpos']), batch_size)
         
         # Create the data batch with all keys from buffer_data
@@ -211,7 +218,8 @@ class RewardContextComputer:
         print(f"USING REWARD COMBINATION METHOD: {combination_type.upper()} ({device.type.upper()})")
         print("="*50 + "\n")
         
-        batch_size = 750
+        # Use the batch size from global config instead of hardcoded value
+        batch_size = _config['batch_size']
         idx = np.random.randint(0, len(buffer_data['next_qpos']), batch_size)
         
         # Device-specific data transfer optimizations
@@ -685,4 +693,15 @@ def combine_rewards(rewards, combination_type, *args, **kwargs):
         rewards_list = []
         for reward_fn, weight in rewards:
             rewards_list.append(max(1e-8, reward_fn(*args, **kwargs)) ** weight)
-        return np.prod(rewards_list) ** (1.0 / len(rewards_list)) 
+        return np.prod(rewards_list) ** (1.0 / len(rewards_list))
+
+def update_config(new_config):
+    """Update the global configuration with new values"""
+    global _config
+    _config.update(new_config)
+    print(f"Updated reward computation config: {_config}")
+
+def get_config():
+    """Get the current configuration"""
+    global _config
+    return _config.copy() 
