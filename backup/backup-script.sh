@@ -17,7 +17,7 @@ while true; do
     # Create tar.gz archive excluding cache directory and dataset directory
     cd /backup
     echo "📦 Creating archive (excluding cache and dataset)..."
-    tar --exclude='storage/cache' --exclude='datasets' -czf storage_${TIMESTAMP}.tar.gz storage/
+    tar --exclude='storage/cache'  --exclude='storage/model' --exclude='datasets' -czf storage_${TIMESTAMP}.tar.gz storage/
 
     # Upload to S3
     echo "☁️  Uploading to S3..."
