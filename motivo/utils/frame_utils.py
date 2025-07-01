@@ -277,18 +277,21 @@ class FrameRecorder:
 
     def get_recorded_data_for_manual_zipping(self):
         """
-        Returns a list of state dictionaries (timestamp, pose, trans) for pickling.
+        Returns frame images data and trajectory data for manual zipping.
+        Since this FrameRecorder only handles SMPL data, frame images will be empty.
         Clears internal frames_data after returning data.
         """
         if not self.frames_data:
             logger.debug("FrameRecorder.get_recorded_data_for_manual_zipping: No frame data.")
-            return [] 
+            return [], []
             
         data_to_return = list(self.frames_data) 
         self.recording = False
         self.frames_data = []
         logger.debug(f"Extracted {len(data_to_return)} states (timestamp, pose, trans) for packaging.")
-        return data_to_return
+        
+        # Return empty list for frame images and the trajectory data
+        return [], data_to_return
 
     def end_record(self, output_path=None):
         """
