@@ -180,8 +180,6 @@ async def response_handler(websocket, stop_event):
     """Handle WebSocket responses without blocking frame sending"""
     try:
         # Keep track of received updates to detect high load
-        update_count = 0
-        last_log_time = time.monotonic()
         receive_buffer = bytearray(1024 * 1024)  # 1MB receive buffer
 
         while not stop_event.is_set():
@@ -189,40 +187,33 @@ async def response_handler(websocket, stop_event):
                 # If using a buffer becomes too complex, just try to receive
                 # and immediately discard smpl_update messages
                 response = await asyncio.wait_for(websocket.recv(), timeout=0.1)
-                
+
                 # Quick check if it's an smpl_update before parsing the full JSON
-                if '"type":"smpl_update"' in response or '"type": "smpl_update"' in response:
-                    # Count for periodic reporting but otherwise ignore
-                    update_count += 1
-                    
-                    # Report rate every ~5 seconds
-                    current_time = time.monotonic()
-                    if current_time - last_log_time >= 5.0:
-                        elapsed = current_time - last_log_time
-                        updates_per_second = update_count / elapsed if elapsed > 0 else 0
-                        logger.info(f"Receiving ~{updates_per_second:.1f} pose updates/second (skipping processing)")
-                        update_count = 0
-                        last_log_time = current_time
-                    
-                    continue  # Skip further processing for these messages
-                
+                # Use faster check: check beginning of string
+                if response.startswith('{"type":"smpl_update"'):
+                    # Skip processing for these messages - no logging here
+                    continue # Skip further processing for these messages
+
                 # For all other message types, process normally
                 try:
                     response_data = json.loads(response)
-                    logger.debug(f"Response received: {response_data.get('type')}")
+                    # Reduced logging level for non-critical responses
+                    if response_data.get('type') != 'connection_established': # Avoid logging initial success message again
+                         logger.debug(f"Response received: {response_data.get('type')}") # Log only in DEBUG mode
                 except json.JSONDecodeError:
-                    logger.warning(f"Invalid JSON response: {response}")
+                    logger.warning(f"Invalid JSON response: {response[:200]}...") # Log only a snippet
             except asyncio.TimeoutError:
                 # No response within timeout, continue listening
                 pass
             except Exception as e:
-                if "connection is closed" in str(e) or "code" in str(e):
-                    logger.error(f"Response handler error: {e}")
+                # Simplified error checking for closed connections
+                if isinstance(e, websockets.exceptions.ConnectionClosed):
+                    logger.error(f"Response handler: WebSocket connection closed ({e.code} {e.reason})")
                     stop_event.set()
                     break
                 else:
-                    # Don't log every error - only critical ones - to reduce output
-                    if "1001" not in str(e):  # Normal close
+                    # Log other errors but avoid flooding logs
+                    if "1001" not in str(e):  # Skip logging normal 'going away' close
                         logger.error(f"Response handler error: {e}")
     except Exception as e:
         logger.error(f"Response handler fatal error: {e}")

@@ -370,6 +370,28 @@ async def render_and_process_frame(frame_count, q_percentage, last_frame_save_ti
             except Exception as video_err:
                 logger.error(f"Error scheduling frame for video recorder: {video_err}")
 
+        # NEW: Add frame and qpos/qvel to the video_accompanying_frame_recorder if active
+        accompanying_recorder_task = None
+        if (hasattr(app_state.message_handler, 'video_accompanying_frame_recorder') and 
+            app_state.message_handler.video_accompanying_frame_recorder and 
+            app_state.message_handler.video_accompanying_frame_recorder.recording):
+            try:
+                # Get current simulation state
+                current_qpos = app_state.env.unwrapped.data.qpos.copy()
+                current_qvel = app_state.env.unwrapped.data.qvel.copy()
+                
+                async def do_accompanying_record():
+                    app_state.message_handler.video_accompanying_frame_recorder.record_frame_data(
+                        frame_with_overlays, 
+                        current_qpos,
+                        current_qvel,
+                        app_state.env.unwrapped # <<< CHANGE HERE: Pass the unwrapped environment
+                    )
+                accompanying_recorder_task = asyncio.create_task(do_accompanying_record())
+
+            except Exception as accompanying_err:
+                logger.error(f"Error scheduling frame for accompanying SMPL data recorder: {accompanying_err}")
+
         # PRIORITY 3: Check for key presses (quit/save) - keep on main thread
         should_quit, should_save = app_state.display_manager.check_key()
         if should_quit:

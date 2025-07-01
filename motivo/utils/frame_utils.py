@@ -241,49 +241,106 @@ def cleanup_old_frames(directory, max_files=30):
 
 class FrameRecorder:
     def __init__(self):
-        self.frames = []
+        self.frames_data = [] # List of {timestamp, pose, trans} dicts
         self.recording = False
 
-    def record_frame_data(self, frame, qpos, qvel, env):
-        if self.recording:
-            self.frames.append({
-                'frame': frame.copy(),
-                'qpos': qpos.copy(),
-                'qvel': qvel.copy(),
-                'timestamp': datetime.now().isoformat()
+    def record_frame_data(self, frame_image, qpos, qvel, env_unwrapped):
+        """
+        Records a minimal set of SMPL parameters (pose, trans) for each frame,
+        matching the core of the live stream.
+        env_unwrapped must be the MuJoCo environment instance with the .model attribute.
+        frame_image and qvel are currently unused here.
+        """
+        if not self.recording:
+            return
+
+        try:
+            # qpos_to_smpl returns: pose (np), trans (np), positions (list of np), position_names (list of str)
+            # We only need pose and trans for the PKL as per user request.
+            smpl_pose, smpl_trans, _, _ = qpos_to_smpl(qpos, env_unwrapped.model)
+
+            frame_state = {
+                'timestamp': datetime.now().isoformat(),
+                'pose': smpl_pose,    # NumPy array (e.g., BxNx3 or Nx3 for axis-angle)
+                'trans': smpl_trans,  # NumPy array (e.g., Bx3 or 1x3 or 3,)
+            }
+            self.frames_data.append(frame_state)
+
+        except Exception as e:
+            logger.error(f"Error in FrameRecorder.record_frame_data during SMPL conversion: {e}")
+            # Minimal fallback if conversion fails
+            self.frames_data.append({
+                'timestamp': datetime.now().isoformat(),
+                'error': 'SMPL conversion failed for this frame.',
+                'raw_qpos': qpos.copy() # Optionally store raw qpos on error
             })
 
-    def end_record(self, zip_path=None):
-        """End recording and save frames to a zip file"""
-        if not zip_path:
-            from core.config import config
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            zip_path = os.path.join(config.downloads_dir, f"recording_{timestamp}.zip")
-        
-        os.makedirs(os.path.dirname(zip_path), exist_ok=True)
-        
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # Save each frame and its data
-            for i, frame_data in enumerate(self.frames):
-                # Save frame as image
-                frame_filename = f"frame_{i:04d}.jpg"
-                frame_path = os.path.join(os.path.dirname(zip_path), frame_filename)
-                cv2.imwrite(frame_path, frame_data['frame'])
-                zf.write(frame_path, frame_filename)
-                os.remove(frame_path)  # Clean up the temporary image file
-                
-                # Save state data as JSON
-                state_data = {
-                    'qpos': frame_data['qpos'].tolist(),
-                    'qvel': frame_data['qvel'].tolist(),
-                    'timestamp': frame_data['timestamp']
-                }
-                state_filename = f"state_{i:04d}.json"
-                zf.writestr(state_filename, json.dumps(state_data))
+    def get_recorded_data_for_manual_zipping(self):
+        """
+        Returns a list of state dictionaries (timestamp, pose, trans) for pickling.
+        Clears internal frames_data after returning data.
+        """
+        if not self.frames_data:
+            logger.debug("FrameRecorder.get_recorded_data_for_manual_zipping: No frame data.")
+            return [] 
+            
+        data_to_return = list(self.frames_data) 
+        self.recording = False
+        self.frames_data = []
+        logger.debug(f"Extracted {len(data_to_return)} states (timestamp, pose, trans) for packaging.")
+        return data_to_return
+
+    def end_record(self, output_path=None):
+        """
+        Saves trajectory data (list of {timestamp, pose, trans}) as a .pkl file.
+        (Handles .zip or direct .pkl output based on output_path extension, as before)
+        """
+        if not self.frames_data:
+            logger.warning("FrameRecorder.end_record called with no frame data recorded.")
+            self.recording = False
+            return None 
+
+        is_zip_output = output_path and output_path.lower().endswith(".zip")
+        is_pkl_output = output_path and output_path.lower().endswith(".pkl")
+        parent_dir_exists = output_path and os.path.exists(os.path.dirname(output_path))
+        has_no_common_archive_extension = output_path and not (is_zip_output or is_pkl_output)
+        is_intended_as_dir = output_path and parent_dir_exists and has_no_common_archive_extension and (not os.path.splitext(output_path)[1])
+        pkl_content_name = "smpl_trajectory_data.pkl"
+
+        if not output_path: 
+            from core.config import config 
+            output_path = os.path.join(config.downloads_dir, pkl_content_name)
+            os.makedirs(config.downloads_dir, exist_ok=True)
+            is_pkl_output = True
+        elif is_intended_as_dir:
+             os.makedirs(output_path, exist_ok=True)
+             output_path = os.path.join(output_path, pkl_content_name)
+             is_pkl_output = True
+        else:
+            # Ensure directory for a specific file path exists
+            if os.path.dirname(output_path): # Check if there is a directory part
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            elif not output_path: # Should be caught by the first if, but as a safeguard
+                logger.error("end_record: output_path became empty, cannot proceed.")
+                return None
+
+        try:
+            if is_zip_output:
+                with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    pickled_data = pickle.dumps(self.frames_data)
+                    zf.writestr(pkl_content_name, pickled_data)
+                logger.info(f"SMPL trajectory data (pose, trans) saved to '{pkl_content_name}' inside zip: {output_path}")
+            elif is_pkl_output:
+                with open(output_path, 'wb') as f:
+                    pickle.dump(self.frames_data, f)
+                logger.info(f"SMPL trajectory data (pose, trans) saved directly to PKL file: {output_path}")
+        except Exception as e:
+            logger.error(f"Error saving SMPL trajectory data (pose, trans) to {output_path}: {e}")
+            self.recording = False; self.frames_data = []; return None
         
         self.recording = False
-        self.frames = []
-        return zip_path
+        self.frames_data = []
+        return output_path
 
 class VideoRecorder:
     """Records frames to a video file using OpenCV asynchronously."""

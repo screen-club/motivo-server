@@ -774,138 +774,99 @@ def serve_motivo_video(filename):
 @app.route('/api/videos', methods=['GET'])
 @cross_origin()
 def list_videos():
-    """Lists videos available in all video directories.
+    """Lists videos available for playback and their corresponding combined recording packages.
     """
     video_list = []
     try:
-        # Get correct root directory
         root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         
-        # Use hardcoded paths from our find command results
-        hardcoded_dirs = [
-            {
-                'path': os.path.join(root_dir, "motivo/storage/videos"),
-                'url_prefix': '/motivo-videos',
-                'source': 'motivo'
-            },
-            {
-                'path': os.path.join(root_dir, "motivo/public/storage/videos"),
-                'url_prefix': '/motivo-videos',
-                'source': 'motivo-public'
-            },
-            {
-                'path': os.path.join(root_dir, "motivo/motivo/storage/videos"),
-                'url_prefix': '/motivo-videos', 
-                'source': 'motivo-extra'
-            },
-            {
-                'path': os.path.join(root_dir, "storage/videos"),
-                'url_prefix': '/motivo-videos',
-                'source': 'storage'
-            }
+        # Directory where combined packages are stored by MessageHandler
+        # This path should correctly point to 'motivo/downloads/' from the project root.
+        package_dir_path = os.path.abspath(os.path.join(root_dir, 'motivo', 'downloads'))
+        # Ensure this dir exists for safety, though MessageHandler should also create it.
+        # os.makedirs(package_dir_path, exist_ok=True)
+        
+        logging.info(f"Package directory for combined zips: {package_dir_path}")
+
+        # Directories where MP4s are primarily stored for direct playback
+        mp4_storage_dirs = [
+            {'path': os.path.join(root_dir, "storage/videos"), 'source': 'storage'},
+            {'path': os.path.join(root_dir, "motivo/storage/videos"), 'source': 'motivo-storage'},
+            # Add other locations if MP4s might be elsewhere for playback
         ]
         
-        # Log all directories we're checking
-        logging.info(f"Video directories to scan: {[d['path'] for d in hardcoded_dirs]}")
+        logging.info(f"MP4 video directories to scan: {[d['path'] for d in mp4_storage_dirs]}")
         
-        logging.info(f"Scanning {len(hardcoded_dirs)} video directories")
-        
-        # Process each directory
-        for video_dir in hardcoded_dirs:
-            dir_path = video_dir['path']
-            url_prefix = video_dir['url_prefix']
+        processed_mp4_filenames = set() # To avoid processing the same MP4 if found in multiple dirs
+
+        for mp4_dir_info in mp4_storage_dirs:
+            dir_path = mp4_dir_info['path']
             
-            # Check if directory exists and log the contents
-            try:
-                exists = os.path.exists(dir_path)
-                if not exists:
-                    logging.info(f"Directory doesn't exist, creating: {dir_path}")
-                    os.makedirs(dir_path, exist_ok=True)
-                    logging.info(f"Created empty directory: {dir_path}")
-                    continue  # Skip if newly created and empty
-                else:
-                    logging.info(f"Directory exists: {dir_path}")
-            except Exception as dir_error:
-                logging.error(f"Error checking directory {dir_path}: {dir_error}")
-                continue
+            if not os.path.exists(dir_path):
+                logging.debug(f"MP4 directory {dir_path} doesn't exist, skipping.")
+                continue 
             
-            # List files to check if directory is actually readable
             try:
-                files = os.listdir(dir_path)
-                logging.info(f"Directory {dir_path} exists with {len(files)} files: {files[:10] if len(files) > 10 else files}")
-            except Exception as access_error:
-                logging.error(f"Error accessing directory {dir_path}: {access_error}")
-                continue
-                
-            logging.info(f"Scanning videos in: {dir_path}")
-            try:
-                # Get all video files in this directory
                 for filename in os.listdir(dir_path):
-                    if filename.lower().endswith(('.mp4', '.webm', '.ogg')):
-                        video_path = os.path.join(dir_path, filename)
+                    if filename.lower().endswith( ('.mp4', '.webm', '.ogg') ) and filename not in processed_mp4_filenames:
+                        video_mp4_path = os.path.join(dir_path, filename)
                         try:
-                            file_stat = os.stat(video_path)
-                            # Include multiple URL access options
+                            file_stat = os.stat(video_mp4_path)
                             video_info = {
-                                'filename': filename,
-                                'url': f'{url_prefix}/{filename}',
-                                'motivo_url': f'/motivo-videos/{filename}',  # Add direct motivo URL
-                                'direct_url': f'/direct-file/{dir_path}/{filename}',  # Add direct file URL
+                                'filename': filename, # This is the MP4 filename
+                                'url': f'/storage/videos/{filename}', # Relative URL for the MP4, served by /storage/videos/ route
                                 'size': file_stat.st_size,
                                 'last_modified': file_stat.st_mtime,
                                 'created_at': file_stat.st_ctime,
-                                'source': url_prefix.replace('/', '') or os.path.basename(dir_path)
+                                'source': mp4_dir_info['source']
                             }
+                            processed_mp4_filenames.add(filename)
+
+                            # Now, try to find the corresponding combined package zip in package_dir_path
+                            match = re.match(r"recording_(\d{8}_\d{6})\.mp4", filename, re.IGNORECASE)
+                            if match:
+                                timestamp_str = match.group(1)
+                                expected_package_filename = f"recording_package_{timestamp_str}.zip"
+                                package_file_path = os.path.join(package_dir_path, expected_package_filename)
+
+                                if os.path.exists(package_file_path):
+                                    package_stat = os.stat(package_file_path)
+                                    video_info['package_filename'] = expected_package_filename
+                                    video_info['package_url'] = f'/downloads/{expected_package_filename}' 
+                                    video_info['package_size'] = package_stat.st_size
+                                    logging.info(f"Found package '{expected_package_filename}' for video '{filename}' in '{package_dir_path}'")
+                                else:
+                                    logging.debug(f"No package found for video '{filename}' (expected: '{expected_package_filename}' in '{package_dir_path}')")
+                            else:
+                                logging.debug(f"Video MP4 filename '{filename}' does not match 'recording_timestamp.mp4' pattern for package lookup.")
+
                             video_list.append(video_info)
+                        except FileNotFoundError:
+                            logging.warning(f"MP4 file not found during stat: {video_mp4_path}. Skipping.")
+                            processed_mp4_filenames.discard(filename) # Allow reprocessing if found elsewhere later
                         except Exception as stat_error:
-                            logging.error(f"Error getting info for {filename}: {stat_error}")
-                            video_list.append({
-                                'filename': filename, 
-                                'url': f'{url_prefix}/{filename}',
-                                'motivo_url': f'/motivo-videos/{filename}',  # Add direct motivo URL
-                                'direct_url': f'/direct-file/{dir_path}/{filename}',  # Add direct file URL
-                                'error': 'Could not retrieve file details',
-                                'source': os.path.basename(dir_path)
-                            })
+                            logging.error(f"Error getting info for MP4 {filename} in {dir_path}: {stat_error}")
+                            # Optionally add with error state
             except Exception as dir_error:
-                logging.error(f"Error reading directory {dir_path}: {dir_error}")
+                logging.error(f"Error reading MP4 directory {dir_path}: {dir_error}")
 
-        # Sort by creation time, newest first
-        video_list.sort(key=lambda x: x.get('created_at', 0) if x.get('created_at') else 0, reverse=True)
+        video_list.sort(key=lambda x: x.get('created_at', 0), reverse=True)
 
-        # Add a test item if list is empty
-        if not video_list:
-            # Add a test video to make sure something is returned
+        if not video_list: # Placeholder if no videos found
             video_list.append({
-                'filename': 'test_video.mp4',
-                'url': '/motivo-videos/test_video.mp4',
-                'size': 1024,
-                'last_modified': time.time(),
-                'created_at': time.time(),
-                'source': 'test'
+                'filename': 'test_video.mp4', 'url': '/storage/videos/test_video.mp4', 
+                'size': 1024, 'last_modified': time.time(), 'created_at': time.time(), 'source': 'test-placeholder',
+                'package_filename': 'test_package.zip', 'package_url': '/downloads/test_package.zip', 'package_size': 2048
             })
-            logging.warning("No videos found, adding test video to response")
+            logging.warning("No videos/packages found, adding placeholder to response")
         
-        # Log what we're returning
-        logging.info(f"Returning {len(video_list)} videos")
-        
+        logging.info(f"Returning {len(video_list)} video entries (with package info if found).")
         return jsonify(video_list)
+        
     except Exception as e:
-        logging.error(f"Error listing videos: {str(e)}")
+        logging.error(f"Critical error in list_videos: {str(e)}")
         traceback.print_exc()
-        
-        # Even on error, return a test video to avoid empty lists
-        test_video = [{
-            'filename': 'error_test_video.mp4',
-            'url': '/motivo-videos/error_test_video.mp4',
-            'size': 1024,
-            'last_modified': time.time(),
-            'created_at': time.time(),
-            'source': 'error_fallback',
-            'error_info': str(e)
-        }]
-        
-        return jsonify(test_video)
+        return jsonify([{'filename': 'error_fallback.mp4', 'url': '', 'error_info': str(e)}]), 500
 
 @app.route('/generate-reward', methods=['POST'])
 def generate_reward():

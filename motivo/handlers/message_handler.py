@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 import concurrent.futures
 import time
+import re
+import zipfile
 
 from core.config import config
 from utils.frame_utils import FrameRecorder, save_shared_frame, VideoRecorder
@@ -47,6 +49,7 @@ class MessageHandler:
         self.is_computing_reward = False
         self.default_z = None
         self.frame_recorder = None
+        self.video_accompanying_frame_recorder = None
         self.computation_status = None
         self.last_computation_id = None
         self.video_recorder = None
@@ -298,56 +301,56 @@ class MessageHandler:
             traceback.print_exc()
 
     async def handle_start_recording(self, websocket, data: Dict[str, Any]) -> None:
-        """Start recording frames"""
-        self.frame_recorder = FrameRecorder()
+        """Start recording frames for the original detailed ZIP (images + per-frame qpos JSONs)."""
+        # This uses the original FrameRecorder.end_record() which saves its own zip
+        # directly to config.downloads_dir. This is separate from the combined package logic.
+        if self.video_recorder and self.video_recorder.recording: # Prevent conflict with video package recording
+             await websocket.send(json.dumps({
+                "type": "recording_status", "status": "error",
+                "error": "Video package recording is already in progress. Stop that first.",
+                "timestamp": datetime.now().isoformat()
+            }))
+             return
+        self.frame_recorder = FrameRecorder() # Uses the original FrameRecorder.end_record()
         self.frame_recorder.recording = True
         response = {
-            "type": "recording_status",
-            "status": "started",
+            "type": "recording_status", "status": "started",
             "timestamp": datetime.now().isoformat()
         }
         await websocket.send(json.dumps(response))
 
     async def handle_stop_recording(self, websocket, data: Dict[str, Any]) -> None:
-        """Stop recording and save frames"""
+        """Stop recording for the original detailed ZIP and save frames."""
         if self.frame_recorder and self.frame_recorder.recording:
             try:
-                
-                # Create a unique filename for the zip
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                zip_filename = f"recording_{timestamp}.zip"
-                
-                # Use downloads dir from config
-                from core.config import config
+                # FrameRecorder.end_record() by default saves to config.downloads_dir with its own naming
+                # For clarity, we can specify a name that indicates this is the *original* type of recording.
+                # The FrameRecorder itself was updated to make frames_trajectory_data.json
+                zip_filename = f"recording_detailed_frames_{timestamp}.zip"
                 zip_path = os.path.join(config.downloads_dir, zip_filename)
                 
+                actual_zip_path = self.frame_recorder.end_record(zip_path) # This now makes a single JSON
                 
-                # Save the recording and get the zip path
-                self.frame_recorder.end_record(zip_path)
+                if actual_zip_path:
+                    download_url = f"http://{self.backend_domain}:{self.webserver_port}/downloads/{os.path.basename(actual_zip_path)}"
+                    logger.info(f"Original detailed recording ZIP Download URL created: {download_url}")
+                    response = {
+                        "type": "recording_status", "status": "stopped",
+                        "downloadUrl": download_url, "filename": os.path.basename(actual_zip_path),
+                        "timestamp": datetime.now().isoformat()
+                    }
+                else:
+                    response = {"type": "recording_status", "status": "error", "error": "Failed to save detailed recording."}
                 
-                # Create download URL using WEBSERVER_PORT
-                download_url = f"http://{self.backend_domain}:{self.webserver_port}/downloads/{zip_filename}"
-                logger.info(f"Download URL created: {download_url}")
-                
-                response = {
-                    "type": "recording_status",
-                    "status": "stopped",
-                    "downloadUrl": download_url,
-                    "timestamp": datetime.now().isoformat()
-                }
                 await websocket.send(json.dumps(response))
                 self.frame_recorder = None
             except Exception as e:
-                logger.error(f"Error stopping recording: {str(e)}")
+                logger.error(f"Error stopping original detailed recording: {str(e)}")
                 traceback.print_exc()
-                
-                error_response = {
-                    "type": "recording_status",
-                    "status": "error",
-                    "error": str(e),
-                    "timestamp": datetime.now().isoformat()
-                }
-                await websocket.send(json.dumps(error_response))
+                await websocket.send(json.dumps({"type": "recording_status", "status": "error", "error": str(e)}))
+        else:
+             await websocket.send(json.dumps({"type": "recording_status", "status": "error", "error": "No detailed recording active."}))
 
     async def handle_load_pose(self, websocket, data: Dict[str, Any]) -> None:
         """Load pose configuration from qpos data"""
@@ -1411,191 +1414,200 @@ class MessageHandler:
             await websocket.send(json.dumps(response))
 
     async def handle_start_video_recording(self, websocket, data: Dict[str, Any]) -> None:
-        """Start recording simulation frames as a video."""
-        if self.video_recorder and self.video_recorder.recording:
+        """Start recording for the combined package (MP4 video AND SMPL data)."""
+        if self.frame_recorder and self.frame_recorder.recording: # Prevent conflict with original ZIP recording
             await websocket.send(json.dumps({
-                "type": "video_recording_status",
-                "status": "error",
-                "error": "Video recording is already in progress.",
+                "type": "video_recording_status", "status": "error",
+                "error": "Original detailed frame recording (ZIP) is already in progress. Stop that first.",
                 "timestamp": datetime.now().isoformat()
             }))
             return
-
+        if self.video_recorder and self.video_recorder.recording: # Already recording video package
+            await websocket.send(json.dumps({
+                "type": "video_recording_status", "status": "error",
+                "error": "Video package recording is already in progress.",
+                "timestamp": datetime.now().isoformat()
+            }))
+            return
         try:
-            # Ensure we save to a path that will be accessible to the web server
-            videos_dir = os.path.abspath("storage/videos")
+            videos_dir = os.path.abspath("storage/videos") # MP4s go here
             os.makedirs(videos_dir, exist_ok=True)
-            logger.info(f"Using videos directory for recording: {videos_dir}")
-
-            # Create a unique filename with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             video_filename = f"recording_{timestamp}.mp4"
-            
-            # Save the video to storage/videos for direct web access
             video_path = os.path.join(videos_dir, video_filename)
-            
-            logger.info(f"Will save video recording to: {video_path}")
 
-            # Get frame dimensions (might need adjustment based on actual rendering)
-            # Using a common default, but ideally get from env or renderer
-            frame = self.env.render() # Render one frame to get dimensions
+            frame = self.env.render()
             height, width, _ = frame.shape
+            self.video_recorder = VideoRecorder(output_path=video_path, fps=config.fps / 2, width=width, height=height)
+            self.video_recorder.start()
 
-            self.video_recorder = VideoRecorder(
-                output_path=video_path,
-                fps=config.fps / 2, # Use half the simulation FPS for recording
-                width=width,
-                height=height
-            )
-            self.video_recorder.start() # Mark as recording
-
-            # Set a 60-second timer to automatically stop recording
+            self.video_accompanying_frame_recorder = FrameRecorder() # This will use get_recorded_data_for_manual_zipping
+            self.video_accompanying_frame_recorder.recording = True
+            
             loop = asyncio.get_running_loop()
             self.stop_recording_timer = loop.call_later(60, asyncio.create_task, self._auto_stop_video_recording(websocket))
-
-            logger.info(f"Started video recording to {video_path}")
-            response = {
-                "type": "video_recording_status",
-                "status": "started",
-                "path": video_path,
-                "timestamp": datetime.now().isoformat()
-            }
-            await websocket.send(json.dumps(response))
-
+            logger.info(f"Started recording for combined package: Video to {video_path}, SMPL data to be captured.")
+            await websocket.send(json.dumps({"type": "video_recording_status", "status": "started", "timestamp": datetime.now().isoformat()}))
         except Exception as e:
-            logger.error(f"Error starting video recording: {str(e)}")
+            logger.error(f"Error starting video package recording: {str(e)}")
             traceback.print_exc()
-            response = {
-                "type": "video_recording_status",
-                "status": "error",
-                "error": f"Failed to start recording: {str(e)}",
-                "timestamp": datetime.now().isoformat()
-            }
-            await websocket.send(json.dumps(response))
-            self.video_recorder = None # Clean up on error
+            await websocket.send(json.dumps({"type": "video_recording_status", "status": "error", "error": str(e)}))
+            self.video_recorder = None
+            self.video_accompanying_frame_recorder = None
 
     async def _auto_stop_video_recording(self, websocket):
-        """Automatically stops video recording after the timeout."""
-        logger.info("Automatic 60s timeout reached for video recording.")
+        logger.info("Automatic 60s timeout reached for video package recording.")
         await self.handle_stop_video_recording(websocket, {"auto_stopped": True})
 
     async def _force_stop_video_recording(self):
-        """Force stops video recording without needing websocket."""
+        logger.warning("Attempting to force stop video package recording and save package.")
+        video_stopped_path = None
+        smpl_images_data = None
+        smpl_states_data = None
+
+        if self.stop_recording_timer:
+            self.stop_recording_timer.cancel()
+            self.stop_recording_timer = None
+
         if self.video_recorder and self.video_recorder.recording:
             try:
-                if self.stop_recording_timer:
-                    self.stop_recording_timer.cancel()
-                    self.stop_recording_timer = None
-                video_path = self.video_recorder.output_path
-                self.video_recorder.stop()
-                logger.info(f"Force stopped video recording. Saved to: {video_path}")
+                video_stopped_path = await self.video_recorder.stop()
+                logger.info(f"Force stopped video, MP4 potentially at: {video_stopped_path or 'unknown path'}")
             except Exception as e:
-                logger.error(f"Error force stopping video recording: {str(e)}")
-            finally:
-                self.video_recorder = None
+                logger.error(f"Error force stopping video recorder: {str(e)}")
+            finally: self.video_recorder = None
+
+        if self.video_accompanying_frame_recorder and self.video_accompanying_frame_recorder.recording:
+            try:
+                smpl_images_data, smpl_states_data = self.video_accompanying_frame_recorder.get_recorded_data_for_manual_zipping()
+                logger.info(f"Force extracted {len(smpl_images_data)} SMPL frame images and {len(smpl_states_data)} states.")
+            except Exception as e:
+                logger.error(f"Error force extracting SMPL data: {str(e)}")
+            finally: self.video_accompanying_frame_recorder = None
+        
+        if video_stopped_path and os.path.exists(video_stopped_path) and (smpl_images_data or smpl_states_data):
+            try:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                package_filename = f"recording_package_forced_{timestamp}.zip"
+                package_path = os.path.join(config.downloads_dir, package_filename)
+                os.makedirs(config.downloads_dir, exist_ok=True)
+                with zipfile.ZipFile(package_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    video_basename_in_zip = os.path.basename(video_stopped_path)
+                    zf.write(video_stopped_path, arcname=video_basename_in_zip)
+                    
+                    for img_filename_in_zip, img_bytes in smpl_images_data:
+                        zf.writestr(img_filename_in_zip, img_bytes)
+                    
+                    zf.writestr("smpl_trajectory_data.json", json.dumps(smpl_states_data, indent=2))
+                logger.info(f"Force stop: Successfully created recording package: {package_path}")
+            except Exception as e:
+                logger.error(f"Force stop: Failed to create recording package: {str(e)}")
+        else:
+            logger.warning("Force stop: Not enough data (or video MP4 missing) to create a full package.")
 
     async def handle_stop_video_recording(self, websocket, data: Dict[str, Any]) -> None:
-        """Stop recording simulation frames and save the video file."""
-        if not self.video_recorder or not self.video_recorder.recording:
+        """Stop video package recording, create a single zip package with MP4 video and SMPL data."""
+        if not (self.video_recorder and self.video_recorder.recording) and \
+           not (self.video_accompanying_frame_recorder and self.video_accompanying_frame_recorder.recording):
             await websocket.send(json.dumps({
-                "type": "video_recording_status",
-                "status": "error",
-                "error": "No video recording is currently active.",
+                "type": "video_recording_status", "status": "error",
+                "error": "No video package recording is currently active.",
                 "timestamp": datetime.now().isoformat()
             }))
             return
 
+        package_download_url = None
+        package_filename = None
+        final_video_mp4_path_on_disk = None 
+        video_basename_for_package = None 
+
         try:
-            # Cancel the automatic stop timer if it exists and hasn't fired
             if self.stop_recording_timer:
                 self.stop_recording_timer.cancel()
                 self.stop_recording_timer = None
 
-            # Get the initial path (for reference)
-            initial_path = self.video_recorder.output_path
-            
-            # Stop recording and get final video path (may be different after optimization)
-            final_path = await self.video_recorder.stop() # Finalize the video file
-            
-            # Use the final path for the rest of the code
-            video_path = final_path if final_path else initial_path
-            
-            logger.info(f"Stopped video recording. Saved to: {video_path}")
+            if self.video_recorder and self.video_recorder.recording:
+                initial_mp4_path = self.video_recorder.output_path
+                final_video_mp4_path_on_disk = await self.video_recorder.stop()
+                final_video_mp4_path_on_disk = final_video_mp4_path_on_disk if final_video_mp4_path_on_disk else initial_mp4_path
+                if final_video_mp4_path_on_disk and os.path.exists(final_video_mp4_path_on_disk):
+                    video_basename_for_package = os.path.basename(final_video_mp4_path_on_disk)
+                    logger.info(f"Video recording stopped. MP4 saved to: {final_video_mp4_path_on_disk}")
+                else:
+                    logger.error(f"Video recorder stopped but MP4 path '{final_video_mp4_path_on_disk}' is invalid or file missing.")
+                    final_video_mp4_path_on_disk = None # Ensure it's None if file not found
+            else:
+                logger.info("Video recorder was not active or already stopped.")
 
-            # Create download URL for the video file
-            # Extract filename from path
-            video_filename = os.path.basename(video_path)
-            
-            # Create a URL for the videos directory in storage
-            videos_dir_relative = os.path.join('storage', 'videos')
-            download_url = f"http://{self.backend_domain}:{self.webserver_port}/{videos_dir_relative}/{video_filename}"
-            
-            # Copy the video to public directory for web access 
-            public_videos_dir = os.path.abspath(os.path.join("public", "storage", "videos"))
-            os.makedirs(public_videos_dir, exist_ok=True)
-            public_path = os.path.join(public_videos_dir, video_filename)
-            
-            # Log file info before copying
-            try:
-                file_size = os.path.getsize(video_path)
-                logger.info(f"Video file stats - Path: {video_path}, Size: {file_size} bytes, Exists: {os.path.exists(video_path)}")
-            except Exception as stat_err:
-                logger.warning(f"Could not get file stats for {video_path}: {str(stat_err)}")
-            
-            # Copy the file to the public directory with proper logging
-            try:
-                import shutil
-                shutil.copy2(video_path, public_path)
-                logger.info(f"Copied video to public directory: {public_path}")
-                
-                # Also log where we're accessing the file from for debugging
-                logger.info(f"Videos should be accessible from: http://{self.backend_domain}:{self.webserver_port}/storage/videos/{video_filename}")
-                
-                # Also create symlinks in storage/videos if possible to ensure files are accessible
-                # This handles potential path confusion in Docker environments
-                try:
-                    for extra_dir in ["motivo/storage/videos", "webserver/storage/videos"]:
-                        try:
-                            os.makedirs(extra_dir, exist_ok=True)
-                            extra_path = os.path.join(extra_dir, video_filename)
-                            if not os.path.exists(extra_path):
-                                import shutil
-                                shutil.copy2(video_path, extra_path)
-                                logger.info(f"Created extra copy at {extra_path}")
-                        except Exception as extra_err:
-                            logger.warning(f"Failed to create extra copy in {extra_dir}: {str(extra_err)}")
-                except Exception as copy_err:
-                    logger.warning(f"Failed to create extra copies: {str(copy_err)}")
-                
-            except Exception as copy_err:
-                logger.warning(f"Failed to copy video to public directory: {str(copy_err)}")
-                # If copy failed, we still have the original file
+            smpl_frame_images_data = []
+            smpl_trajectory_list = []
+            if self.video_accompanying_frame_recorder and self.video_accompanying_frame_recorder.recording:
+                smpl_frame_images_data, smpl_trajectory_list = \
+                    self.video_accompanying_frame_recorder.get_recorded_data_for_manual_zipping()
+                logger.info(f"Extracted {len(smpl_frame_images_data)} SMPL frame images and {len(smpl_trajectory_list)} SMPL trajectory states.")
+            else:
+                logger.info("SMPL data frame recorder (for video package) was not active or already processed.")
 
-            response = {
-                "type": "video_recording_status",
-                "status": "stopped",
-                "path": video_path,
-                "downloadUrl": download_url,
-                "filename": video_filename,
-                "timestamp": datetime.now().isoformat(),
-                "auto_stopped": data.get("auto_stopped", False)
+            if not final_video_mp4_path_on_disk and not smpl_frame_images_data and not smpl_trajectory_list:
+                logger.warning("No MP4 video and no SMPL data captured to create a package.")
+                await websocket.send(json.dumps({
+                    "type": "video_recording_status", "status": "stopped",
+                    "message": "No data was recorded for the package.",
+                    "timestamp": datetime.now().isoformat(), "auto_stopped": data.get("auto_stopped", False)
+                }))
+                return
+            
+            package_timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            if video_basename_for_package: # Try to use video's timestamp
+                 match = re.search(r"recording_(\d{8}_\d{6})\.mp4", video_basename_for_package, re.IGNORECASE)
+                 if match: package_timestamp_str = match.group(1)
+
+            package_filename = f"recording_package_{package_timestamp_str}.zip"
+            package_zip_path = os.path.join(config.downloads_dir, package_filename)
+            os.makedirs(config.downloads_dir, exist_ok=True)
+
+            logger.info(f"Creating combined recording package: {package_zip_path}")
+            with zipfile.ZipFile(package_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                if final_video_mp4_path_on_disk and os.path.exists(final_video_mp4_path_on_disk):
+                    arcname_video = video_basename_for_package or f"video_{package_timestamp_str}.mp4"
+                    zf.write(final_video_mp4_path_on_disk, arcname=arcname_video)
+                    logger.info(f"Added video '{arcname_video}' to package.")
+                elif final_video_mp4_path_on_disk:
+                    logger.error(f"Video MP4 file {final_video_mp4_path_on_disk} was specified but not found for zipping!")
+                
+                if smpl_frame_images_data:
+                    for img_zip_path, img_bytes in smpl_frame_images_data:
+                        zf.writestr(img_zip_path, img_bytes) # img_zip_path is like 'frames/frame_0000.jpg'
+                    logger.info(f"Added {len(smpl_frame_images_data)} SMPL frame images to package.")
+
+                if smpl_trajectory_list:
+                    zf.writestr("smpl_trajectory_data.json", json.dumps(smpl_trajectory_list, indent=2))
+                    logger.info("Added smpl_trajectory_data.json to package.")
+            
+            package_download_url = f"http://{self.backend_domain}:{self.webserver_port}/downloads/{package_filename}"
+
+            response_payload = {
+                "type": "video_recording_status", "status": "stopped",
+                "package_download_url": package_download_url,
+                "package_filename": package_filename,
+                "video_filename_in_package": video_basename_for_package, # Informational
+                "timestamp": datetime.now().isoformat(), "auto_stopped": data.get("auto_stopped", False)
             }
-            await websocket.send(json.dumps(response))
+            await websocket.send(json.dumps(response_payload))
+            logger.info(f"Sent response with package download URL: {package_download_url}")
 
         except Exception as e:
-            logger.error(f"Error stopping video recording: {str(e)}")
+            logger.error(f"Error stopping/creating video package: {str(e)}")
             traceback.print_exc()
-            response = {
-                "type": "video_recording_status",
-                "status": "error",
-                "error": f"Failed to stop recording: {str(e)}",
+            await websocket.send(json.dumps({
+                "type": "video_recording_status", "status": "error",
+                "error": f"Failed to stop/create video package: {str(e)}",
                 "timestamp": datetime.now().isoformat()
-            }
-            await websocket.send(json.dumps(response))
+            }))
         finally:
-            # Ensure recorder is cleaned up regardless of success/failure
             self.video_recorder = None
-            if self.stop_recording_timer: # Clean up timer just in case
+            self.video_accompanying_frame_recorder = None
+            if self.stop_recording_timer: 
                  self.stop_recording_timer.cancel()
                  self.stop_recording_timer = None
 
