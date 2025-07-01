@@ -1498,7 +1498,9 @@ class MessageHandler:
                     for img_filename_in_zip, img_bytes in smpl_images_data:
                         zf.writestr(img_filename_in_zip, img_bytes)
                     
-                    zf.writestr("smpl_trajectory_data.json", json.dumps(smpl_states_data, indent=2))
+                    import pickle
+                    pickled_data = pickle.dumps(smpl_states_data)
+                    zf.writestr("smpl_trajectory_data.pkl", pickled_data)
                 logger.info(f"Force stop: Successfully created recording package: {package_path}")
             except Exception as e:
                 logger.error(f"Force stop: Failed to create recording package: {str(e)}")
@@ -1581,8 +1583,10 @@ class MessageHandler:
                     logger.info(f"Added {len(smpl_frame_images_data)} SMPL frame images to package.")
 
                 if smpl_trajectory_list:
-                    zf.writestr("smpl_trajectory_data.json", json.dumps(smpl_trajectory_list, indent=2))
-                    logger.info("Added smpl_trajectory_data.json to package.")
+                    import pickle
+                    pickled_data = pickle.dumps(smpl_trajectory_list)
+                    zf.writestr("smpl_trajectory_data.pkl", pickled_data)
+                    logger.info("Added smpl_trajectory_data.pkl to package.")
             
             package_download_url = f"http://{self.backend_domain}:{self.webserver_port}/downloads/{package_filename}"
 

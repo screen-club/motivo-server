@@ -281,14 +281,33 @@ class FrameRecorder:
         Since this FrameRecorder only handles SMPL data, frame images will be empty.
         Clears internal frames_data after returning data.
         """
+        logger.info(f"get_recorded_data_for_manual_zipping called - recording status: {self.recording}, frames count: {len(self.frames_data)}")
+        
         if not self.frames_data:
-            logger.debug("FrameRecorder.get_recorded_data_for_manual_zipping: No frame data.")
+            logger.info("FrameRecorder.get_recorded_data_for_manual_zipping: No frame data recorded, returning empty lists.")
             return [], []
             
-        data_to_return = list(self.frames_data) 
+        # Keep NumPy arrays as-is since PKL can handle them directly
+        data_to_return = list(self.frames_data)
+            
+        logger.info(f"Preparing to return {len(data_to_return)} SMPL trajectory states for packaging (keeping NumPy arrays for PKL)")
+        
+        # Log details about the first few frames for debugging
+        if len(data_to_return) > 0:
+            logger.info(f"First frame data keys: {list(data_to_return[0].keys())}")
+            if len(data_to_return) >= 3:
+                logger.info(f"Total frames recorded: {len(data_to_return)} (showing first 3)")
+                for i in range(3):
+                    frame_data = data_to_return[i]
+                    pose_type = type(frame_data.get('pose', None)).__name__
+                    trans_type = type(frame_data.get('trans', None)).__name__
+                    logger.info(f"  Frame {i}: timestamp={frame_data.get('timestamp', 'N/A')}, pose_type={pose_type}, trans_type={trans_type}")
+            else:
+                logger.info(f"Recording only has {len(data_to_return)} frames total")
+        
         self.recording = False
         self.frames_data = []
-        logger.debug(f"Extracted {len(data_to_return)} states (timestamp, pose, trans) for packaging.")
+        logger.info(f"FrameRecorder cleared internal data and stopped recording. Returning empty frame images list + {len(data_to_return)} trajectory states")
         
         # Return empty list for frame images and the trajectory data
         return [], data_to_return
