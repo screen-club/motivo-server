@@ -1438,7 +1438,7 @@ class MessageHandler:
 
             frame = self.env.render()
             height, width, _ = frame.shape
-            self.video_recorder = VideoRecorder(output_path=video_path, fps=config.fps / 2, width=width, height=height)
+            self.video_recorder = VideoRecorder(output_path=video_path, fps=config.fps / 4, width=width, height=height)
             self.video_recorder.start()
 
             self.video_accompanying_frame_recorder = FrameRecorder() # This will use get_recorded_data_for_manual_zipping
