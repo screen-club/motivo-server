@@ -1445,7 +1445,7 @@ class MessageHandler:
             self.video_accompanying_frame_recorder.recording = True
             
             loop = asyncio.get_running_loop()
-            self.stop_recording_timer = loop.call_later(60, asyncio.create_task, self._auto_stop_video_recording(websocket))
+            self.stop_recording_timer = loop.call_later(600, asyncio.create_task, self._auto_stop_video_recording(websocket))
             logger.info(f"Started recording for combined package: Video to {video_path}, SMPL data to be captured.")
             await websocket.send(json.dumps({"type": "video_recording_status", "status": "started", "timestamp": datetime.now().isoformat()}))
         except Exception as e:
@@ -1456,7 +1456,7 @@ class MessageHandler:
             self.video_accompanying_frame_recorder = None
 
     async def _auto_stop_video_recording(self, websocket):
-        logger.info("Automatic 60s timeout reached for video package recording.")
+        logger.info("Automatic 10-minute timeout reached for video package recording.")
         await self.handle_stop_video_recording(websocket, {"auto_stopped": True})
 
     async def _force_stop_video_recording(self):
